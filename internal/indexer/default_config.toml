@@ -1,0 +1,21 @@
+database = "cache/ck3_index.sqlite"
+
+[[source]]
+name = "project"
+path = "../../我的工程/22"
+rank = 1
+
+[[source]]
+name = "godherja"
+path = "../../mod本体/godherja-beta"
+rank = 2
+
+[[source]]
+name = "game"
+path = "../../游戏本体/game"
+rank = 3
+
+[[source]]
+name = "translation"
+path = "../../mod翻译/Godherja CN"
+rank = 4

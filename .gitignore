@@ -1,0 +1,45 @@
+# Build outputs
+/ck3-index.exe
+/ck3-index
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Runtime caches and generated indexes
+/cache/
+/tmp/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+
+# External/vendor checkouts
+/external/
+/vendor/
+
+# Local project config and transient outputs
+/ck3-index.toml
+/diag.out.txt
+/validate.latest.json
+/wf.txt
+/d2_*.txt
+/d_*.txt
+/r_*.txt
+/tools/tmp_err.txt
+
+# Archives and packaged binaries
+*.zip
+*.7z
+*.rar
+*.tar
+*.gz
+
+# OS/editor noise
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.tmp
+*.temp
+*.swp
+*~

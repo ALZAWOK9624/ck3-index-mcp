@@ -1,0 +1,36 @@
+{
+  "name": "culture tradition layer-relative DDS expands to layer path",
+  "files": [
+    {
+      "path": "common/culture/traditions/test_traditions.txt",
+      "content": "tradition_test_layer_icon = {\n\tlayers = {\n\t\t0 = steward\n\t\t1 = indian\n\t\t4 = test_layer_icon.dds\n\t}\n}\n"
+    },
+    {
+      "path": "gfx/interface/icons/culture_tradition/4-items/test_layer_icon.dds",
+      "content": "fake"
+    }
+  ],
+  "expect_refs": [
+    {
+      "id": "tradition_test_layer_icon",
+      "direction": "outgoing",
+      "kind": "resource",
+      "name": "gfx/interface/icons/culture_tradition/4-items/test_layer_icon.dds",
+      "resolved": true
+    }
+  ],
+  "reject_refs": [
+    {
+      "id": "tradition_test_layer_icon",
+      "direction": "outgoing",
+      "kind": "resource",
+      "name": "test_layer_icon.dds"
+    }
+  ],
+  "reject_diagnostics": [
+    {
+      "code": "missing_resource",
+      "contains": "test_layer_icon.dds"
+    }
+  ]
+}

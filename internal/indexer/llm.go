@@ -12,32 +12,42 @@ const defaultLLMLimit = 8
 
 type LLMOptions struct {
 	Limit        int    `json:"limit,omitempty"`
+	Depth        int    `json:"depth,omitempty"`
 	Mode         string `json:"mode,omitempty"`
 	AllowProject bool   `json:"allow_project,omitempty"`
 }
 
 type LLMResult struct {
-	Query        string         `json:"query,omitempty"`
-	Intent       string         `json:"intent"`
-	Summary      string         `json:"summary"`
-	Counts       map[string]int `json:"counts,omitempty"`
-	Guidance     []string       `json:"guidance,omitempty"`
-	Evidence     []LLMEvidence  `json:"evidence,omitempty"`
-	NextQueries  []LLMNextQuery `json:"next_queries,omitempty"`
-	Redacted     int            `json:"redacted,omitempty"`
-	NeedsRefresh bool           `json:"needs_refresh,omitempty"`
+	Query            string                   `json:"query,omitempty"`
+	Intent           string                   `json:"intent"`
+	Summary          string                   `json:"summary"`
+	Counts           map[string]int           `json:"counts,omitempty"`
+	Hotspots         map[string][]LLMEvidence `json:"hotspots,omitempty"`
+	Guidance         []string                 `json:"guidance,omitempty"`
+	Evidence         []LLMEvidence            `json:"evidence,omitempty"`
+	NextQueries      []LLMNextQuery           `json:"next_queries,omitempty"`
+	Redacted         int                      `json:"redacted,omitempty"`
+	NeedsRefresh     bool                     `json:"needs_refresh,omitempty"`
+	NeedsScan        bool                     `json:"needs_scan,omitempty"`
+	Impact           map[string]int           `json:"impact,omitempty"`
+	MissingLocKeys   []string                 `json:"missing_loc_keys,omitempty"`
+	MissingResources []string                 `json:"missing_resources,omitempty"`
+	ScopeFixHints    []string                 `json:"scope_fix_hints,omitempty"`
 }
 
 type LLMEvidence struct {
-	Kind    string `json:"kind"`
-	Type    string `json:"type,omitempty"`
-	Name    string `json:"name,omitempty"`
-	Source  string `json:"source,omitempty"`
-	Path    string `json:"path,omitempty"`
-	Line    int    `json:"line,omitempty"`
-	Column  int    `json:"column,omitempty"`
-	Detail  string `json:"detail,omitempty"`
-	Snippet string `json:"snippet,omitempty"`
+	Kind       string `json:"kind"`
+	Type       string `json:"type,omitempty"`
+	Name       string `json:"name,omitempty"`
+	Source     string `json:"source,omitempty"`
+	Path       string `json:"path,omitempty"`
+	Line       int    `json:"line,omitempty"`
+	Column     int    `json:"column,omitempty"`
+	Detail     string `json:"detail,omitempty"`
+	EdgeType   string `json:"edge_type,omitempty"`
+	Snippet    string `json:"snippet,omitempty"`
+	Suggestion string `json:"suggestion,omitempty"`
+	RuleSource string `json:"rule_source,omitempty"`
 }
 
 type LLMNextQuery struct {
@@ -54,6 +64,16 @@ func (o LLMOptions) normalizedLimit() int {
 		return 20
 	}
 	return o.Limit
+}
+
+func (o LLMOptions) normalizedDepth() int {
+	if o.Depth <= 0 {
+		return 1
+	}
+	if o.Depth > 2 {
+		return 2
+	}
+	return o.Depth
 }
 
 func (o LLMOptions) publicMode() bool {
@@ -83,7 +103,7 @@ func (r LLMResult) withPublicFilter(opts LLMOptions) LLMResult {
 }
 
 func isProjectEvidence(source, path string) bool {
-	return strings.EqualFold(source, "project")
+	return strings.EqualFold(source, "project") || strings.EqualFold(source, "patch")
 }
 
 func evidencePath(path string) string {
@@ -202,13 +222,20 @@ func refEvidence(kind string, h RefHit) LLMEvidence {
 		name = h.FromName
 	}
 	detail := h.Kind
+	if h.Name != "" {
+		detail += " ref=" + h.Name
+	}
 	if h.Raw != "" && h.Raw != h.Name {
 		detail += " raw=" + h.Raw
 	}
 	if !h.Resolved {
 		detail += " [unresolved]"
 	}
-	return LLMEvidence{Kind: kind, Type: h.FromType, Name: name, Source: h.Source, Path: evidencePath(h.Path), Line: h.Line, Column: h.Column, Detail: detail}
+	ev := LLMEvidence{Kind: kind, Type: h.FromType, Name: name, Source: h.Source, Path: evidencePath(h.Path), Line: h.Line, Column: h.Column, Detail: detail}
+	if !h.Resolved {
+		ev.Suggestion, ev.RuleSource = refHint(h.Kind)
+	}
+	return ev
 }
 
 func (db *DB) LLMFindRefs(ctx context.Context, id string, opts LLMOptions) (LLMResult, error) {
@@ -221,8 +248,10 @@ func (db *DB) LLMFindRefs(ctx context.Context, id string, opts LLMOptions) (LLMR
 		Query:  id,
 		Intent: "find_refs",
 		Counts: map[string]int{
-			"incoming": len(refs.Incoming),
-			"outgoing": len(refs.Outgoing),
+			"incoming":          refs.IncomingTotal,
+			"outgoing":          refs.OutgoingTotal,
+			"incoming_returned": len(refs.Incoming),
+			"outgoing_returned": len(refs.Outgoing),
 		},
 	}
 	for i, h := range refs.Incoming {
@@ -237,10 +266,13 @@ func (db *DB) LLMFindRefs(ctx context.Context, id string, opts LLMOptions) (LLMR
 		}
 		r.Evidence = append(r.Evidence, refEvidence("outgoing_ref", h))
 	}
-	r.Summary = fmt.Sprintf("%q has %d incoming and %d outgoing indexed reference(s).", id, len(refs.Incoming), len(refs.Outgoing))
+	r.Summary = fmt.Sprintf("%q has %d incoming and %d outgoing indexed reference(s).", id, refs.IncomingTotal, refs.OutgoingTotal)
 	r.Guidance = []string{
 		"Incoming refs are scripts that may break if this id is renamed or removed.",
 		"Outgoing unresolved refs are the first things to fix before validating generated code.",
+	}
+	if refs.IncomingTruncated || refs.OutgoingTruncated {
+		r.Guidance = append(r.Guidance, "Reference totals are exact; evidence is capped. Narrow with a typed id or inspect matching files when more evidence is needed.")
 	}
 	r.NextQueries = []LLMNextQuery{{Tool: "query_object", ID: id, Reason: "confirm definition and override chain"}}
 	return r.withPublicFilter(opts), nil
@@ -402,7 +434,7 @@ func (db *DB) LLMQueryPatterns(ctx context.Context, typ string, opts LLMOptions)
 
 func (db *DB) LLMValidate(ctx context.Context, opts LLMOptions) (LLMResult, error) {
 	limit := opts.normalizedLimit()
-	rep, err := db.CachedValidation(ctx)
+	rep, err := db.CachedValidationForSource(ctx, "project")
 	if err != nil {
 		return LLMResult{}, err
 	}
@@ -415,6 +447,7 @@ func (db *DB) LLMValidate(ctx context.Context, opts LLMOptions) (LLMResult, erro
 	}
 	r.Summary = fmt.Sprintf("Cached validation has %d error(s), %d warning(s), and %d info diagnostic(s).", rep.Counts["error"], rep.Counts["warning"], rep.Counts["info"])
 	r.Guidance = []string{
+		"This summary is limited to the current project source plus global diagnostics; upstream game and Godherja files remain searchable as reference evidence.",
 		"This MCP tool is chat-fast and reads cached diagnostics only.",
 		"After editing files, run ck3-index scan or CLI validate to refresh diagnostics before trusting a clean result.",
 	}
@@ -425,24 +458,30 @@ func (db *DB) LLMValidate(ctx context.Context, opts LLMOptions) (LLMResult, erro
 }
 
 func (db *DB) LLMExplainDiagnostic(ctx context.Context, code string, opts LLMOptions) (LLMResult, error) {
+	return db.LLMExplainDiagnosticFiltered(ctx, DiagnosticFilter{Code: code}, opts)
+}
+
+func (db *DB) LLMExplainDiagnosticFiltered(ctx context.Context, filter DiagnosticFilter, opts LLMOptions) (LLMResult, error) {
 	limit := opts.normalizedLimit()
-	diags, err := db.ExplainDiagnostic(ctx, code)
+	diags, err := db.ExplainDiagnosticFiltered(ctx, filter)
 	if err != nil {
 		return LLMResult{}, err
 	}
-	r := LLMResult{Query: code, Intent: "explain_diagnostic", Counts: map[string]int{"diagnostics": len(diags)}}
+	r := LLMResult{Query: filter.Code, Intent: "explain_diagnostic", Counts: map[string]int{"diagnostics": len(diags)}}
 	for i, d := range diags {
 		if i >= limit {
 			break
 		}
 		r.Evidence = append(r.Evidence, diagnosticEvidence(d))
 	}
-	r.Summary = fmt.Sprintf("Found %d diagnostic(s) with code %q.", len(diags), code)
+	r.Summary = fmt.Sprintf("Found %d unique diagnostic(s) with code %q.", len(diags), filter.Code)
 	return r.withPublicFilter(opts), nil
 }
 
 func diagnosticEvidence(d Diagnostic) LLMEvidence {
-	return LLMEvidence{Kind: "diagnostic", Source: d.Source, Path: evidencePath(d.Path), Line: d.Line, Column: d.Column, Detail: d.Severity + " " + d.Code + ": " + d.Message}
+	suggestion, ruleSource := diagnosticHint(d.Code, d.Message)
+	detail := fmt.Sprintf("%s %s confidence=%s occurrences=%d: %s", d.Severity, d.Code, d.Confidence, d.Occurrences, d.Message)
+	return LLMEvidence{Kind: "diagnostic", Source: d.SourceLayer, Path: evidencePath(d.Path), Line: d.Line, Column: d.Column, Detail: detail, Suggestion: suggestion, RuleSource: ruleSource}
 }
 
 func (db *DB) LLMInspectObject(ctx context.Context, id string, opts LLMOptions) (LLMResult, error) {
@@ -468,8 +507,8 @@ func (db *DB) LLMInspectObject(ctx context.Context, id string, opts LLMOptions) 
 		Intent: "inspect_object",
 		Counts: map[string]int{
 			"definitions":   len(obj.Definitions),
-			"incoming_refs": len(refs.Incoming),
-			"outgoing_refs": len(refs.Outgoing),
+			"incoming_refs": refs.IncomingTotal,
+			"outgoing_refs": refs.OutgoingTotal,
 			"localization":  len(loc.Values),
 			"diagnostics":   len(diags),
 		},
@@ -505,7 +544,7 @@ func (db *DB) LLMInspectObject(ctx context.Context, id string, opts LLMOptions) 
 		r.Summary = fmt.Sprintf("No definition matched %q. References, localization, and diagnostics were still checked.", id)
 		r.Guidance = []string{"If this is generated code, create the definition or correct the id before referencing it."}
 	} else {
-		r.Summary = fmt.Sprintf("%q summary: %d definition(s), %d incoming ref(s), %d outgoing ref(s), %d localization value(s), %d related diagnostic(s).", id, len(obj.Definitions), len(refs.Incoming), len(refs.Outgoing), len(loc.Values), len(diags))
+		r.Summary = fmt.Sprintf("%q summary: %d definition(s), %d incoming ref(s), %d outgoing ref(s), %d localization value(s), %d related diagnostic(s).", id, len(obj.Definitions), refs.IncomingTotal, refs.OutgoingTotal, len(loc.Values), len(diags))
 		r.Guidance = []string{
 			"Use this as the compact object briefing before editing.",
 			"Resolve diagnostics and missing localization/resource refs before considering generated code complete.",
@@ -564,7 +603,7 @@ func (db *DB) LLMPrepareEdit(ctx context.Context, id string, opts LLMOptions) (L
 			"examples":    len(ex.Examples),
 			"rules":       len(rules.Fields),
 			"patterns":    len(patterns.Fields),
-			"refs":        len(refs.Incoming) + len(refs.Outgoing),
+			"refs":        refs.IncomingTotal + refs.OutgoingTotal,
 		},
 	}
 	if useObjectDefs {
@@ -595,7 +634,7 @@ func (db *DB) LLMPrepareEdit(ctx context.Context, id string, opts LLMOptions) (L
 		detail := fmt.Sprintf("%s count=%d sample=%s", h.Shape, h.Count, trimText(h.Raw, 120))
 		r.Evidence = append(r.Evidence, LLMEvidence{Kind: "field_pattern", Type: typ, Name: h.Field, Source: h.Source, Path: evidencePath(h.Path), Line: h.Line, Detail: detail})
 	}
-	r.Summary = fmt.Sprintf("Edit prep for %q: object type %q, %d definition(s), %d example(s), %d schema field(s), %d empirical pattern(s), %d related ref(s).", id, typ, r.Counts["definitions"], len(ex.Examples), len(rules.Fields), len(patterns.Fields), len(refs.Incoming)+len(refs.Outgoing))
+	r.Summary = fmt.Sprintf("Edit prep for %q: object type %q, %d definition(s), %d example(s), %d schema field(s), %d empirical pattern(s), %d related ref(s).", id, typ, r.Counts["definitions"], len(ex.Examples), len(rules.Fields), len(patterns.Fields), refs.IncomingTotal+refs.OutgoingTotal)
 	r.Guidance = []string{
 		"Generation workflow: follow vanilla-first examples, empirical field patterns, then schema fields; use lookup_scope/lookup_shape for every unfamiliar trigger or effect.",
 		"Use existing scripted triggers/effects and modifiers when indexed; invent new ids only after diagnose_key returns no definition/ref conflict.",
@@ -636,8 +675,8 @@ func (db *DB) LLMPreflight(ctx context.Context, id string, opts LLMOptions) (LLM
 		Intent: "preflight_code",
 		Counts: map[string]int{
 			"definitions":       len(obj.Definitions),
-			"incoming_refs":     len(refs.Incoming),
-			"outgoing_refs":     len(refs.Outgoing),
+			"incoming_refs":     refs.IncomingTotal,
+			"outgoing_refs":     refs.OutgoingTotal,
 			"loc_candidates":    locChecked,
 			"localization":      locFound,
 			"diagnostics":       len(diags),
@@ -657,11 +696,19 @@ func (db *DB) LLMPreflight(ctx context.Context, id string, opts LLMOptions) (LLM
 		}
 		add(objectEvidence("definition", d))
 	}
-	for _, ev := range locEvidence {
-		add(ev)
+	for _, d := range diags {
+		if d.Severity == "error" {
+			blockers++
+		} else {
+			warnings++
+		}
+		add(diagnosticEvidence(d))
 	}
 	for _, h := range refs.Outgoing {
 		if h.Resolved {
+			continue
+		}
+		if preflightRuntimeRef(h.Kind) {
 			continue
 		}
 		unresolved++
@@ -672,15 +719,19 @@ func (db *DB) LLMPreflight(ctx context.Context, id string, opts LLMOptions) (LLM
 		}
 		add(refEvidence("unresolved_outgoing_ref", h))
 	}
-	for _, d := range diags {
-		if d.Severity == "error" {
-			blockers++
-		} else {
-			warnings++
+	for _, h := range refs.Outgoing {
+		if !h.Resolved {
+			continue
 		}
-		add(diagnosticEvidence(d))
+		if preflightRuntimeRef(h.Kind) {
+			continue
+		}
+		add(refEvidence("outgoing_ref", h))
 	}
-	if len(obj.Definitions) == 0 && (len(refs.Incoming) > 0 || len(refs.Outgoing) > 0) {
+	for _, ev := range locEvidence {
+		add(ev)
+	}
+	if len(obj.Definitions) == 0 && (refs.IncomingTotal > 0 || refs.OutgoingTotal > 0) {
 		warnings++
 	}
 	if locChecked > 0 && locFound == 0 {
@@ -690,7 +741,7 @@ func (db *DB) LLMPreflight(ctx context.Context, id string, opts LLMOptions) (LLM
 	r.Counts["blocking_risks"] = blockers
 	r.Counts["nonblocking_risks"] = warnings
 	if blockers == 0 && warnings == 0 {
-		r.Summary = fmt.Sprintf("Preflight for %q found no immediate indexed blockers. Definitions=%d, outgoing refs=%d, localization hits=%d.", id, len(obj.Definitions), len(refs.Outgoing), locFound)
+		r.Summary = fmt.Sprintf("Preflight for %q found no immediate indexed blockers. Definitions=%d, outgoing refs=%d, localization hits=%d.", id, len(obj.Definitions), refs.OutgoingTotal, locFound)
 	} else {
 		r.Summary = fmt.Sprintf("Preflight for %q found %d blocking risk(s), %d warning risk(s), and %d unresolved outgoing ref(s).", id, blockers, warnings, unresolved)
 	}
@@ -729,10 +780,19 @@ func preflightPrepareID(typ, name string) string {
 
 func preflightBlockingRef(kind string) bool {
 	switch kind {
-	case "localization", "define", "scope", "global_var", "flag":
+	case "localization", "define", "scope":
 		return false
 	default:
 		return true
+	}
+}
+
+func preflightRuntimeRef(kind string) bool {
+	switch kind {
+	case "flag", "global_var":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -778,6 +838,9 @@ func preflightLocalizationKeys(typ, name string) []string {
 		add(name + ".b")
 		add(name + ".tt")
 	case "decision":
+		add(name + ".t")
+		add(name + ".desc")
+		add(name + ".tt")
 		add(name + "_desc")
 		add(name + "_tooltip")
 		add(name + "_confirm")

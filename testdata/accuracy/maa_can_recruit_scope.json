@@ -1,0 +1,31 @@
+{
+  "name": "men at arms can_recruit catches direct culture-scope triggers",
+  "files": [
+    {
+      "path": "common/men_at_arms_types/test_maa.txt",
+      "content": "bad_maa = {\n\ttype = heavy_infantry\n\tcan_recruit = {\n\t\thas_cultural_parameter = unlock_bad_maa\n\t}\n}\nwrapped_maa = {\n\ttype = heavy_infantry\n\tcan_recruit = {\n\t\tculture = { has_cultural_parameter = unlock_wrapped_maa }\n\t}\n}\nvanilla_style_maa = {\n\ttype = heavy_infantry\n\tcan_recruit = {\n\t\tvalid_for_maa_trigger = { PARAMETER = unlock_maa_vanilla_style }\n\t}\n}\n"
+    }
+  ],
+  "expect_diagnostics": [
+    {
+      "code": "scope_mismatch",
+      "contains": "culture = { ... }"
+    }
+  ],
+  "reject_diagnostics": [
+    {
+      "code": "scope_mismatch",
+      "contains": "wrapped_maa"
+    },
+    {
+      "code": "scope_mismatch",
+      "contains": "vanilla_style_maa"
+    }
+  ],
+  "expect_preflight": [
+    {
+      "id": "bad_maa",
+      "contains": ["can_recruit scope mismatch", "culture = { ... }"]
+    }
+  ]
+}

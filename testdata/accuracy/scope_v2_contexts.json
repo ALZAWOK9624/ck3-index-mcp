@@ -1,0 +1,33 @@
+{
+  "name": "scope v2 preserves nested contexts transitions and event roots",
+  "files": [
+    {
+      "path": "common/decisions/scope_v2.txt",
+      "content": "bad_scope_decision = {\n\tis_shown = {\n\t\tAND = { has_cultural_parameter = unlock_bad_scope }\n\t}\n}\ngood_scope_decision = {\n\tis_shown = {\n\t\tculture = { has_cultural_parameter = unlock_good_scope }\n\t}\n}\n"
+    },
+    {
+      "path": "events/scope_v2.txt",
+      "content": "namespace = scope_v2\nscope_v2.1 = {\n\tscope = culture\n\ttrigger = { has_cultural_parameter = unlock_event_good }\n}\nscope_v2.2 = {\n\ttrigger = { has_cultural_parameter = unlock_event_bad }\n}\n"
+    }
+  ],
+  "expect_diagnostics": [
+    {
+      "code": "scope_mismatch",
+      "contains": "bad_scope_decision"
+    },
+    {
+      "code": "scope_mismatch",
+      "contains": "scope_v2.2"
+    }
+  ],
+  "reject_diagnostics": [
+    {
+      "code": "scope_mismatch",
+      "contains": "good_scope_decision"
+    },
+    {
+      "code": "scope_mismatch",
+      "contains": "scope_v2.1"
+    }
+  ]
+}

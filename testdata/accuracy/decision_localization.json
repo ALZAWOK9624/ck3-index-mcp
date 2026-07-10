@@ -1,0 +1,30 @@
+{
+  "name": "decision localization candidates are found",
+  "files": [
+    {
+      "path": "common/decisions/test_decision_loc.txt",
+      "content": "test_decision_loc = {\n\tdesc = test_decision_loc.desc\n\tis_shown = { always = yes }\n\teffect = { add_prestige = 10 }\n}\n"
+    },
+    {
+      "path": "localization/english/test_decision_loc_l_english.yml",
+      "content": "l_english:\n test_decision_loc.t:0 \"Test Decision\"\n test_decision_loc.desc:0 \"Decision description\"\n"
+    }
+  ],
+  "expect_preflight": [
+    {
+      "id": "test_decision_loc",
+      "counts": {
+        "definitions": 1,
+        "localization": 2,
+        "unresolved_refs": 0
+      },
+      "contains": ["test_decision_loc.desc"]
+    }
+  ],
+  "expect_localization": [
+    {
+      "key": "test_decision_loc.t",
+      "contains": "Test Decision"
+    }
+  ]
+}

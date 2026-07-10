@@ -8,6 +8,7 @@
 
 # Runtime caches and generated indexes
 /cache/
+/.gocache/
 /tmp/
 *.sqlite
 *.sqlite-shm
@@ -27,6 +28,7 @@
 /d_*.txt
 /r_*.txt
 /tools/tmp_err.txt
+/plugin/ck3-index/config/settings.json
 
 # Archives and packaged binaries
 *.zip

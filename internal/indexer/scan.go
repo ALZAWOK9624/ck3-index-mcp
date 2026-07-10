@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,19 +21,33 @@ import (
 )
 
 type ScanStats struct {
-	Database      string         `json:"database"`
-	Files         int            `json:"files"`
-	Nodes         int            `json:"nodes"`
-	Objects       int            `json:"objects"`
-	References    int            `json:"references"`
-	Localization  int            `json:"localization"`
-	Resources     int            `json:"resources"`
-	SchemaFields  int            `json:"schema_fields"`
-	ObjectFields  int            `json:"object_fields"`
-	Diagnostics   int            `json:"diagnostics"`
-	Overridden    int            `json:"overridden"`
-	ElapsedMillis int64          `json:"elapsed_ms"`
-	BySource      map[string]int `json:"by_source"`
+	Database      string           `json:"database"`
+	Files         int              `json:"files"`
+	Nodes         int              `json:"nodes"`
+	Objects       int              `json:"objects"`
+	References    int              `json:"references"`
+	Localization  int              `json:"localization"`
+	Resources     int              `json:"resources"`
+	SchemaFields  int              `json:"schema_fields"`
+	ObjectFields  int              `json:"object_fields"`
+	Diagnostics   int              `json:"diagnostics"`
+	Overridden    int              `json:"overridden"`
+	ElapsedMillis int64            `json:"elapsed_ms"`
+	TimingsMillis map[string]int64 `json:"timings_ms,omitempty"`
+	BySource      map[string]int   `json:"by_source"`
+}
+
+type scanWriter struct {
+	fileStmt   *sql.Stmt
+	objStmt    *sql.Stmt
+	refStmt    *sql.Stmt
+	diagStmt   *sql.Stmt
+	locStmt    *sql.Stmt
+	resStmt    *sql.Stmt
+	schemaStmt *sql.Stmt
+	fieldStmt  *sql.Stmt
+	scopeStmt  *sql.Stmt
+	varStmt    *sql.Stmt
 }
 
 type fileRecord struct {
@@ -47,12 +62,17 @@ type fileRecord struct {
 	Overridden bool
 }
 
+const indexRuleVersion = "2026-07-10-v0.2.1-resource-scope-engine-evidence"
+
 func Scan(ctx context.Context, cfg Config) (ScanStats, error) {
 	return scanWithMode(ctx, cfg, cfg.ForceClean)
 }
 
 func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, error) {
 	start := time.Now()
+	if err := ConfigureEngineRules(cfg.EngineLogs); err != nil {
+		return ScanStats{}, err
+	}
 	dbPath := filepath.Join(filepath.Dir(cfg.ConfigPath), cfg.Database)
 	db, err := Open(dbPath)
 	if err != nil {
@@ -82,8 +102,19 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 		if err := db.ensureSchema(ctx); err != nil {
 			return ScanStats{}, err
 		}
+		version, err := db.metaValue(ctx, "index_rule_version")
+		if err != nil {
+			return ScanStats{}, err
+		}
+		if version != indexRuleVersion {
+			fmt.Fprintf(os.Stderr, "[scan] index rule version changed (%q -> %q), rebuilding sqlite cache\n", version, indexRuleVersion)
+			if err := db.reset(ctx); err != nil {
+				return ScanStats{}, err
+			}
+			forceClean = true
+		}
 	}
-	stats := ScanStats{Database: dbPath, BySource: map[string]int{}}
+	stats := ScanStats{Database: dbPath, BySource: map[string]int{}, TimingsMillis: map[string]int64{}}
 
 	existing := map[string]fileRecord{}
 	if !forceClean {
@@ -102,6 +133,14 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 			existing[rec.Path] = rec
 		}
 		rows.Close()
+		if needsPathCacheRebuild(existing) {
+			fmt.Fprintln(os.Stderr, "[scan] old relative path cache detected, rebuilding sqlite cache")
+			if err := db.reset(ctx); err != nil {
+				return ScanStats{}, err
+			}
+			existing = map[string]fileRecord{}
+			forceClean = true
+		}
 	}
 
 	tx, err := db.sql.BeginTx(ctx, nil)
@@ -121,18 +160,28 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 			continue
 		}
 		_ = filepath.WalkDir(src.Path, func(path string, d os.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
+			if err != nil {
 				return nil
 			}
-			kind := classify(path)
+			rel, relErr := filepath.Rel(src.Path, path)
+			if relErr != nil {
+				return nil
+			}
+			rel = filepath.ToSlash(rel)
+			if d.IsDir() {
+				if shouldPruneSourceDir(rel) {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			kind := classifyRel(rel)
 			if kind == "" {
 				return nil
 			}
-			rel, _ := filepath.Rel(src.Path, path)
 			jobs = append(jobs, fileJob{
 				src:  src,
 				path: path,
-				rel:  filepath.ToSlash(rel),
+				rel:  rel,
 				kind: kind,
 				prev: existing[path],
 			})
@@ -241,6 +290,18 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 		return ScanStats{}, err
 	}
 	defer varStmt.Close()
+	writer := scanWriter{
+		fileStmt:   fileStmt,
+		objStmt:    objStmt,
+		refStmt:    refStmt,
+		diagStmt:   diagStmt,
+		locStmt:    locStmt,
+		resStmt:    resStmt,
+		schemaStmt: schemaStmt,
+		fieldStmt:  fieldStmt,
+		scopeStmt:  scopeStmt,
+		varStmt:    varStmt,
+	}
 
 	for res := range resCh {
 		processed++
@@ -278,84 +339,8 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 				return ScanStats{}, err
 			}
 		}
-		r2, err := fileStmt.ExecContext(ctx, src.Name, src.Rank, res.job.path, res.job.rel, res.job.kind, res.info.ModTime().Unix(), res.sum, 0)
-		if err != nil {
+		if _, err := writeFileResult(ctx, writer, res, &stats, locKeys, resources); err != nil {
 			return ScanStats{}, err
-		}
-		fid, err := r2.LastInsertId()
-		if err != nil {
-			return ScanStats{}, err
-		}
-		rec := fileRecord{ID: fid, SourceName: src.Name, SourceRank: src.Rank, Path: res.job.path, RelPath: res.job.rel, Kind: res.job.kind, MTime: res.info.ModTime().Unix(), SHA: res.sum}
-		switch res.job.kind {
-		case "script":
-			for _, pe := range res.parsed.Errors {
-				if _, err := diagStmt.ExecContext(ctx, "parser", "error", "parse_error", pe.Message, rec.ID, rec.Path, pe.Line, pe.Col); err != nil {
-					return ScanStats{}, err
-				}
-				stats.Diagnostics++
-			}
-			// Context checks now run during the parse pass (checkScriptContext)
-			// so we no longer store the full node tree, saving ~12M rows.
-			for _, d := range res.ctxDiags {
-				if _, err := diagStmt.ExecContext(ctx, "compiler", d.severity, d.code, d.msg, rec.ID, rec.Path, d.line, d.col); err != nil {
-					return ScanStats{}, err
-				}
-				stats.Diagnostics++
-			}
-			for _, s := range res.savedScopes {
-				if _, err := scopeStmt.ExecContext(ctx, rec.ID, s); err != nil {
-					return ScanStats{}, err
-				}
-			}
-			for _, v := range res.variables {
-				if _, err := varStmt.ExecContext(ctx, rec.ID, v); err != nil {
-					return ScanStats{}, err
-				}
-			}
-			objs := extractObjects(rec, res.parsed.Nodes)
-			for _, obj := range objs {
-				if _, err := objStmt.ExecContext(ctx, obj.Type, obj.Name, obj.FileID, obj.NodeID, obj.SourceName, obj.SourceRank, obj.Path, obj.Line, obj.Col); err != nil {
-					return ScanStats{}, err
-				}
-				stats.Objects++
-			}
-			refs := extractRefs(rec, res.parsed.Nodes, objs)
-			for _, ref := range refs {
-				if _, err := refStmt.ExecContext(ctx, ref.FromType, ref.FromName, ref.Kind, ref.Name, ref.FileID, ref.NodeID, ref.Line, ref.Col, ref.Raw, ref.Resolved); err != nil {
-					return ScanStats{}, err
-				}
-				stats.References++
-			}
-			fields := extractObjectFields(rec, res.parsed.Nodes, objs)
-			for _, field := range fields {
-				if _, err := fieldStmt.ExecContext(ctx, field.Type, field.ObjectName, field.Field, field.Shape, field.FileID, field.SourceName, field.SourceRank, field.Path, field.Line, field.Raw); err != nil {
-					return ScanStats{}, err
-				}
-				stats.ObjectFields++
-			}
-		case "localization":
-			for _, e := range res.locs {
-				locKeys[e.key] = true
-				if _, err := locStmt.ExecContext(ctx, e.key, e.lang, e.val, rec.ID, rec.SourceName, rec.SourceRank, rec.Path, e.line, e.replace); err != nil {
-					return ScanStats{}, err
-				}
-				stats.Localization++
-			}
-		case "resource":
-			rp := normalizeResource(rec.RelPath)
-			if _, err := resStmt.ExecContext(ctx, rp, strings.TrimPrefix(strings.ToLower(filepath.Ext(rp)), "."), rec.ID, rec.SourceName, rec.SourceRank, rec.Path); err != nil {
-				return ScanStats{}, err
-			}
-			resources[rp] = true
-			stats.Resources++
-		case "schema":
-			for _, e := range res.schemaEntries {
-				if _, err := schemaStmt.ExecContext(ctx, e.typ, e.field, rec.ID, rec.SourceName, rec.SourceRank, rec.Path, e.line, e.raw); err != nil {
-					return ScanStats{}, err
-				}
-				stats.SchemaFields++
-			}
 		}
 	}
 	fmt.Fprintf(os.Stderr, "[scan] all %d files indexed, finalizing\n", processed)
@@ -374,22 +359,32 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 	// indexes existed yet, which would make the ref resolution and validator
 	// joins grind to a halt. We commit the bulk-insert tx first, build indexes
 	// in a fresh connection, then run finalizers in a new tx.
+	fmt.Fprintln(os.Stderr, "[scan] committing indexed rows")
+	stageStart := time.Now()
 	if err := tx.Commit(); err != nil {
 		return ScanStats{}, err
 	}
+	stats.TimingsMillis["commit_indexed_rows"] = time.Since(stageStart).Milliseconds()
 	if forceClean {
+		fmt.Fprintln(os.Stderr, "[scan] building sqlite indexes")
+		stageStart = time.Now()
 		if err := db.CreateIndexes(ctx); err != nil {
 			return ScanStats{}, err
 		}
+		stats.TimingsMillis["build_indexes"] = time.Since(stageStart).Milliseconds()
+		fmt.Fprintln(os.Stderr, "[scan] sqlite indexes ready")
 	}
+	stageStart = time.Now()
 	tx2, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
 		return ScanStats{}, err
 	}
 	defer tx2.Rollback()
 	tx = tx2
+	stats.TimingsMillis["begin_finalize_tx"] = time.Since(stageStart).Milliseconds()
 
 	fmt.Fprintln(os.Stderr, "[scan] loading active symbol tables")
+	stageStart = time.Now()
 	// Re-resolve refs against the current state of active objects.
 	objectNames, err := loadAllObjectNames(ctx, tx)
 	if err != nil {
@@ -404,22 +399,75 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 	if err := loadAllResources(ctx, tx, resources); err != nil {
 		return ScanStats{}, err
 	}
+	stats.TimingsMillis["load_symbols"] = time.Since(stageStart).Milliseconds()
 	fmt.Fprintln(os.Stderr, "[scan] resolving references")
+	stageStart = time.Now()
 	if err := refreshRefsResolvedGo(ctx, tx, objectNames, locKeys, resources); err != nil {
 		return ScanStats{}, err
 	}
+	stats.TimingsMillis["resolve_refs"] = time.Since(stageStart).Milliseconds()
 
 	// Re-run validator cross-file integrity diagnostics.
 	fmt.Fprintln(os.Stderr, "[scan] writing validation diagnostics")
+	stageStart = time.Now()
 	if _, err := tx.ExecContext(ctx, `DELETE FROM diagnostics WHERE source='validator'`); err != nil {
 		return ScanStats{}, err
 	}
 	if err := addValidationDiagnostics(ctx, tx, locKeys, resources, objectNames); err != nil {
 		return ScanStats{}, err
 	}
+	stats.TimingsMillis["validator"] = time.Since(stageStart).Milliseconds()
+
+	fmt.Fprintln(os.Stderr, "[scan] rebuilding map context cache")
+	stageStart = time.Now()
+	if err := rebuildMapCache(ctx, tx, cfg); err != nil {
+		return ScanStats{}, err
+	}
+	stats.TimingsMillis["map_context"] = time.Since(stageStart).Milliseconds()
+
+	fmt.Fprintln(os.Stderr, "[scan] ingesting engine logs and rebuilding semantic FTS")
+	stageStart = time.Now()
+	if err := rebuildEngineData(ctx, tx, cfg.EngineLogs); err != nil {
+		return ScanStats{}, err
+	}
+	if err := rebuildSearchFTS(ctx, tx); err != nil {
+		return ScanStats{}, err
+	}
+	stats.TimingsMillis["semantic_fts"] = time.Since(stageStart).Milliseconds()
+
+	stageStart = time.Now()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('index_rule_version',?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, indexRuleVersion); err != nil {
+		return ScanStats{}, err
+	}
+	if err := db.RefreshArchitectureOverviewCache(ctx, tx); err != nil {
+		return ScanStats{}, err
+	}
 	stats.Diagnostics = countDiagnostics(ctx, tx)
+	stats.TimingsMillis["count_diagnostics"] = time.Since(stageStart).Milliseconds()
+	stageStart = time.Now()
 	if err := tx.Commit(); err != nil {
 		return ScanStats{}, err
+	}
+	stats.TimingsMillis["commit_finalize"] = time.Since(stageStart).Milliseconds()
+	stageStart = time.Now()
+	var freePages, totalPages int
+	_ = db.sql.QueryRowContext(ctx, `PRAGMA freelist_count`).Scan(&freePages)
+	_ = db.sql.QueryRowContext(ctx, `PRAGMA page_count`).Scan(&totalPages)
+	if totalPages > 0 && freePages*100/totalPages >= 5 {
+		fmt.Fprintf(os.Stderr, "[scan] compacting sqlite cache (%d free pages)\n", freePages)
+		if _, err := db.sql.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+			return ScanStats{}, err
+		}
+		if _, err := db.sql.ExecContext(ctx, `VACUUM`); err != nil {
+			return ScanStats{}, err
+		}
+	}
+	stats.TimingsMillis["compact_cache"] = time.Since(stageStart).Milliseconds()
+	for _, key := range []string{"commit_indexed_rows", "build_indexes", "begin_finalize_tx", "load_symbols", "resolve_refs", "validator", "map_context", "semantic_fts", "count_diagnostics", "commit_finalize", "compact_cache"} {
+		if ms, ok := stats.TimingsMillis[key]; ok {
+			fmt.Fprintf(os.Stderr, "[scan] timing %s=%dms\n", key, ms)
+		}
 	}
 	stats.ElapsedMillis = time.Since(start).Milliseconds()
 	return stats, nil
@@ -440,6 +488,108 @@ func deleteFileRecords(ctx context.Context, tx *sql.Tx, fileID int64) error {
 		return err
 	}
 	return nil
+}
+
+func writeFileResult(ctx context.Context, w scanWriter, res fileResult, stats *ScanStats, locKeys, resources map[string]bool) (fileRecord, error) {
+	src := res.job.src
+	r2, err := w.fileStmt.ExecContext(ctx, src.Name, src.Rank, res.job.path, res.job.rel, res.job.kind, res.info.ModTime().Unix(), res.sum, 0)
+	if err != nil {
+		return fileRecord{}, err
+	}
+	fid, err := r2.LastInsertId()
+	if err != nil {
+		return fileRecord{}, err
+	}
+	rec := fileRecord{ID: fid, SourceName: src.Name, SourceRank: src.Rank, Path: res.job.path, RelPath: res.job.rel, Kind: res.job.kind, MTime: res.info.ModTime().Unix(), SHA: res.sum}
+	switch res.job.kind {
+	case "script":
+		for _, pe := range res.parsed.Errors {
+			if _, err := w.diagStmt.ExecContext(ctx, "parser", "error", "parse_error", pe.Message, rec.ID, rec.Path, pe.Line, pe.Col); err != nil {
+				return fileRecord{}, err
+			}
+			stats.Diagnostics++
+		}
+		// Context checks now run during the parse pass (checkScriptContext)
+		// so we no longer store the full node tree, saving ~12M rows.
+		for _, d := range res.ctxDiags {
+			if _, err := w.diagStmt.ExecContext(ctx, "compiler", d.severity, d.code, d.msg, rec.ID, rec.Path, d.line, d.col); err != nil {
+				return fileRecord{}, err
+			}
+			stats.Diagnostics++
+		}
+		for _, s := range res.savedScopes {
+			if _, err := w.scopeStmt.ExecContext(ctx, rec.ID, s); err != nil {
+				return fileRecord{}, err
+			}
+		}
+		for _, v := range res.variables {
+			if _, err := w.varStmt.ExecContext(ctx, rec.ID, v); err != nil {
+				return fileRecord{}, err
+			}
+		}
+		objs := extractObjects(rec, res.parsed.Nodes)
+		for _, obj := range objs {
+			if _, err := w.objStmt.ExecContext(ctx, obj.Type, obj.Name, obj.FileID, obj.NodeID, obj.SourceName, obj.SourceRank, obj.Path, obj.Line, obj.Col); err != nil {
+				return fileRecord{}, err
+			}
+			stats.Objects++
+		}
+		refs := extractRefs(rec, res.parsed.Nodes, objs)
+		for _, ref := range refs {
+			if _, err := w.refStmt.ExecContext(ctx, ref.FromType, ref.FromName, ref.Kind, ref.Name, ref.FileID, ref.NodeID, ref.Line, ref.Col, ref.Raw, ref.Resolved); err != nil {
+				return fileRecord{}, err
+			}
+			stats.References++
+		}
+		fields := extractObjectFields(rec, res.parsed.Nodes, objs)
+		for _, field := range fields {
+			if _, err := w.fieldStmt.ExecContext(ctx, field.Type, field.ObjectName, field.Field, field.Shape, field.FileID, field.SourceName, field.SourceRank, field.Path, field.Line, field.Raw); err != nil {
+				return fileRecord{}, err
+			}
+			stats.ObjectFields++
+		}
+	case "localization":
+		for _, e := range res.locs {
+			locKeys[e.key] = true
+			if _, err := w.locStmt.ExecContext(ctx, e.key, e.lang, e.val, rec.ID, rec.SourceName, rec.SourceRank, rec.Path, e.line, e.replace); err != nil {
+				return fileRecord{}, err
+			}
+			stats.Localization++
+		}
+	case "resource":
+		rp := normalizeResource(rec.RelPath)
+		if _, err := w.resStmt.ExecContext(ctx, rp, strings.TrimPrefix(strings.ToLower(filepath.Ext(rp)), "."), rec.ID, rec.SourceName, rec.SourceRank, rec.Path); err != nil {
+			return fileRecord{}, err
+		}
+		resources[rp] = true
+		stats.Resources++
+	case "schema":
+		for _, e := range res.schemaEntries {
+			if _, err := w.schemaStmt.ExecContext(ctx, e.typ, e.field, rec.ID, rec.SourceName, rec.SourceRank, rec.Path, e.line, e.raw); err != nil {
+				return fileRecord{}, err
+			}
+			stats.SchemaFields++
+		}
+	}
+	return rec, nil
+}
+
+func needsPathCacheRebuild(existing map[string]fileRecord) bool {
+	if len(existing) == 0 {
+		return false
+	}
+	checked := 0
+	bad := 0
+	for path := range existing {
+		checked++
+		if !filepath.IsAbs(path) {
+			bad++
+		}
+		if checked >= 200 {
+			break
+		}
+	}
+	return checked > 0 && bad*2 >= checked
 }
 
 func loadAllObjectNames(ctx context.Context, tx *sql.Tx) (map[string]bool, error) {
@@ -502,7 +652,7 @@ func loadAllResources(ctx context.Context, tx *sql.Tx, seen map[string]bool) err
 // an SQL EXISTS subquery. This avoids needing the objects index during a
 // clean scan, where indexes are built only after the bulk insert.
 func refreshRefsResolvedGo(ctx context.Context, tx *sql.Tx, objectNames map[string]bool, locKeys map[string]bool, resPaths map[string]bool) error {
-	rows, err := tx.QueryContext(ctx, `SELECT id, ref_kind, ref_name FROM refs`)
+	rows, err := tx.QueryContext(ctx, `SELECT id, ref_kind, ref_name, resolved FROM refs`)
 	if err != nil {
 		return err
 	}
@@ -514,7 +664,8 @@ func refreshRefsResolvedGo(ctx context.Context, tx *sql.Tx, objectNames map[stri
 	for rows.Next() {
 		var id int64
 		var kind, name string
-		if err := rows.Scan(&id, &kind, &name); err != nil {
+		var current int
+		if err := rows.Scan(&id, &kind, &name, &current); err != nil {
 			rows.Close()
 			return err
 		}
@@ -532,14 +683,19 @@ func refreshRefsResolvedGo(ctx context.Context, tx *sql.Tx, objectNames map[stri
 			_, res = scopeTransitionsIn[name]
 		case "define":
 			_, res = tigerDefines[name]
+		case "flag", "global_var":
+			res = true
 		default:
 			res = objectNames[kind+":"+name] || objectNames[name]
+		}
+		if (current != 0) == res {
+			continue
 		}
 		updates = append(updates, rd{id: id, resolved: res})
 	}
 	rows.Close()
 
-	// Batch the updates: group by resolved value and run two range updates.
+	// Batch only changed rows: group by resolved value and run two range updates.
 	if len(updates) == 0 {
 		return nil
 	}
@@ -582,28 +738,68 @@ func batchUpdateResolved(ctx context.Context, tx *sql.Tx, val int, ids []int64) 
 	return nil
 }
 
-func classify(path string) string {
-	ext := strings.ToLower(filepath.Ext(path))
-	p := filepath.ToSlash(strings.ToLower(path))
-	base := strings.ToLower(filepath.Base(path))
+var ck3LoadRoots = map[string]bool{
+	"common":       true,
+	"events":       true,
+	"history":      true,
+	"gui":          true,
+	"localization": true,
+	"gfx":          true,
+	"map_data":     true,
+	"sound":        true,
+}
+
+// shouldPruneSourceDir rejects directories that CK3 will not load from a mod
+// root. This is deliberately based on the source-relative first component:
+// backup/tools/docs folders may themselves contain common/ or history/ trees,
+// but those nested trees are not CK3 load roots and must not enter the index.
+func shouldPruneSourceDir(rel string) bool {
+	p := strings.Trim(filepath.ToSlash(strings.ToLower(rel)), "/")
+	if p == "" || p == "." {
+		return false
+	}
+	parts := strings.Split(p, "/")
+	if len(parts) == 1 {
+		return !ck3LoadRoots[parts[0]]
+	}
+	return strings.HasPrefix(parts[len(parts)-1], ".")
+}
+
+func classifyRel(rel string) string {
+	p := strings.Trim(filepath.ToSlash(strings.ToLower(rel)), "/")
+	if p == "" || p == "." {
+		return ""
+	}
+	parts := strings.Split(p, "/")
+	root := parts[0]
+	if !ck3LoadRoots[root] {
+		return ""
+	}
+	for _, part := range parts {
+		if strings.HasPrefix(part, ".") {
+			return ""
+		}
+	}
+	ext := strings.ToLower(filepath.Ext(p))
+	base := strings.ToLower(filepath.Base(p))
 	if strings.Contains(base, "summary") {
 		return ""
 	}
 	switch ext {
 	case ".info":
-		if strings.Contains(p, "/common/") || strings.Contains(p, "/events/") {
+		if root == "common" || root == "events" {
 			return "schema"
 		}
 	case ".txt", ".gui", ".asset":
-		if strings.Contains(p, "/common/") || strings.Contains(p, "/events/") || strings.Contains(p, "/history/") || strings.Contains(p, "/gui/") {
+		if root == "common" || root == "events" || root == "history" || root == "gui" {
 			return "script"
 		}
 	case ".yml", ".yaml":
-		if strings.Contains(p, "/localization/") {
+		if root == "localization" {
 			return "localization"
 		}
 	case ".dds", ".png", ".tga", ".mesh", ".anim", ".wav", ".ogg":
-		if strings.Contains(p, "/gfx/") || strings.Contains(p, "/map_data/") || strings.Contains(p, "/sound/") {
+		if root == "gfx" || root == "map_data" || root == "sound" {
 			return "resource"
 		}
 	}
@@ -701,68 +897,30 @@ func parseFileWorker(jobs <-chan fileJob, res chan<- fileResult) {
 // blocks and triggers inside effect-like blocks. This replaces the old
 // SQL-based checkContext which required the full nodes table to be stored.
 func checkScriptContext(nodes []*script.Node, relPath string) []ctxDiag {
-	fileScope := fileScopeType(relPath)
 	var out []ctxDiag
-	var walk func(ns []*script.Node, parentKey string)
-	walk = func(ns []*script.Node, parentKey string) {
+	var walk func(ns []*script.Node, currentContext string)
+	walk = func(ns []*script.Node, currentContext string) {
 		for _, n := range ns {
 			k := n.Key
-			ctxKind := ContextFor(parentKey)
-			if ctxKind == "trigger" && IsEffectOnly(k) {
+			if currentContext == "trigger" && IsEffectOnly(k) {
 				out = append(out, ctxDiag{severity: "error", code: "effect_in_trigger",
 					msg:  fmt.Sprintf("effect %q appears inside a trigger-like block", k),
 					line: n.Line, col: n.Col})
 			}
-			if ctxKind == "effect" && IsTriggerOnly(k) {
+			if currentContext == "effect" && IsTriggerOnly(k) {
 				out = append(out, ctxDiag{severity: "warning", code: "trigger_in_effect",
 					msg:  fmt.Sprintf("trigger %q appears inside an effect-like block", k),
 					line: n.Line, col: n.Col})
 			}
-			// Scope check: only for keys inside trigger/effect blocks
-			// (not property assignments in definition bodies).
-			if ctxKind != "" && fileScope != ScopeAllScopes && fileScope != 0 && k != "" {
-				kl := strings.ToLower(k)
-				var needScope TigerScope
-				if ctxKind == "trigger" {
-					needScope, _ = tigerTriggerScopes[kl]
-				} else {
-					needScope, _ = tigerEffectScopes[kl]
-				}
-				if needScope != ScopeAllScopes && needScope != ScopeValue && needScope != 0 && (fileScope&needScope) == 0 {
-					out = append(out, ctxDiag{severity: "warning", code: "scope_mismatch",
-						msg:  fmt.Sprintf("scope mismatch: %q used in %s block but expects scope 0x%x (file scope is 0x%x in %s)", k, ctxKind, needScope, fileScope, relPath),
-						line: n.Line, col: n.Col})
-				}
-			}
-			pk := k
-			if pk == "" {
-				pk = parentKey
-			}
-			walk(n.Children, pk)
+			// Context-only diagnostics are intentionally limited to the direct
+			// contents of a known trigger/effect container. Many CK3 structural
+			// and scope blocks legally contain both conditions and effects; blindly
+			// inheriting through them creates thousands of false positives.
+			childContext := ContextFor(strings.ToLower(k))
+			walk(n.Children, childContext)
 		}
 	}
 	walk(nodes, "")
-	// Cap scope_mismatch to 1 per file.
-	smCount := 0
-	for i := range out {
-		if out[i].code == "scope_mismatch" {
-			smCount++
-		}
-	}
-	if smCount > 1 {
-		filtered := out[:0]
-		keepSM := false
-		for _, d := range out {
-			if d.code != "scope_mismatch" {
-				filtered = append(filtered, d)
-			} else if !keepSM {
-				d.msg = fmt.Sprintf("scope mismatch: %d scope violations in %s", smCount, relPath)
-				filtered = append(filtered, d)
-				keepSM = true
-			}
-		}
-		out = filtered
-	}
 	return out
 }
 
@@ -1038,12 +1196,21 @@ func obj(rec fileRecord, typ, name string, n *script.Node) objectRow {
 }
 
 func extractObjectFields(rec fileRecord, nodes []*script.Node, objs []objectRow) []objectFieldRow {
+	filtered := make([]objectRow, 0, len(objs))
+	for _, obj := range objs {
+		if patternObjectTypes[obj.Type] {
+			filtered = append(filtered, obj)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
 	byID := map[int64]*script.Node{}
 	walk(nodes, func(n *script.Node) {
 		byID[n.ID] = n
 	})
 	var out []objectFieldRow
-	for _, obj := range objs {
+	for _, obj := range filtered {
 		n := byID[obj.NodeID]
 		if n == nil {
 			continue
@@ -1067,6 +1234,35 @@ func extractObjectFields(rec fileRecord, nodes []*script.Node, objs []objectRow)
 		}
 	}
 	return out
+}
+
+var patternObjectTypes = map[string]bool{
+	"event":                 true,
+	"decision":              true,
+	"trait":                 true,
+	"modifier":              true,
+	"opinion_modifier":      true,
+	"scripted_effect":       true,
+	"scripted_trigger":      true,
+	"script_value":          true,
+	"character_interaction": true,
+	"scheme_type":           true,
+	"building":              true,
+	"government":            true,
+	"law":                   true,
+	"religion":              true,
+	"faith":                 true,
+	"holy_site":             true,
+	"culture":               true,
+	"culture_tradition":     true,
+	"culture_pillar":        true,
+	"innovation":            true,
+	"name_list":             true,
+	"men_at_arms_type":      true,
+	"casus_belli_type":      true,
+	"on_action":             true,
+	"scripted_gui":          true,
+	"gui":                   true,
 }
 
 var numericValue = regexp.MustCompile(`^-?[0-9]+(\.[0-9]+)?$`)
@@ -1123,6 +1319,37 @@ func fieldRaw(n *script.Node) string {
 }
 
 func objectTypeForPath(rel string) string {
+	rel = filepath.ToSlash(rel)
+	lowerRel := strings.ToLower(rel)
+	// Culture content has several independent CK3 object namespaces. Treating
+	// every file below common/culture as a generic culture hid tradition/pillar
+	// dependencies and made type-scoped queries misleading.
+	switch {
+	case strings.Contains(lowerRel, "common/culture/cultures/"):
+		return "culture"
+	case strings.Contains(lowerRel, "common/culture/traditions/"):
+		return "culture_tradition"
+	case strings.Contains(lowerRel, "common/culture/innovations/"):
+		return "innovation"
+	case strings.Contains(lowerRel, "common/culture/pillars/"):
+		return "culture_pillar"
+	case strings.Contains(lowerRel, "common/culture/name_lists/"):
+		return "name_list"
+	case strings.Contains(lowerRel, "common/culture/eras/"):
+		return "culture_era"
+	case strings.Contains(lowerRel, "common/culture/aesthetics_bundles/"):
+		return "culture_aesthetics_bundle"
+	case strings.Contains(lowerRel, "common/culture/creation_names/"):
+		return "culture_creation_name"
+	case strings.Contains(lowerRel, "common/culture/name_equivalency/"):
+		return "culture_name_equivalency"
+	}
+	if strings.Contains(lowerRel, "common/religion/holy_sites/") {
+		return "holy_site"
+	}
+	if strings.Contains(lowerRel, "common/religion/religions/") {
+		return "religion"
+	}
 	commonDir := commonObjectType(rel)
 	if commonDir != "" {
 		switch commonDir {
@@ -1282,6 +1509,13 @@ var keyRefTypes = map[string]string{
 
 func extractRefs(rec fileRecord, nodes []*script.Node, objs []objectRow) []refRow {
 	var out []refRow
+	nodesByID := map[int64]*script.Node{}
+	walk(nodes, func(n *script.Node) {
+		nodesByID[n.ID] = n
+	})
+	isCultureTraditionFile := isCultureTraditionsPath(rec.RelPath)
+	isCultureDefinitionFile := isCultureCulturesPath(rec.RelPath)
+	isReligionFile := isReligionRelPath(rec.RelPath)
 	walk(nodes, func(n *script.Node) {
 		current := ownerForLine(objs, n.Line)
 		raws := []string{n.Value}
@@ -1301,9 +1535,32 @@ func extractRefs(rec fileRecord, nodes []*script.Node, objs []objectRow) []refRo
 		if strings.HasPrefix(n.Value, "@") && len(n.Value) > 2 {
 			out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: "define", Name: n.Value, Raw: n.Value, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
 		}
+		if isReligionFile {
+			if refs := religionSpecificRefs(rec, n, current); len(refs) > 0 {
+				out = append(out, refs...)
+			}
+			if isReligionCustomFaithIconValue(n, nodesByID) {
+				return
+			}
+			if isReligionFaithIconField(n, current) && n.Value != "" && !strings.Contains(n.Value, "gfx/") && !resourceExt.MatchString(n.Value) {
+				return
+			}
+		}
+		if isCultureDefinitionFile {
+			out = append(out, cultureDefinitionRefs(rec, n, current, nodesByID)...)
+		}
 		for _, raw := range raws {
 			if raw == "" {
 				continue
+			}
+			if isCultureTraditionFile {
+				if path, ok := cultureTraditionLayerResource(n, nodesByID, raw); ok {
+					out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: "resource", Name: path, Raw: raw, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
+					continue
+				}
+				if isCultureTraditionLayerValue(n, nodesByID) {
+					continue
+				}
 			}
 			if p, name, ok := strings.Cut(raw, ":"); ok {
 				if kind, yes := prefixTypes[p]; yes {
@@ -1344,6 +1601,181 @@ func extractRefs(rec fileRecord, nodes []*script.Node, objs []objectRow) []refRo
 		}
 	})
 	return out
+}
+
+func isReligionRelPath(rel string) bool {
+	p := filepath.ToSlash(strings.ToLower(rel))
+	return strings.Contains(p, "common/religion/")
+}
+
+func religionSpecificRefs(rec fileRecord, n *script.Node, current objectRow) []refRow {
+	var out []refRow
+	if current.Type == "faith" {
+		switch n.Key {
+		case "holy_site":
+			if cleanReferenceValue(n.Value) != "" {
+				out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: "holy_site", Name: cleanReferenceValue(n.Value), Raw: n.Value, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
+			}
+		case "icon", "reformed_icon":
+			if raw := cleanReferenceValue(n.Value); raw != "" {
+				out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: "resource", Name: faithIconResource(raw), Raw: n.Value, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
+			}
+		}
+	}
+	if current.Type == "religion" && n.Kind == "block" && n.Key == "custom_faith_icons" {
+		for _, child := range n.Children {
+			raw := cleanReferenceValue(nodeReferenceValue(child))
+			if raw == "" {
+				continue
+			}
+			out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: "resource", Name: faithIconResource(raw), Raw: raw, FileID: rec.ID, NodeID: child.ID, Line: child.Line, Col: child.Col})
+		}
+	}
+	if current.Type == "holy_site" {
+		switch n.Key {
+		case "county", "barony":
+			if raw := cleanReferenceValue(n.Value); raw != "" {
+				out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: "title", Name: raw, Raw: n.Value, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
+			}
+		}
+	}
+	return out
+}
+
+func nodeReferenceValue(n *script.Node) string {
+	if n == nil {
+		return ""
+	}
+	if n.Value != "" {
+		return n.Value
+	}
+	return n.Key
+}
+
+func cleanReferenceValue(raw string) string {
+	raw = strings.TrimSpace(strings.Trim(raw, `"`))
+	if raw == "" || raw == "yes" || raw == "no" || strings.Contains(raw, "$") || strings.Contains(raw, " ") {
+		return ""
+	}
+	return raw
+}
+
+func faithIconResource(raw string) string {
+	raw = strings.Trim(raw, `"`)
+	if strings.Contains(raw, "gfx/") || resourceExt.MatchString(raw) {
+		return normalizeResource(raw)
+	}
+	return normalizeResource("gfx/interface/icons/faith/" + raw + ".dds")
+}
+
+func isReligionFaithIconField(n *script.Node, current objectRow) bool {
+	return current.Type == "faith" && (n.Key == "icon" || n.Key == "reformed_icon")
+}
+
+func isReligionCustomFaithIconValue(n *script.Node, nodesByID map[int64]*script.Node) bool {
+	if n == nil {
+		return false
+	}
+	parent := nodesByID[n.Parent]
+	return parent != nil && parent.Kind == "block" && parent.Key == "custom_faith_icons"
+}
+
+var cultureTraditionLayerPaths = map[int]string{
+	0: "gfx/interface/icons/culture_tradition/0-background",
+	1: "gfx/interface/icons/culture_tradition/1-pattern",
+	2: "gfx/interface/icons/culture_tradition/2-support",
+	3: "gfx/interface/icons/culture_tradition/3-stroke",
+	4: "gfx/interface/icons/culture_tradition/4-items",
+}
+
+func isCultureTraditionsPath(rel string) bool {
+	p := filepath.ToSlash(strings.ToLower(rel))
+	return strings.Contains(p, "common/culture/traditions/")
+}
+
+func isCultureCulturesPath(rel string) bool {
+	p := filepath.ToSlash(strings.ToLower(rel))
+	return strings.Contains(p, "common/culture/cultures/")
+}
+
+func cultureDefinitionRefs(rec fileRecord, n *script.Node, current objectRow, nodesByID map[int64]*script.Node) []refRow {
+	if current.Type != "culture" || n == nil {
+		return nil
+	}
+	add := func(kind, raw string) []refRow {
+		name := cleanReferenceValue(raw)
+		if name == "" {
+			return nil
+		}
+		return []refRow{{
+			FromType: current.Type,
+			FromName: current.Name,
+			Kind:     kind,
+			Name:     name,
+			Raw:      raw,
+			FileID:   rec.ID,
+			NodeID:   n.ID,
+			Line:     n.Line,
+			Col:      n.Col,
+		}}
+	}
+	if n.Kind == "atom" {
+		switch n.Key {
+		case "ethos", "heritage", "language", "martial_custom", "head_determination":
+			return add("culture_pillar", n.Value)
+		case "name_list":
+			return add("name_list", n.Value)
+		case "parent":
+			return add("culture", n.Value)
+		}
+	}
+	if n.Kind != "bare" {
+		return nil
+	}
+	parent := nodesByID[n.Parent]
+	if parent == nil || parent.Kind != "block" {
+		return nil
+	}
+	switch parent.Key {
+	case "traditions":
+		return add("culture_tradition", n.Key)
+	case "parents":
+		return add("culture", n.Key)
+	}
+	return nil
+}
+
+func cultureTraditionLayerResource(n *script.Node, nodesByID map[int64]*script.Node, raw string) (string, bool) {
+	if !isCultureTraditionLayerValue(n, nodesByID) {
+		return "", false
+	}
+	value := strings.Trim(raw, `"`)
+	if value == "" || !resourceExt.MatchString(value) {
+		return "", false
+	}
+	if strings.Contains(value, "gfx/") {
+		return normalizeResource(value), true
+	}
+	idx, err := strconv.Atoi(n.Key)
+	if err != nil {
+		return "", false
+	}
+	base, ok := cultureTraditionLayerPaths[idx]
+	if !ok {
+		return "", false
+	}
+	return normalizeResource(base + "/" + value), true
+}
+
+func isCultureTraditionLayerValue(n *script.Node, nodesByID map[int64]*script.Node) bool {
+	if n == nil || n.Kind != "atom" {
+		return false
+	}
+	if _, err := strconv.Atoi(n.Key); err != nil {
+		return false
+	}
+	parent := nodesByID[n.Parent]
+	return parent != nil && parent.Kind == "block" && parent.Key == "layers"
 }
 
 func ownerForLine(objs []objectRow, line int) objectRow {
@@ -1462,7 +1894,8 @@ func addValidationDiagnostics(ctx context.Context, tx *sql.Tx, locSeen, resSeen,
 			}
 		case "resource":
 			if !resSeen[name] {
-				insertDiag(ctx, tx, "validator", "warning", "missing_resource", fmt.Sprintf("resource %q was referenced but not indexed", name), fileID, path, line, col)
+				code, severity := resourceDiagnostic(name)
+				insertDiag(ctx, tx, "validator", severity, code, fmt.Sprintf("resource %q was referenced but not indexed", name), fileID, path, line, col)
 			}
 		case "sound":
 			if !IsSound(name) {

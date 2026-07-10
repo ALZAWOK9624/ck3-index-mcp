@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "ck3_index": {
+      "command": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "./scripts/start-ck3-index.ps1"],
+      "cwd": ".",
+      "startup_timeout_sec": 60
+    }
+  }
+}

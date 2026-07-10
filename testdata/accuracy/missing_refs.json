@@ -1,0 +1,32 @@
+{
+  "name": "missing object localization and resource refs produce diagnostics",
+  "files": [
+    {
+      "path": "common/decisions/test_missing_refs.txt",
+      "content": "test_missing_refs_decision = {\n\tpicture = \"gfx/interface/illustrations/decisions/missing_accuracy_icon.dds\"\n\tdesc = test_missing_refs_decision.desc\n\tis_shown = { holder = title:k_missing_accuracy_title }\n\teffect = { add_prestige = 10 }\n}\n"
+    }
+  ],
+  "expect_diagnostics": [
+    {
+      "code": "missing_localization",
+      "contains": "test_missing_refs_decision.desc"
+    },
+    {
+      "code": "missing_resource",
+      "contains": "missing_accuracy_icon.dds"
+    },
+    {
+      "code": "missing_object_reference",
+      "contains": "k_missing_accuracy_title"
+    }
+  ],
+  "expect_preflight": [
+    {
+      "id": "test_missing_refs_decision",
+      "counts": {
+        "blocking_risks": 2,
+        "unresolved_refs": 3
+      }
+    }
+  ]
+}

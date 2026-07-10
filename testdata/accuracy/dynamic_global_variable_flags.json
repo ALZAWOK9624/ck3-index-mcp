@@ -1,0 +1,28 @@
+{
+  "name": "global variable list flags are treated as dynamic flags",
+  "files": [
+    {
+      "path": "common/decisions/test_dynamic_flags.txt",
+      "content": "test_dynamic_flags_decision = {\n\tdesc = test_dynamic_flags_decision.desc\n\tis_shown = {\n\t\tis_target_in_global_variable_list = { name = test_victory_flags target = flag:test_dynamic_victory }\n\t}\n\teffect = {\n\t\tadd_to_global_variable_list = { name = test_victory_flags target = flag:test_dynamic_victory }\n\t}\n}\n"
+    },
+    {
+      "path": "localization/english/test_dynamic_flags_l_english.yml",
+      "content": "l_english:\n test_dynamic_flags_decision.desc:0 \"Dynamic flag desc\"\n"
+    }
+  ],
+  "expect_refs": [
+    {
+      "id": "test_dynamic_flags_decision",
+      "direction": "outgoing",
+      "kind": "flag",
+      "name": "test_dynamic_victory",
+      "resolved": true
+    }
+  ],
+  "reject_diagnostics": [
+    {
+      "code": "missing_object_reference",
+      "contains": "test_dynamic_victory"
+    }
+  ]
+}

@@ -16,6 +16,7 @@ var defaultConfigText string
 type Config struct {
 	ConfigPath string
 	Database   string
+	EngineLogs string
 	Sources    []Source
 	ForceClean bool
 }
@@ -34,12 +35,16 @@ func WriteDefaultConfig(path string) error {
 }
 
 func LoadConfig(path string) (Config, error) {
-	f, err := os.Open(path)
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return Config{}, err
+	}
+	f, err := os.Open(absPath)
 	if err != nil {
 		return Config{}, err
 	}
 	defer f.Close()
-	cfg := Config{ConfigPath: path, Database: "cache/ck3_index.sqlite"}
+	cfg := Config{ConfigPath: absPath, Database: "cache/ck3_index.sqlite"}
 	var cur *Source
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
@@ -61,6 +66,8 @@ func LoadConfig(path string) (Config, error) {
 		if cur == nil {
 			if key == "database" {
 				cfg.Database = filepath.FromSlash(val)
+			} else if key == "engine_logs" {
+				cfg.EngineLogs = resolveConfigPath(filepath.Dir(absPath), val)
 			}
 			continue
 		}
@@ -68,7 +75,7 @@ func LoadConfig(path string) (Config, error) {
 		case "name":
 			cur.Name = val
 		case "path":
-			cur.Path = resolveConfigPath(filepath.Dir(path), val)
+			cur.Path = resolveConfigPath(filepath.Dir(absPath), val)
 		case "rank":
 			n, _ := strconv.Atoi(val)
 			cur.Rank = n

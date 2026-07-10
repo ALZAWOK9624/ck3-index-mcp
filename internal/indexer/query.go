@@ -3,6 +3,7 @@ package indexer
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 	"strings"
 )
 
@@ -49,10 +50,20 @@ type ObjectDef struct {
 
 func (db *DB) QueryObject(ctx context.Context, id string) (ObjectQuery, error) {
 	q := ObjectQuery{Query: id}
-	rows, err := db.sql.QueryContext(ctx, `SELECT o.object_type,o.name,o.source_name,o.source_rank,o.path,o.line,o.col
+	typ, name, typed := splitTypedID(id)
+	sqlText := `SELECT o.object_type,o.name,o.source_name,o.source_rank,o.path,o.line,o.col
 		FROM objects o JOIN files f ON f.id=o.file_id
-		WHERE (o.name=? OR o.object_type || ':' || o.name=?) AND f.overridden=0
-		ORDER BY o.object_type,o.name,o.source_rank`, id, id)
+		WHERE o.name=? AND f.overridden=0
+		ORDER BY o.object_type,o.name,o.source_rank`
+	args := []any{id}
+	if typed {
+		sqlText = `SELECT o.object_type,o.name,o.source_name,o.source_rank,o.path,o.line,o.col
+			FROM objects o JOIN files f ON f.id=o.file_id
+			WHERE o.object_type=? AND o.name=? AND f.overridden=0
+			ORDER BY o.object_type,o.name,o.source_rank`
+		args = []any{typ, name}
+	}
+	rows, err := db.sql.QueryContext(ctx, sqlText, args...)
 	if err != nil {
 		return q, err
 	}
@@ -73,9 +84,13 @@ func (db *DB) QueryObject(ctx context.Context, id string) (ObjectQuery, error) {
 }
 
 type RefQuery struct {
-	Query    string   `json:"query"`
-	Incoming []RefHit `json:"incoming"`
-	Outgoing []RefHit `json:"outgoing"`
+	Query             string   `json:"query"`
+	Incoming          []RefHit `json:"incoming"`
+	Outgoing          []RefHit `json:"outgoing"`
+	IncomingTotal     int      `json:"incoming_total"`
+	OutgoingTotal     int      `json:"outgoing_total"`
+	IncomingTruncated bool     `json:"incoming_truncated,omitempty"`
+	OutgoingTruncated bool     `json:"outgoing_truncated,omitempty"`
 }
 
 type RefHit struct {
@@ -93,11 +108,23 @@ type RefHit struct {
 
 func (db *DB) QueryRefs(ctx context.Context, id string) (RefQuery, error) {
 	q := RefQuery{Query: id}
-	in, err := db.sql.QueryContext(ctx, `SELECT r.from_object_type,r.from_object_name,r.ref_kind,r.ref_name,r.raw,r.resolved,f.source_name,f.path,r.line,r.col
+	typ, name, typed := splitTypedID(id)
+	inWhere := "r.ref_name=?"
+	inArgs := []any{id}
+	if typed {
+		inWhere = "r.ref_kind=? AND r.ref_name=?"
+		inArgs = []any{typ, name}
+	}
+	if err := db.sql.QueryRowContext(ctx, `SELECT COUNT(*)
 		FROM refs r JOIN files f ON f.id=r.file_id
-		WHERE (r.ref_name=? OR r.ref_kind || ':' || r.ref_name=?)
-		AND f.overridden=0
-		ORDER BY f.source_rank,f.path,r.line LIMIT 500`, id, id)
+		WHERE `+inWhere+` AND f.overridden=0`, inArgs...).Scan(&q.IncomingTotal); err != nil {
+		return q, err
+	}
+	inSQL := `SELECT r.from_object_type,r.from_object_name,r.ref_kind,r.ref_name,r.raw,r.resolved,f.source_name,f.path,r.line,r.col
+		FROM refs r JOIN files f ON f.id=r.file_id
+		WHERE ` + inWhere + ` AND f.overridden=0
+		ORDER BY f.source_rank,f.path,r.line LIMIT 500`
+	in, err := db.sql.QueryContext(ctx, inSQL, inArgs...)
 	if err != nil {
 		return q, err
 	}
@@ -112,11 +139,23 @@ func (db *DB) QueryRefs(ctx context.Context, id string) (RefQuery, error) {
 	if err := in.Err(); err != nil {
 		return q, err
 	}
-	out, err := db.sql.QueryContext(ctx, `SELECT r.from_object_type,r.from_object_name,r.ref_kind,r.ref_name,r.raw,r.resolved,f.source_name,f.path,r.line,r.col
+	q.IncomingTruncated = q.IncomingTotal > len(q.Incoming)
+	outWhere := "r.from_object_name=?"
+	outArgs := []any{id}
+	if typed {
+		outWhere = "r.from_object_type=? AND r.from_object_name=?"
+		outArgs = []any{typ, name}
+	}
+	if err := db.sql.QueryRowContext(ctx, `SELECT COUNT(*)
 		FROM refs r JOIN files f ON f.id=r.file_id
-		WHERE (r.from_object_name=? OR r.from_object_type || ':' || r.from_object_name=?)
-		AND f.overridden=0
-		ORDER BY f.source_rank,f.path,r.line LIMIT 500`, id, id)
+		WHERE `+outWhere+` AND f.overridden=0`, outArgs...).Scan(&q.OutgoingTotal); err != nil {
+		return q, err
+	}
+	outSQL := `SELECT r.from_object_type,r.from_object_name,r.ref_kind,r.ref_name,r.raw,r.resolved,f.source_name,f.path,r.line,r.col
+		FROM refs r JOIN files f ON f.id=r.file_id
+		WHERE ` + outWhere + ` AND f.overridden=0
+		ORDER BY f.source_rank,f.path,r.line LIMIT 500`
+	out, err := db.sql.QueryContext(ctx, outSQL, outArgs...)
 	if err != nil {
 		return q, err
 	}
@@ -128,7 +167,11 @@ func (db *DB) QueryRefs(ctx context.Context, id string) (RefQuery, error) {
 		}
 		q.Outgoing = append(q.Outgoing, h)
 	}
-	return q, out.Err()
+	if err := out.Err(); err != nil {
+		return q, err
+	}
+	q.OutgoingTruncated = q.OutgoingTotal > len(q.Outgoing)
+	return q, nil
 }
 
 func scanRef(rows *sql.Rows) (RefHit, error) {
@@ -187,6 +230,7 @@ type ResourceQuery struct {
 	Query      string        `json:"query"`
 	Resources  []ResourceHit `json:"resources"`
 	References []RefHit      `json:"references"`
+	Partial    bool          `json:"partial_match,omitempty"`
 }
 
 type ResourceHit struct {
@@ -199,31 +243,73 @@ type ResourceHit struct {
 
 func (db *DB) QueryResource(ctx context.Context, id string) (ResourceQuery, error) {
 	q := ResourceQuery{Query: id}
-	needle := "%" + strings.ReplaceAll(filepathSlash(id), "*", "%") + "%"
+	resID := normalizeResource(filepathSlash(id))
+	base := filepath.Base(resID)
 	rows, err := db.sql.QueryContext(ctx, `SELECT r.resource_path,r.kind,r.source_name,r.source_rank,r.path
 		FROM resources r JOIN files f ON f.id=r.file_id
-		WHERE r.resource_path LIKE ? AND f.overridden=0
-		ORDER BY r.source_rank,r.path LIMIT 200`, needle)
+		WHERE r.resource_path=? AND f.overridden=0
+		ORDER BY r.source_rank,r.path LIMIT 200`, resID)
 	if err != nil {
 		return q, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var h ResourceHit
-		if err := rows.Scan(&h.ResourcePath, &h.Kind, &h.Source, &h.Rank, &h.Path); err != nil {
+	if err := scanResourceRows(rows, &q); err != nil {
+		return q, err
+	}
+	if len(q.Resources) == 0 && base != "" && base != "." && base != "/" && base != resID {
+		rows, err = db.sql.QueryContext(ctx, `SELECT r.resource_path,r.kind,r.source_name,r.source_rank,r.path
+			FROM resources r JOIN files f ON f.id=r.file_id
+			WHERE r.resource_path=? AND f.overridden=0
+			ORDER BY r.source_rank,r.path LIMIT 200`, base)
+		if err != nil {
 			return q, err
 		}
-		q.Resources = append(q.Resources, h)
+		if err := scanResourceRows(rows, &q); err != nil {
+			return q, err
+		}
+	}
+	if len(q.Resources) == 0 {
+		needle := "%" + strings.ReplaceAll(resID, "*", "%") + "%"
+		rows, err = db.sql.QueryContext(ctx, `SELECT r.resource_path,r.kind,r.source_name,r.source_rank,r.path
+			FROM resources r JOIN files f ON f.id=r.file_id
+			WHERE r.resource_path LIKE ? AND f.overridden=0
+			ORDER BY r.source_rank,r.path LIMIT 50`, needle)
+		if err != nil {
+			return q, err
+		}
+		q.Partial = true
+		if err := scanResourceRows(rows, &q); err != nil {
+			return q, err
+		}
 	}
 	refs, err := db.QueryRefs(ctx, id)
 	if err == nil {
 		q.References = refs.Incoming
 	}
-	return q, rows.Err()
+	return q, nil
+}
+
+func scanResourceRows(rows *sql.Rows, q *ResourceQuery) error {
+	defer rows.Close()
+	for rows.Next() {
+		var h ResourceHit
+		if err := rows.Scan(&h.ResourcePath, &h.Kind, &h.Source, &h.Rank, &h.Path); err != nil {
+			return err
+		}
+		q.Resources = append(q.Resources, h)
+	}
+	return rows.Err()
 }
 
 func filepathSlash(s string) string {
 	return strings.ReplaceAll(s, "\\", "/")
+}
+
+func splitTypedID(id string) (string, string, bool) {
+	typ, name, ok := strings.Cut(id, ":")
+	if !ok || typ == "" || name == "" || strings.Contains(name, ":") {
+		return "", id, false
+	}
+	return typ, name, true
 }
 
 type ValidationReport struct {
@@ -232,13 +318,19 @@ type ValidationReport struct {
 }
 
 type Diagnostic struct {
-	Source   string `json:"source"`
-	Severity string `json:"severity"`
-	Code     string `json:"code"`
-	Message  string `json:"message"`
-	Path     string `json:"path,omitempty"`
-	Line     int    `json:"line,omitempty"`
-	Column   int    `json:"column,omitempty"`
+	Source      string `json:"source"`
+	Severity    string `json:"severity"`
+	Code        string `json:"code"`
+	Message     string `json:"message"`
+	Path        string `json:"path,omitempty"`
+	Line        int    `json:"line,omitempty"`
+	Column      int    `json:"column,omitempty"`
+	Suggestion  string `json:"suggestion,omitempty"`
+	RuleSource  string `json:"rule_source,omitempty"`
+	SourceLayer string `json:"source_layer,omitempty"`
+	Confidence  string `json:"confidence"`
+	Fingerprint string `json:"fingerprint"`
+	Occurrences int    `json:"occurrences"`
 }
 
 func (db *DB) Validate(ctx context.Context) (ValidationReport, error) {
@@ -249,8 +341,19 @@ func (db *DB) Validate(ctx context.Context) (ValidationReport, error) {
 }
 
 func (db *DB) CachedValidation(ctx context.Context) (ValidationReport, error) {
+	return db.cachedValidation(ctx, "")
+}
+
+func (db *DB) CachedValidationForSource(ctx context.Context, source string) (ValidationReport, error) {
+	return db.cachedValidation(ctx, source)
+}
+
+func (db *DB) cachedValidation(ctx context.Context, source string) (ValidationReport, error) {
 	rep := ValidationReport{Counts: map[string]int{}}
-	countRows, err := db.sql.QueryContext(ctx, `SELECT severity,COUNT(*) FROM diagnostics GROUP BY severity`)
+	countRows, err := db.sql.QueryContext(ctx, `SELECT d.severity,COUNT(*)
+		FROM diagnostics d LEFT JOIN files f ON f.id=d.file_id
+		WHERE (?='' OR f.source_name=? OR d.file_id IS NULL)
+		GROUP BY d.severity`, source, source)
 	if err != nil {
 		return rep, err
 	}
@@ -266,18 +369,34 @@ func (db *DB) CachedValidation(ctx context.Context) (ValidationReport, error) {
 	if err := countRows.Close(); err != nil {
 		return rep, err
 	}
-	rows, err := db.sql.QueryContext(ctx, `SELECT source,severity,code,message,COALESCE(path,''),COALESCE(line,0),COALESCE(col,0)
-		FROM diagnostics ORDER BY CASE severity WHEN 'error' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, path,line LIMIT 2000`)
+	rows, err := db.sql.QueryContext(ctx, `SELECT d.source,d.severity,d.code,d.message,COALESCE(d.path,''),COALESCE(d.line,0),COALESCE(d.col,0),COALESCE(f.source_name,d.source_layer,''),d.confidence,d.fingerprint,d.occurrences
+		FROM diagnostics d LEFT JOIN files f ON f.id=d.file_id
+		WHERE (?='' OR f.source_name=? OR d.file_id IS NULL)
+		ORDER BY d.path,d.line LIMIT 10000`, source, source)
 	if err != nil {
 		return rep, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var d Diagnostic
-		if err := rows.Scan(&d.Source, &d.Severity, &d.Code, &d.Message, &d.Path, &d.Line, &d.Column); err != nil {
+		if err := rows.Scan(&d.Source, &d.Severity, &d.Code, &d.Message, &d.Path, &d.Line, &d.Column, &d.SourceLayer, &d.Confidence, &d.Fingerprint, &d.Occurrences); err != nil {
 			return rep, err
+		}
+		d.Suggestion, d.RuleSource = diagnosticHint(d.Code, d.Message)
+		if d.Confidence == "medium" {
+			d.Confidence = diagnosticConfidence(d.Code, d.Severity)
+		}
+		if d.Fingerprint == "" {
+			d.Fingerprint = diagnosticFingerprint(d)
+		}
+		if d.Occurrences < 1 {
+			d.Occurrences = 1
 		}
 		rep.Diagnostics = append(rep.Diagnostics, d)
 	}
-	return rep, rows.Err()
+	if err := rows.Err(); err != nil {
+		return rep, err
+	}
+	rep.Diagnostics = aggregateDiagnostics(rep.Diagnostics)
+	return rep, nil
 }

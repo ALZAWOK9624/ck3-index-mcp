@@ -163,9 +163,14 @@ func (db *DB) checkContext(ctx context.Context) error {
 // Exported so the parse worker can run the same check directly on the AST.
 func ContextFor(parent string) string {
 	switch parent {
-	case "trigger", "limit", "possible", "allow", "is_shown", "can_use", "show_if", "trigger_if":
+	case "trigger", "limit", "possible", "allow", "potential", "is_shown", "can_use", "show_if",
+		"trigger_if", "trigger_else_if", "trigger_else", "major_trigger", "can_create", "can_recruit",
+		"can_build", "can_construct", "can_send", "can_receive", "can_be_picked", "is_valid",
+		"is_valid_target", "is_valid_showing_failures_only", "valid_for_maa_trigger":
 		return "trigger"
-	case "effect", "immediate", "hidden_effect", "after", "on_accept", "on_decline", "option", "ai_chance":
+	case "effect", "immediate", "hidden_effect", "after", "on_accept", "on_decline", "option",
+		"on_add", "on_remove", "on_success", "on_failure", "on_send", "on_execute", "on_trigger_fail",
+		"if", "else_if", "else":
 		return "effect"
 	}
 	return ""

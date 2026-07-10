@@ -182,6 +182,15 @@ func (l *Lexer) advance() {
 	}
 	r := l.input[l.pos]
 	l.pos++
+	// Treat Windows CRLF as one newline. The old implementation advanced the
+	// line counter for both runes, so every CRLF shifted all following source
+	// locations by an extra line.
+	if r == '\r' && l.pos < len(l.input) && l.input[l.pos] == '\n' {
+		l.pos++
+		l.line++
+		l.col = 1
+		return
+	}
 	if r == '\n' {
 		l.line++
 		l.col = 1

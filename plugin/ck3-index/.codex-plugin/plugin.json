@@ -1,0 +1,17 @@
+{
+  "name": "ck3-index",
+  "version": "0.2.1",
+  "description": "Semantic CK3 and Godherja index with FTS5 search, aggregated diagnostics, engine evidence, and coarse map context.",
+  "author": {"name": "ALZAWOK"},
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "CK3 Index",
+    "shortDescription": "Inspect and review CK3 mod code semantically.",
+    "longDescription": "Adds all 36 ck3-index tools: semantic FTS5 search, inspection, review, references, aggregated diagnostics, engine datatypes and Scope evidence, localization/resources, and coarse map context.",
+    "developerName": "ALZAWOK",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Use CK3 Index as the primary source of truth. Start with ck3_search, ck3_inspect, or ck3_review; use raw text search only for exact evidence paths."
+  },
+  "mcpServers": "./.mcp.json"
+}

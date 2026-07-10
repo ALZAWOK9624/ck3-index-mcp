@@ -1,0 +1,42 @@
+{
+  "name": "culture definitions resolve pillars traditions name lists and parents",
+  "files": [
+    {
+      "path": "common/culture/pillars/test_pillars.txt",
+      "content": "ethos_test = {}\nheritage_test = {}\nlanguage_test = {}\nmartial_custom_test = {}\nhead_determination_test = {}\n"
+    },
+    {
+      "path": "common/culture/traditions/test_traditions.txt",
+      "content": "tradition_test = {}\n"
+    },
+    {
+      "path": "common/culture/name_lists/test_names.txt",
+      "content": "name_list_test = {}\n"
+    },
+    {
+      "path": "common/culture/cultures/test_cultures.txt",
+      "content": "parent_culture = { ethos = ethos_test heritage = heritage_test language = language_test martial_custom = martial_custom_test head_determination = head_determination_test traditions = { tradition_test } name_list = name_list_test }\ngood_culture = { parent = parent_culture ethos = ethos_test heritage = heritage_test language = language_test martial_custom = martial_custom_test head_determination = head_determination_test traditions = { tradition_test } name_list = name_list_test }\nbroken_culture = { ethos = ethos_missing heritage = heritage_missing language = language_missing martial_custom = martial_custom_missing head_determination = head_determination_missing traditions = { tradition_missing } name_list = name_list_missing parents = { parent_missing } }\n"
+    }
+  ],
+  "expect_refs": [
+    { "id": "culture:good_culture", "direction": "outgoing", "kind": "culture", "name": "parent_culture", "resolved": true },
+    { "id": "culture:good_culture", "direction": "outgoing", "kind": "culture_pillar", "name": "heritage_test", "resolved": true },
+    { "id": "culture:good_culture", "direction": "outgoing", "kind": "culture_tradition", "name": "tradition_test", "resolved": true },
+    { "id": "culture:good_culture", "direction": "outgoing", "kind": "name_list", "name": "name_list_test", "resolved": true }
+  ],
+  "expect_diagnostics": [
+    { "code": "missing_object_reference", "contains": "tradition_missing" },
+    { "code": "missing_object_reference", "contains": "heritage_missing" },
+    { "code": "missing_object_reference", "contains": "name_list_missing" },
+    { "code": "missing_object_reference", "contains": "parent_missing" }
+  ],
+  "expect_preflight": [
+    {
+      "id": "culture:broken_culture",
+      "counts": {
+        "blocking_risks": 8,
+        "unresolved_refs": 8
+      }
+    }
+  ]
+}

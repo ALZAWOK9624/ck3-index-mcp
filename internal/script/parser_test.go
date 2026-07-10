@@ -28,3 +28,26 @@ func TestParseCK3Script(t *testing.T) {
 		t.Fatalf("children=%d", got)
 	}
 }
+
+func TestLexCRLFCountsOneLine(t *testing.T) {
+	tokens := Lex("first = yes\r\nsecond = yes\rthird = yes\nfourth = yes")
+	want := map[string]int{
+		"first":  1,
+		"second": 2,
+		"third":  3,
+		"fourth": 4,
+	}
+	for _, tok := range tokens {
+		line, ok := want[tok.Text]
+		if !ok {
+			continue
+		}
+		if tok.Line != line {
+			t.Fatalf("token %q line=%d want=%d", tok.Text, tok.Line, line)
+		}
+		delete(want, tok.Text)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing tokens: %v", want)
+	}
+}

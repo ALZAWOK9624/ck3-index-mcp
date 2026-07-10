@@ -1,4 +1,5 @@
 database = "cache/ck3_index.sqlite"
+engine_logs = "../../logs"
 
 [[source]]
 name = "project"

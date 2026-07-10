@@ -2,11 +2,87 @@ package indexer
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestClassifyRelOnlyIndexesCK3LoadRoots(t *testing.T) {
+	tests := []struct {
+		path string
+		want string
+	}{
+		{"common/decisions/test.txt", "script"},
+		{"events/test_events.txt", "script"},
+		{"localization/english/test_l_english.yml", "localization"},
+		{"gfx/interface/icons/test.dds", "resource"},
+		{".map-editor-backups/20260705/history/provinces/test.txt", ""},
+		{"tools/generated/common/decisions/test.txt", ""},
+		{"docs/examples/events/test.txt", ""},
+		{"tmp/history/characters/test.txt", ""},
+	}
+	for _, tt := range tests {
+		if got := classifyRel(tt.path); got != tt.want {
+			t.Errorf("classifyRel(%q)=%q want=%q", tt.path, got, tt.want)
+		}
+	}
+	if !shouldPruneSourceDir(".map-editor-backups") || !shouldPruneSourceDir("tools") || shouldPruneSourceDir("common") {
+		t.Fatal("source-root pruning did not preserve only CK3 load roots")
+	}
+}
+
+func TestQueryRefsReportsExactTotalsWhenEvidenceIsCapped(t *testing.T) {
+	dir := t.TempDir()
+	project := filepath.Join(dir, "project")
+	if err := os.MkdirAll(filepath.Join(project, "common", "culture", "cultures"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(project, "history", "characters"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "common", "culture", "cultures", "test.txt"), []byte("test_culture = {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var history strings.Builder
+	for i := 0; i < 510; i++ {
+		fmt.Fprintf(&history, "char%d = { culture = test_culture }\n", i)
+	}
+	if err := os.WriteFile(filepath.Join(project, "history", "characters", "test.txt"), []byte(history.String()), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "ck3-index.toml")
+	if err := os.WriteFile(cfgPath, []byte("database = \"cache/test.sqlite\"\n[[source]]\nname = \"project\"\npath = \"project\"\nrank = 1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Scan(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(filepath.Join(dir, "cache", "test.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	refs, err := db.QueryRefs(context.Background(), "test_culture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refs.IncomingTotal != 510 || len(refs.Incoming) != 500 || !refs.IncomingTruncated {
+		t.Fatalf("unexpected capped refs: total=%d returned=%d truncated=%v", refs.IncomingTotal, len(refs.Incoming), refs.IncomingTruncated)
+	}
+	got, err := db.LLMFindRefs(context.Background(), "test_culture", LLMOptions{AllowProject: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Counts["incoming"] != 510 || got.Counts["incoming_returned"] != 500 {
+		t.Fatalf("LLM totals are not exact: %+v", got.Counts)
+	}
+}
 
 func TestScanAndQueryFixture(t *testing.T) {
 	dir := t.TempDir()
@@ -357,5 +433,447 @@ rank = 1
 	}
 	if preflight.Counts["blocking_risks"] == 0 || preflight.Counts["unresolved_refs"] == 0 {
 		t.Fatalf("expected preflight to flag missing sound as blocking, got %+v", preflight)
+	}
+}
+
+func TestPreflightDecisionLocAndRuntimeFlags(t *testing.T) {
+	dir := t.TempDir()
+	write := func(path, text string) {
+		full := filepath.Join(dir, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(text), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("project/common/decisions/test_decisions.txt", `test_coronation_decision = {
+	title = test_coronation_decision.t
+	desc = test_coronation_decision.desc
+	is_shown = {
+		is_target_in_global_variable_list = {
+			name = test_global_list
+			target = flag:test_runtime_flag
+		}
+	}
+	effect = {
+		add_to_global_variable_list = {
+			name = test_global_list
+			target = flag:test_runtime_flag
+		}
+	}
+}`)
+	write("project/localization/english/test_l_english.yml", `l_english:
+ test_coronation_decision.t:0 "Coronation"
+ test_coronation_decision.desc:0 "A test decision."
+`)
+
+	cfgPath := filepath.Join(dir, "ck3-index.toml")
+	cfgText := `database = "cache/test.sqlite"
+[[source]]
+name = "project"
+path = "project"
+rank = 1
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgText), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Scan(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(filepath.Join(dir, "cache/test.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	refs, err := db.QueryRefs(context.Background(), "test_coronation_decision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range refs.Outgoing {
+		if h.Kind == "flag" && !h.Resolved {
+			t.Fatalf("runtime flag refs should be treated as resolved, got %+v", h)
+		}
+	}
+	preflight, err := db.LLMPreflight(context.Background(), "test_coronation_decision", LLMOptions{AllowProject: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preflight.Counts["localization"] == 0 {
+		t.Fatalf("expected decision .t/.desc localization candidates, got %+v", preflight)
+	}
+	if preflight.Counts["unresolved_refs"] != 0 {
+		t.Fatalf("expected runtime flags to be skipped from unresolved preflight refs, got %+v", preflight)
+	}
+}
+
+func TestCultureTraditionLayersResolveLayerRelativeDDS(t *testing.T) {
+	dir := t.TempDir()
+	write := func(path, text string) {
+		full := filepath.Join(dir, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(text), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("project/common/culture/traditions/test_traditions.txt", `tradition_test_layer_icon = {
+	layers = {
+		0 = steward
+		1 = indian
+		4 = test_layer_icon.dds
+	}
+}`)
+	write("project/gfx/interface/icons/culture_tradition/4-items/test_layer_icon.dds", "fake")
+
+	cfgPath := filepath.Join(dir, "ck3-index.toml")
+	cfgText := `database = "cache/test.sqlite"
+[[source]]
+name = "project"
+path = "project"
+rank = 1
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgText), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Scan(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(filepath.Join(dir, "cache/test.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	refs, err := db.QueryRefs(context.Background(), "tradition_test_layer_icon")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "gfx/interface/icons/culture_tradition/4-items/test_layer_icon.dds"
+	found := false
+	for _, h := range refs.Outgoing {
+		if h.Kind == "resource" && h.Name == want && h.Resolved {
+			found = true
+		}
+		if h.Kind == "resource" && h.Name == "test_layer_icon.dds" {
+			t.Fatalf("layer-relative DDS should not be indexed as bare resource: %+v", h)
+		}
+	}
+	if !found {
+		t.Fatalf("expected resolved layer resource %q, got %+v", want, refs.Outgoing)
+	}
+	diags, err := db.ExplainDiagnostic(context.Background(), "missing_resource")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range diags {
+		if strings.Contains(d.Message, "test_layer_icon.dds") {
+			t.Fatalf("expected no missing_resource for layer-relative icon, got %+v", d)
+		}
+	}
+}
+
+func TestReligionFaithReferenceClosure(t *testing.T) {
+	dir := t.TempDir()
+	write := func(path, text string) {
+		full := filepath.Join(dir, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(text), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("project/common/religion/religions/test_religion.txt", `test_religion = {
+	family = rf_test
+	custom_faith_icons = {
+		missing_custom_icon
+	}
+	faiths = {
+		test_faith = {
+			icon = missing_faith_icon
+			reformed_icon = existing_faith_icon
+			holy_site = test_holy_site
+			holy_site = missing_holy_site
+		}
+	}
+}`)
+	write("project/common/religion/holy_sites/test_holy_sites.txt", `test_holy_site = {
+	county = c_missing_county
+	barony = b_existing_barony
+}`)
+	write("project/common/landed_titles/test_titles.txt", `b_existing_barony = {}`)
+	write("project/gfx/interface/icons/faith/existing_faith_icon.dds", "fake")
+
+	cfgPath := filepath.Join(dir, "ck3-index.toml")
+	cfgText := `database = "cache/test.sqlite"
+[[source]]
+name = "project"
+path = "project"
+rank = 1
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgText), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Scan(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(filepath.Join(dir, "cache/test.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	refs, err := db.QueryRefs(context.Background(), "test_faith")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var foundIcon, foundHolySite bool
+	for _, h := range refs.Outgoing {
+		if h.Kind == "resource" && h.Name == "gfx/interface/icons/faith/missing_faith_icon.dds" && !h.Resolved {
+			foundIcon = true
+		}
+		if h.Kind == "holy_site" && h.Name == "test_holy_site" && h.Resolved {
+			foundHolySite = true
+		}
+	}
+	if !foundIcon {
+		t.Fatalf("expected unresolved faith icon resource, got %+v", refs.Outgoing)
+	}
+	if !foundHolySite {
+		t.Fatalf("expected resolved holy_site ref, got %+v", refs.Outgoing)
+	}
+
+	holyRefs, err := db.QueryRefs(context.Background(), "test_holy_site")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var foundCounty bool
+	for _, h := range holyRefs.Outgoing {
+		if h.Kind == "title" && h.Name == "c_missing_county" && !h.Resolved {
+			foundCounty = true
+		}
+	}
+	if !foundCounty {
+		t.Fatalf("expected unresolved holy site county title, got %+v", holyRefs.Outgoing)
+	}
+
+	diags, err := db.CachedValidation(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantMessages := []string{
+		`resource "gfx/interface/icons/faith/missing_faith_icon.dds"`,
+		`resource "gfx/interface/icons/faith/missing_custom_icon.dds"`,
+		`holy_site "missing_holy_site"`,
+		`title "c_missing_county"`,
+	}
+	for _, want := range wantMessages {
+		found := false
+		for _, d := range diags.Diagnostics {
+			if strings.Contains(d.Message, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected diagnostic containing %q, got %+v", want, diags.Diagnostics)
+		}
+	}
+}
+
+func TestMenAtArmsCanRecruitCultureScopeMismatch(t *testing.T) {
+	dir := t.TempDir()
+	write := func(path, text string) {
+		full := filepath.Join(dir, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(text), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("project/common/men_at_arms_types/test_maa.txt", `bad_maa = {
+	type = heavy_infantry
+	can_recruit = {
+		has_cultural_parameter = unlock_bad_maa
+	}
+}
+wrapped_maa = {
+	type = heavy_infantry
+	can_recruit = {
+		culture = { has_cultural_parameter = unlock_wrapped_maa }
+	}
+}
+vanilla_style_maa = {
+	type = heavy_infantry
+	can_recruit = {
+		valid_for_maa_trigger = { PARAMETER = unlock_maa_vanilla_style }
+	}
+}
+accolade_style_maa = {
+	type = heavy_infantry
+	can_recruit = {
+		any_active_accolade = {
+			accolade_rank >= 3
+		}
+	}
+}`)
+
+	cfgPath := filepath.Join(dir, "ck3-index.toml")
+	cfgText := `database = "cache/test.sqlite"
+[[source]]
+name = "project"
+path = "project"
+rank = 1
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgText), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Scan(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(filepath.Join(dir, "cache/test.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	diags, err := db.ExplainDiagnostic(context.Background(), "scope_mismatch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	badFound := false
+	for _, d := range diags {
+		if strings.Contains(d.Message, "bad_maa") && strings.Contains(d.Message, "culture = { ... }") && strings.Contains(d.Message, "valid_for_maa_trigger") {
+			badFound = true
+		}
+		if strings.Contains(d.Message, "wrapped_maa") || strings.Contains(d.Message, "vanilla_style_maa") || strings.Contains(d.Message, "accolade_style_maa") {
+			t.Fatalf("expected no MAA can_recruit diagnostic for valid styles, got %+v", d)
+		}
+	}
+	if !badFound {
+		t.Fatalf("expected scope_mismatch for direct culture trigger in can_recruit, got %+v", diags)
+	}
+
+	preflight, err := db.LLMPreflight(context.Background(), "bad_maa", LLMOptions{AllowProject: true, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preflight.Counts["nonblocking_risks"] == 0 || preflight.Counts["diagnostics"] == 0 {
+		t.Fatalf("expected preflight to include can_recruit scope diagnostic, got %+v", preflight)
+	}
+	preflightText := ""
+	for _, ev := range preflight.Evidence {
+		preflightText += ev.Detail + "\n"
+	}
+	if !strings.Contains(preflightText, "can_recruit scope mismatch") {
+		t.Fatalf("expected preflight evidence to mention can_recruit scope mismatch, got %+v", preflight.Evidence)
+	}
+}
+
+func TestScanFilesRefreshesCurrentProjectFiles(t *testing.T) {
+	dir := t.TempDir()
+	write := func(path, text string) {
+		full := filepath.Join(dir, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(text), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("project/common/decisions/test_incremental.txt", `test_incremental_decision = {
+	desc = test_incremental_decision.desc
+	is_shown = { always = yes }
+	effect = { add_prestige = 10 }
+}`)
+	write("project/localization/english/test_incremental_l_english.yml", `l_english:
+ test_incremental_decision.desc:0 "Old desc"
+`)
+	cfgPath := filepath.Join(dir, "ck3-index.toml")
+	cfgText := `database = "cache/test.sqlite"
+[[source]]
+name = "project"
+path = "project"
+rank = 1
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgText), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Scan(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	write("project/common/decisions/test_incremental.txt", `test_incremental_decision = {
+	desc = test_incremental_decision.desc
+	is_shown = { always = yes }
+	effect = { add_prestige = 20 }
+}
+test_incremental_decision_two = {
+	desc = test_incremental_decision_two.desc
+	is_shown = { always = yes }
+	effect = { add_prestige = 5 }
+}`)
+	write("project/localization/english/test_incremental_l_english.yml", `l_english:
+ test_incremental_decision.desc:0 "New desc"
+ test_incremental_decision_two.desc:0 "Second desc"
+`)
+	stats, err := ScanFiles(context.Background(), cfg, []string{
+		"common/decisions/test_incremental.txt",
+		"localization/english/test_incremental_l_english.yml",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Files != 2 {
+		t.Fatalf("expected 2 refreshed files, got %+v", stats)
+	}
+	db, err := Open(filepath.Join(dir, "cache/test.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	obj, err := db.QueryObject(context.Background(), "test_incremental_decision_two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(obj.Definitions) != 1 {
+		t.Fatalf("expected refreshed second decision definition, got %+v", obj)
+	}
+	loc, err := db.QueryLocalization(context.Background(), "test_incremental_decision_two.desc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loc.Values) != 1 || !strings.Contains(loc.Values[0].Value, "Second desc") {
+		t.Fatalf("expected refreshed localization, got %+v", loc)
+	}
+	pf, err := db.LLMPreflight(context.Background(), "test_incremental_decision_two", LLMOptions{AllowProject: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pf.Counts["unresolved_refs"] != 0 {
+		t.Fatalf("expected scoped resolver to resolve refreshed refs, got %+v", pf)
 	}
 }

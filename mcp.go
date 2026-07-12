@@ -133,10 +133,10 @@ func writeMCPMessage(out io.Writer, v any) error {
 	if err != nil {
 		return err
 	}
-	header := []byte("Content-Length: " + strconv.Itoa(len(data)) + "\r\n\r\n")
-	if _, err := out.Write(header); err != nil {
-		return err
-	}
+	// MCP stdio transport uses newline-delimited JSON. Older Codex clients also
+	// accepted LSP-style Content-Length framing, but current clients wait for a
+	// complete JSON line and will otherwise time out during initialization.
+	data = append(data, '\n')
 	_, err = out.Write(data)
 	return err
 }

@@ -116,6 +116,13 @@ func TestServeMCPInitializePrioritizesSemanticIndex(t *testing.T) {
 	if !strings.Contains(out.String(), `"instructions":"Primary CK3/Godherja semantic index`) || !strings.Contains(out.String(), "before raw text search") {
 		t.Fatalf("initialize did not include semantic-index guidance: %q", out.String())
 	}
+	if strings.HasPrefix(out.String(), "Content-Length:") || !strings.HasSuffix(out.String(), "\n") {
+		t.Fatalf("initialize response is not newline-delimited JSON: %q", out.String())
+	}
+	var response rpcResponse
+	if err := json.Unmarshal(bytes.TrimSpace(out.Bytes()), &response); err != nil {
+		t.Fatalf("initialize response is not a JSON line: %v", err)
+	}
 }
 
 func TestCallMCPToolRejectsBadArguments(t *testing.T) {

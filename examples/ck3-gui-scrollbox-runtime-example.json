@@ -1,0 +1,16 @@
+{
+  "runtime_facts": [
+    {
+      "expression": "GetVariableSystem.Exists('character_bio')",
+      "value": true
+    },
+    {
+      "expression": "SelectLocalization( EqualTo_string(Concatenate(Character.GetHistoryId, '_title'), Localize(Concatenate(Character.GetHistoryId, '_title'))), 'CHARACTER_NAME_NO_TITLE', 'CHARACTER_BIO_TITLE')",
+      "value": "阿蕾娅的长篇人物传记 / Aureia's Chronicle"
+    },
+    {
+      "expression": "Localize(Concatenate(Character.GetHistoryId, '_desc'))",
+      "value": "阿蕾娅出生在一座临海的小城。她年幼时跟随商队穿过盐碱地、群山与旧帝国的废墟，学会从潮汐、星辰和道路上的车辙判断方向。成年后，她先后担任抄写员、港口税吏与领主使者，把各地口述的法律、谱系和战乱记录在同一本皮卷中。一次持续数年的饥荒迫使她重新组织粮仓和沿海运输；她没有赢得传奇英雄的名声，却让许多村庄熬过了最坏的冬天。晚年，她把私人笔记交给学院，要求后人保留其中互相矛盾的证词，因为她认为历史不是一条整齐的道路，而是一片会随风改变形状的森林。This caller-provided biography is deliberately long. It lets the browser remeasure multiline text, keep the source width constraint, grow the scroll content beyond the CK3 viewport, and expose deterministic wheel and range scrolling without claiming that the text came from a live save."
+    }
+  ]
+}

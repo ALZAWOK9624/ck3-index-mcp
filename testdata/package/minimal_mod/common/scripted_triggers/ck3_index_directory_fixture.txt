@@ -1,0 +1,1 @@
+ck3_index_directory_fixture_trigger = { always = yes }

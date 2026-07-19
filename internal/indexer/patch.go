@@ -8,6 +8,7 @@ import (
 	slashpath "path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"ck3-index/internal/script"
@@ -243,16 +244,23 @@ func (db *DB) LLMPreflightPatch(ctx context.Context, files []PatchFileInput, opt
 
 	patchObjectSeen := map[string]objectRow{}
 	var duplicateDiags []Diagnostic
+	replacedPaths := map[string]bool{}
+	for _, file := range files {
+		if rel, err := normalizePatchRelPath(file.Path); err == nil {
+			replacedPaths[filepathSlash(rel)] = true
+		}
+	}
 	counts := map[string]int{
-		"files":             len(files),
-		"definitions":       0,
-		"refs":              0,
-		"localization":      0,
-		"resources":         0,
-		"diagnostics":       0,
-		"unresolved_refs":   0,
-		"blocking_risks":    0,
-		"nonblocking_risks": 0,
+		"files":              len(files),
+		"definitions":        0,
+		"refs":               0,
+		"localization":       0,
+		"resources":          0,
+		"diagnostics":        0,
+		"unresolved_refs":    0,
+		"blocking_risks":     0,
+		"nonblocking_risks":  0,
+		"integrity_warnings": 0,
 	}
 	for _, a := range analyses {
 		counts["definitions"] += len(a.Objects)
@@ -261,16 +269,33 @@ func (db *DB) LLMPreflightPatch(ctx context.Context, files []PatchFileInput, opt
 		counts["resources"] += len(a.Resources)
 		for _, obj := range a.Objects {
 			key := obj.Type + ":" + obj.Name
-			if prev, ok := patchObjectSeen[key]; ok {
-				duplicateDiags = append(duplicateDiags, Diagnostic{
-					Source:   "index",
-					Severity: "warning",
-					Code:     "duplicate_object",
-					Message:  fmt.Sprintf("duplicate patch object %s also defined at %s:%d", key, prev.Path, prev.Line),
-					Path:     obj.Path,
-					Line:     obj.Line,
-					Column:   obj.Col,
-				})
+			if obj.Type == "title" && isTitleID(obj.Name) {
+				if prev, ok := patchObjectSeen[key]; ok {
+					duplicateDiags = append(duplicateDiags, Diagnostic{
+						Source: "integrity", Severity: "warning", Code: "duplicate_title_id",
+						Message: fmt.Sprintf("duplicate patch title %s also defined at %s:%d", obj.Name, prev.Path, prev.Line),
+						Path:    obj.Path, Line: obj.Line, Column: obj.Col, Confidence: "high", Occurrences: 2,
+					})
+				} else {
+					patchObjectSeen[key] = obj
+				}
+				indexed, err := db.QueryObject(ctx, obj.Name)
+				if err != nil {
+					return LLMResult{}, err
+				}
+				for _, definition := range indexed.Definitions {
+					if definition.Type != "title" || definition.Rank != 1 || replacedPaths[filepathSlash(definition.LogicalPath)] {
+						continue
+					}
+					duplicateDiags = append(duplicateDiags, Diagnostic{
+						Source: "integrity", Severity: "warning", Code: "duplicate_title_id",
+						Message: fmt.Sprintf("patch title %s conflicts with active project definition at %s:%d", obj.Name, definition.LogicalPath, definition.Line),
+						Path:    obj.Path, Line: obj.Line, Column: obj.Col, Confidence: "high", Occurrences: 2,
+					})
+					break
+				}
+			} else if prev, ok := patchObjectSeen[key]; ok {
+				_ = prev // mergeable and unclassified namespaces are not global duplicate errors
 			} else {
 				patchObjectSeen[key] = obj
 			}
@@ -284,6 +309,63 @@ func (db *DB) LLMPreflightPatch(ctx context.Context, files []PatchFileInput, opt
 			symbols.resources[res] = true
 		}
 	}
+	activeTitles, err := collectActiveTitleOccurrences(ctx, db.sql)
+	if err != nil {
+		return LLMResult{}, err
+	}
+	bestRank := map[string]int{}
+	for _, item := range activeTitles {
+		if replacedPaths[filepathSlash(item.Path)] {
+			continue
+		}
+		if rank, ok := bestRank[item.Name]; !ok || item.Rank < rank {
+			bestRank[item.Name] = item.Rank
+		}
+	}
+	activeProvinceOwner := map[int]titleOccurrence{}
+	for _, item := range activeTitles {
+		if replacedPaths[filepathSlash(item.Path)] || item.Rank != bestRank[item.Name] || !strings.HasPrefix(item.Name, "b_") || item.ProvinceID <= 0 {
+			continue
+		}
+		if _, exists := activeProvinceOwner[item.ProvinceID]; !exists {
+			activeProvinceOwner[item.ProvinceID] = item
+		}
+	}
+	patchProvinceOwner := map[int]objectRow{}
+	for _, analysis := range analyses {
+		nodes := map[int64]*script.Node{}
+		walk(analysis.Parsed.Nodes, func(n *script.Node) { nodes[n.ID] = n })
+		for _, obj := range analysis.Objects {
+			if obj.Type != "title" || !strings.HasPrefix(obj.Name, "b_") {
+				continue
+			}
+			node := nodes[obj.NodeID]
+			provinceID := 0
+			if node != nil {
+				for _, child := range node.Children {
+					if child.Key == "province" {
+						provinceID, _ = strconv.Atoi(strings.TrimSpace(child.Value))
+						break
+					}
+				}
+			}
+			if provinceID <= 0 {
+				continue
+			}
+			if previous, ok := patchProvinceOwner[provinceID]; ok && previous.Name != obj.Name {
+				duplicateDiags = append(duplicateDiags, Diagnostic{Source: "integrity", Severity: "warning", Code: "duplicate_barony_province",
+					Message: fmt.Sprintf("patch province %d is assigned to both %s and %s", provinceID, previous.Name, obj.Name),
+					Path:    obj.Path, Line: obj.Line, Column: obj.Col, Confidence: "high", Occurrences: 2})
+			} else {
+				patchProvinceOwner[provinceID] = obj
+			}
+			if previous, ok := activeProvinceOwner[provinceID]; ok && previous.Name != obj.Name {
+				duplicateDiags = append(duplicateDiags, Diagnostic{Source: "integrity", Severity: "warning", Code: "duplicate_barony_province",
+					Message: fmt.Sprintf("patch barony %s assigns province %d already owned by %s at %s:%d", obj.Name, provinceID, previous.Name, previous.Path, previous.Line),
+					Path:    obj.Path, Line: obj.Line, Column: obj.Col, Confidence: "high", Occurrences: 2})
+			}
+		}
+	}
 
 	var diagnostics []Diagnostic
 	for _, a := range analyses {
@@ -291,6 +373,11 @@ func (db *DB) LLMPreflightPatch(ctx context.Context, files []PatchFileInput, opt
 	}
 	diagnostics = append(diagnostics, duplicateDiags...)
 	counts["diagnostics"] = len(diagnostics)
+	for _, d := range diagnostics {
+		if strings.HasPrefix(d.Code, "duplicate_title") || d.Code == "duplicate_barony_province" || d.Code == "invalid_title_hierarchy" {
+			counts["integrity_warnings"]++
+		}
+	}
 
 	type unresolvedRef struct {
 		ref refRow
@@ -338,7 +425,7 @@ func (db *DB) LLMPreflightPatch(ctx context.Context, files []PatchFileInput, opt
 		Guidance: []string{
 			"This is a temporary patch preflight; it does not refresh SQLite.",
 			"Patch-defined objects, localization keys, and resources are used as an in-memory overlay for this check only.",
-			"After writing files to disk, run ck3-index scan and then diag_stats before treating the project as clean.",
+			"After writing files to disk, run ck3-index scan --files (or a full scan) and then diag_stats before treating the project as clean.",
 		},
 		NextQueries: []LLMNextQuery{
 			{Tool: "validate_project", Reason: "after writing and scanning, confirm cached diagnostics"},

@@ -1,0 +1,8 @@
+1 = {
+  culture = old_culture
+  religion = old_faith
+}
+2 = {
+  culture = old_culture
+  religion = old_faith
+}

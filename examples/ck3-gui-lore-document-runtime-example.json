@@ -1,0 +1,20 @@
+{
+  "runtime_facts": [
+    {
+      "expression": "GetVariableSystem.Exists('show_lore_doc')",
+      "value": false
+    },
+    {
+      "expression": "GetVariableSystem.Exists('artifact_window_open')",
+      "value": true
+    },
+    {
+      "expression": "GetVariableSystem.Exists('lore_doc_section')",
+      "value": false
+    },
+    {
+      "expression": "GetPlayer.IsValid",
+      "value": true
+    }
+  ]
+}

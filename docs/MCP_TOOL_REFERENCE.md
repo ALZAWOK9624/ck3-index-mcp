@@ -1,0 +1,480 @@
+# ck3-index MCP 工具参考
+
+> 本文档由 `go run ./cmd/mcp-docgen` 根据 `internal/mcpserver` 自动生成，请勿手工修改。
+
+标准模式公开 29 个规范工具。专家模式另外公开 28 个已弃用的发现别名；即使这些别名未显示，兼容期内仍然可以调用。
+
+## `ck3_search` — 搜索 CK3 索引
+
+在不知道准确 CK3 标识符时进行搜索。返回按相关度排序的对象、本地化、资源、引用、诊断、数据类型与脚本键证据。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `kind` | 否 | 字符串 | 可选值=[object reference localization resource diagnostic script_key datatype] | 可选的证据类别。 |
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `path_prefix` | 否 | 字符串 |  | 可选的来源根目录相对路径前缀。 |
+| `query` | 是 | 字符串 |  | CK3 标识符、本地化文本、资源路径、诊断代码或语义前缀。 |
+| `source` | 否 | 字符串 |  | 可选的已索引来源名称。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `ck3_inspect` — 检查 CK3 标识符
+
+发现目标后，检查一个准确的 CK3 标识符、键或资源路径。定义视图包含覆盖来源、事件字段以及人物静态档案和日期时间线；引用视图保留关系、阶段、置信度和未解析原因；compare 可对准确类型化标识符做受限、只读的来源与上游对象级比较。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `base` | 否 | 字符串 |  | operation=compare 时可选的已配置低优先级基线来源；默认使用最近的低优先级层。 |
+| `id` | 是 | 字符串 |  | 准确的 CK3 标识符、键或资源路径。 |
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `operation` | 否 | 字符串 | 可选值=[aggregate definition references localization resource context diagnose compare] | 检查视图。 |
+| `source` | 否 | 字符串 |  | operation=compare 时可选的已配置高优先级来源；私有可见性下默认使用当前 Mod/最高优先级层。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `ck3_review` — 审查 CK3 文件
+
+审查完整的拟议 CK3 文件；未提供文件时审查当前工程中的脏文件。执行只读的语法、作用域、引用、本地化与资源检查。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `files` | 否 | 数组 |  | 仅在内存中分析、相对于来源根目录的完整文件。 |
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `ck3_workspace` — 检查 CK3 工作区
+
+在选择具体对象前检查已索引的工作区结构。返回架构概览、对象类型分布，或 engine、Tiger 与原版相邻注释之间只读的 on_action 证据审计。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `operation` | 否 | 字符串 | 可选值=[overview object_types on_action_evidence] | 工作区视图。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `ck3_dependencies` — 追踪 CK3 依赖
+
+追踪一个 CK3 标识符周围的语义依赖。neighborhood 返回通用邻域；event_chain 返回调用者、被调用者、根、叶、循环、最短链和未解析调用，并可附带自包含、无外部请求的交互 HTML 检查器。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `depth` | 否 | 整数 | 最小值=1; 最大值=6 | 遍历深度；event_chain 默认为 3、最多 6，neighborhood 默认为 1、最多 2。 |
+| `direction` | 否 | 字符串 | 可选值=[both callers callees] | event_chain 的遍历方向。 |
+| `format` | 否 | 字符串 | 可选值=[json html] | 响应表示形式；html 仅适用于 event_chain，会在结构化拓扑旁附带可交互、无网络请求的 HTML 检查器。 |
+| `id` | 是 | 字符串 | 最长长度=512 | 中心对象或被引用标识符；event_chain 接受 event:<id>、on_action:<id> 或无类型事件标识符。 |
+| `include_on_actions` | 否 | 布尔值 |  | event_chain 是否包含 on_action 节点和边；默认为 true。 |
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `operation` | 否 | 字符串 | 可选值=[neighborhood event_chain] | 依赖视图；neighborhood 最多两跳，event_chain 最多六跳。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `ck3_prepare_edit` — 准备 CK3 编辑
+
+在生成 CK3 脚本前加载编辑证据。默认返回组合上下文，也可只请求示例、结构规则或经验模式。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `id` | 是 | 字符串 |  | 对象标识符、对象类型或 type:term。 |
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `operation` | 否 | 字符串 | 可选值=[context examples rules patterns] | 准备视图。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `ck3_preflight` — 预检 CK3 改动
+
+对已索引目标、拟议完整文件或当前脏文件执行只读门禁。使用 operation 选择目标、补丁或脏文件模式。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `files` | 否 | 数组 |  | 仅在内存中分析、相对于来源根目录的完整文件。 |
+| `id` | 否 | 字符串 |  | operation=subject 时必填。 |
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `operation` | 是 | 字符串 | 可选值=[subject patch dirty] | 预检目标。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `ck3_impact` — 分析 CK3 补丁影响
+
+编辑前分析拟议的新增或更新、删除与重命名操作。返回只读依赖风险与未解析引用风险。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `files` | 是 | 数组 |  | 仅在内存中分析、相对于来源根目录的完整文件。 |
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `ck3_diagnostics` — 检查 CK3 诊断
+
+无需重新扫描即可检查已缓存的工程诊断。默认返回摘要；explain 可按诊断代码和可选来源字段筛选。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `code` | 否 | 字符串 |  | operation=explain 时必填。 |
+| `confidence` | 否 | 字符串 |  | 可选的置信度筛选器。 |
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `operation` | 否 | 字符串 | 可选值=[summary explain] | 诊断视图。 |
+| `path_prefix` | 否 | 字符串 |  | 可选的来源根目录相对路径前缀。 |
+| `source` | 否 | 字符串 |  | 可选的诊断来源。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `ck3_script_reference` — 查询 CK3 脚本参考
+
+查询一项本地引擎或脚本规则事实。通过 kind 选择作用域、数据类型、值形状、define、on_action、迭代器、示例或修正值。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `id` | 是 | 字符串 |  | 引擎键或脚本键。 |
+| `kind` | 是 | 字符串 | 可选值=[scope datatype shape define on_action iterator example modifier] | 参考资料类别。 |
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `ck3_health` — 检查 CK3 索引健康状态
+
+检查数据库、结构、索引与 MCP 注册是否可信。返回隐藏路径后的简短健康报告。
+
+输入参数：无。
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `ck3_package` — 打包 CK3 Mod
+
+严格验证模型生成的 CK3 文本与二进制文件，统一生成双描述文件，并在受限临时区创建可直接手动安装的 ZIP；不会安装或修改真实 Mod 目录。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `files` | 是 | 数组 | 最少项数=1; 最多项数=256 | — |
+| `metadata` | 是 | 对象 |  | — |
+
+属性：生成受限临时产物、非破坏、封闭世界。输出：结构化对象与 JSON 文本；成功时返回可供附件发送层解析的 artifact 标识和相对路径。
+
+## `ck3_gui` — 检查 CK3 GUI
+
+通过现有索引检查生效中的 CK3 GUI 文件，解析跨文件继承、模板和区块覆盖，并输出有界 PNG 或自包含 HTML。检查器支持控件树、裁剪滚动视口、网格布局、英中本地化切换、已索引动态纹理样例与受控行为模拟；model_samples 可从唯一 item 模板实例化有界调用方列表行，绝不执行任意 Jomini 代码。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `action_effects` | 否 | 数组 | 最多项数=32 | 可选的调用方点击后置事实；只匹配未受内置支持的精确 onclick，表达式本身绝不执行，类型化事实更新明确标记为 provided。 |
+| `format` | 否 | 字符串 | 可选值=[png html both] | 预览表示形式：png 保持旧响应；html 返回独立文档；both 同时返回二者。 |
+| `height` | 否 | 整数 | 最小值=64; 最大值=2160 | 可选的 GUI 预览高度（像素）。 |
+| `html_mode` | 否 | 字符串 | 可选值=[static inspector] | HTML 行为模式：static 完全无脚本；inspector 使用固定 CSP 哈希脚本提供控件树、缩放、搜索、裁剪滚动视口、属性检查和视觉状态模拟。仅适用于 format=html 或 both。 |
+| `language` | 否 | 字符串 | 可选值=[raw english simp_chinese bilingual] | 初始 GUI 本地化视图：raw 保留脚本 key；英文、简体中文和双语值只来自当前生效的本地化索引。检查器可离线切换已嵌入的语言变体。 |
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `model_samples` | 否 | 数组 | 最多项数=8 | 可选的有界数据模型行样例；每个集合必须精确选中一个仅含单一 item 模板的 fixedgridbox 或 dynamicgridbox，全部集合最多接受 32 行。 |
+| `operation` | 否 | 字符串 | 可选值=[summary file type template preview] | GUI 查询视图。 |
+| `path` | 否 | 字符串 |  | operation=file 使用的、相对于来源根目录的 gui/*.gui 路径。 |
+| `path_prefix` | 否 | 字符串 |  | 限定符号选择范围的可选 gui/ 源根相对前缀；类型和模板依赖仍会对全部活动 GUI 文件解析，响应分别报告 files 与 resolution_files。 |
+| `runtime_facts` | 否 | 数组 | 最多项数=64 | 可选的调用方原子事实，用于受限的 And/Or/Not 和比较求值；事实标记为 provided 而非游戏观察值，缺失事实保持 unknown。 |
+| `sample_values` | 否 | 数组 | 最多项数=32 | 可选的调用方精确 GUI 表达式样例结果；数值明确标记为 provided 而非游戏观察事实，未命中表达式会被报告，纹理样例必须指向已索引的 gfx 源根相对资源。 |
+| `symbol` | 否 | 字符串 |  | preview 可使用精确的自定义类型、模板或具名 GUI 控件；type/template 保持原有窄语义。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `width` | 否 | 整数 | 最小值=64; 最大值=3840 | 可选的 GUI 预览宽度（像素）。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `map_migration_snapshot` — 保存 CK3 地图迁移快照
+
+在上游地图更新前，保存已配置旧上游、当前 Mod 文件清单、文本基线与有效地图的内容寻址快照；不接受任意路径，也不修改来源工程。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `base` | 是 | 字符串 |  | 已配置的旧上游来源名称。 |
+| `project` | 是 | 字符串 |  | 已配置的当前 Mod 来源名称。 |
+
+属性：生成受限临时产物、非破坏、封闭世界。输出：结构化对象与 JSON 文本；成功时返回可供附件发送层解析的 artifact 标识和相对路径。
+
+## `map_province_migration` — 迁移 CK3 省份地图改动
+
+以新上游为底执行保守三方合并和省份语义改写，严格验证通过后才生成独立本地测试 Fork；冲突时只输出报告和 resolution 模板。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `control_points` | 否 | 数组 | 最少项数=3; 最多项数=128 | — |
+| `delete_paths` | 否 | 数组 | 最多项数=1024 | — |
+| `output_name` | 否 | 字符串 |  | 本地测试 Fork 的可选安全目录名。 |
+| `resolutions` | 否 | 数组 | 最多项数=4096 | — |
+| `snapshot_id` | 是 | 字符串 |  | map_migration_snapshot 返回的持久快照标识。 |
+| `target` | 是 | 字符串 |  | 已配置的新上游来源名称。 |
+
+属性：生成受限临时产物、非破坏、封闭世界。输出：结构化对象与 JSON 文本；成功时返回可供附件发送层解析的 artifact 标识和相对路径。
+
+## `map_asset_audit` — 审计 CK3 地图资源
+
+审计当前生效的 CK3 地图栅格，检查省份定义覆盖、PNG 编码、河流调色板索引语义和正交河道拓扑；吸收 AzgaarToCK3 的特色校验，但不重复 ck3-index 已有解析与几何。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `operation` | 否 | 字符串 | 可选值=[summary provinces rivers] | 要审计的地图资源类别。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `map_province_mapping` — 比较省份地图版本
+
+通过控制点 Delaunay 分片仿射变换比较两个已配置的 CK3 省份地图，返回像素交叠、重编号、拆分、合并、复杂及未映射分组；只提供迁移证据，不写地图或历史文件。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `allow_cross_water` | 否 | 布尔值 |  | 允许陆地省份与水域省份互相映射。 |
+| `control_points` | 否 | 数组 | 最少项数=3; 最多项数=128 | 可选的地理控制点对，用于建立分片仿射变换。 |
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `max_candidates` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=5 | 每个来源省份最多返回的目标候选数。 |
+| `min_share` | 否 | 数值 | 最小值=1e-06; 最大值=1; 默认值=0.05 | 保留为映射边的最小来源或目标交叠比例。 |
+| `source` | 是 | 字符串 |  | 已配置的来源地图名称，或 active。 |
+| `target` | 是 | 字符串 |  | 已配置的目标地图名称，或 active。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `map_province_info` — 检查地图省份
+
+检查一个省份的精确几何、头衔、脚本地形、实际地表材质混合、纹理资源与直接边界。返回只读的精确上下文和分类后的邻省。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `id` | 是 | 字符串 |  | 地图地点：数字省份 ID、b_/c_/d_/k_/e_ 头衔 ID，或可唯一解析的准确英文或中文本地化名称。 |
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `map_physical_context` — 检查物理地理
+
+只读检查归一化高程、地形、gfx/map/terrain 地表材质混合及纹理资源、复合河流、水体、相对海床深浅与物理障碍；明确区分 CK3 原生观察事实、GIS 派生值和综合推断。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `include_adjacent_water` | 否 | 布尔值 |  | 包含受限的沿岸至相邻水体聚合；湖泊和大河省份不会进入海洋深度结论。 |
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `operation` | 否 | 字符串 | 可选值=[summary terrain surface hydrology oceanography barriers] | 要查询的物理地理视图；surface 返回观测到的材质混合权重以及配置引用的 mask 与 DDS 资源，不依赖 WhiteboxTools。 |
+| `target` | 否 | 字符串 |  | 一个数字省份 ID、领地头衔 ID、region:<id>、配合 target_type=region 使用的准确地区 ID，或 all。 |
+| `target_type` | 否 | 字符串 | 可选值=[province title region targets all] | 目标选择类型。 |
+| `targets` | 否 | 数组 | 最少项数=1; 最多项数=16 | 最多 16 个省份、头衔或 region:<id> 目标。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `map_neighbors` — 检查地图邻域
+
+检查某省份或领地头衔周围的受限图邻域。返回按半径分组的方向、距离与边界分类。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `id` | 是 | 字符串 |  | 地图地点：数字省份 ID、b_/c_/d_/k_/e_ 头衔 ID，或可唯一解析的准确英文或中文本地化名称。 |
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `radius` | 否 | 整数 | 最小值=1; 最大值=3; 默认值=1 | 遍历半径。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `map_spatial_relation` — 比较地图省份
+
+比较两个省份的精确空间关系。返回质心偏移、方位角、距离、直接边界与附近障碍。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `from` | 是 | 字符串 |  | 来源地图地点：数字省份 ID、b_/c_/d_/k_/e_ 头衔 ID，或可唯一解析的准确英文或中文本地化名称。 |
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `to` | 是 | 字符串 |  | 目标地图地点，接受与 from 相同的形式。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `map_strategic_passages` — 检查战略通道
+
+把显式邻接与像素边界邻省分开检查。返回海峡、渡口、地下连接与离图通道。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `kind` | 否 | 字符串 | 可选值=[strait sea_route river_crossing mountain_pass land_passage underground_internal underground_gateway offmap_gateway explicit_passage] | 可选的通道类别。 |
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `target` | 否 | 字符串 |  | 省份标识符、领地头衔标识符、逗号分隔的多个目标或 all。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `map_title_context` — 检查地图头衔
+
+检查一个领地头衔的省份覆盖、持有者、文化、信仰与相邻头衔。返回只读的历史和视觉上下文。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `id` | 是 | 字符串 |  | 领地头衔标识符。 |
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `map_assignment_plan` — 规划地图分配
+
+生成仅供审查的宗教或占位角色分配建议。private 模式返回补丁预览，visibility=public 时会移除预览。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `assignment_mode` | 否 | 字符串 | 可选值=[religion characters both] | 分配类别。 |
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `target` | 是 | 字符串 |  | 省份或领地头衔目标。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `map_building_candidates` — 评估地图建筑候选地
+
+为省份或领地头衔排列可审计的特殊建筑候选地。返回地形、地产、水域、文化与边界证据，不写入文件。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `target` | 是 | 字符串 |  | 省份或领地头衔目标。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `map_recipe_catalog` — 列出地图配方
+
+列出支持的地图配方、层级、变换、图层、调色板与使用建议。构建自定义指标或渲染规格前应先调用此工具。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `map_build_metric` — 构建地图指标
+
+在渲染前构建可审计的索引指标或带来源说明的地图指标。返回数值、分位数、异常值、来源与警告。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `aggregate` | 否 | 字符串 | 可选值=[count sum mean max majority diversity ratio] | — |
+| `components` | 否 | 数组 | 最多项数=32 | — |
+| `field` | 否 | 字符串 |  | — |
+| `id_pattern` | 否 | 字符串 |  | 可选的受限正则表达式，用于准确筛选命名空间，例如 ^c_c[0-9]+$。 |
+| `id_prefix` | 否 | 字符串 |  | 可选的实体标识符前缀筛选器，例如用 c_c 筛选自定义伯爵领命名空间。 |
+| `kind` | 否 | 字符串 | 可选值=[numeric category] | — |
+| `level` | 否 | 字符串 | 可选值=[province barony county duchy kingdom empire region] | 聚合层级。 |
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `match_value` | 否 | 字符串 |  | — |
+| `recipe` | 否 | 字符串 |  | 来自 map_recipe_catalog 的内置配方标识符。 |
+| `source_note` | 否 | 字符串 |  | 由模型提供 values 时必填。 |
+| `target` | 否 | 字符串 |  | 省份或头衔标识符、逗号分隔的多个标识符或 all。 |
+| `transform` | 否 | 对象 |  | — |
+| `values` | 否 | 数组 | 最多项数=200000 | — |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `map_route` — 计算地图路线
+
+解析中英文地名、领地头衔或省份 ID，并在已索引省份拓扑上计算确定性的合法陆路、海路或混合路线；返回紧凑路径、分段、沿途上下文和像素距离警告。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `context_level` | 否 | 字符串 | 可选值=[county duchy]; 默认值=duchy | 随路线走廊返回的政治上下文层级。 |
+| `corridor_radius_pixels` | 否 | 整数 | 最小值=1; 最大值=2048; 默认值=120 | 用于选择邻近上下文的来源地图走廊半径。 |
+| `from` | 是 | 字符串 |  | 起点：数字省份 ID、b_/c_/d_/k_/e_ 头衔 ID，或可唯一解析的准确英文或中文本地化名称。 |
+| `label_language` | 否 | 字符串 | 可选值=[en zh bilingual]; 默认值=bilingual | 首选的上下文标签语言。 |
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `max_nodes` | 否 | 整数 | 最小值=1; 最大值=5000; 默认值=5000 | 返回受限失败前最多展开的图节点数。 |
+| `mode` | 否 | 字符串 | 可选值=[sea land mixed]; 默认值=mixed | 通行模式。 |
+| `objective` | 否 | 字符串 | 可选值=[shortest scenic]; 默认值=shortest | 路线目标。 |
+| `to` | 是 | 字符串 |  | 终点：数字省份 ID、b_/c_/d_/k_/e_ 头衔 ID，或可唯一解析的准确英文或中文本地化名称。 |
+| `verbose` | 否 | 布尔值 | 默认值=false | 包含受限的图加载与节点展开证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `waypoints` | 否 | 数组 | 最多项数=16 | 路线必须按顺序经过的可选准确地图地点。 |
+| `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `map_render` — 渲染 CK3 地图
+
+渲染只读的自适应 CK3 地图；省略尺寸时自动选择分辨率。返回结构化元数据和内存中的 PNG，不接受客户端文件路径。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `auto_context` | 否 | 布尔值 |  | 把路线扩展为受限的伯爵领或公国级地图走廊，而非只渲染孤立路线节点。 |
+| `background` | 否 | 字符串 |  | — |
+| `boundary_levels` | 否 | 数组 | 最多项数=5 | — |
+| `color_strategy` | 否 | 字符串 | 可选值=[native muted coordinated] | — |
+| `context_level` | 否 | 字符串 | 可选值=[county duchy] | 政治上下文扩展层级。 |
+| `corridor_radius_pixels` | 否 | 整数 | 最小值=1; 最大值=2048; 默认值=120 | 来源地图中的路线走廊半径。 |
+| `height` | 否 | 整数 | 最小值=1; 最大值=4096 | 可选的明确输出高度；同时省略 width 与 height 时自动确定尺寸。 |
+| `history_year` | 否 | 整数 | 最小值=1 | year 的废弃兼容别名；两者数值冲突时拒绝调用。 |
+| `label_language` | 否 | 字符串 | 可选值=[chinese english bilingual] | — |
+| `layers` | 否 | 数组 | 最少项数=1; 最多项数=32 | — |
+| `layout` | 否 | 字符串 | 可选值=[map_only light_frame full_atlas] | — |
+| `level` | 否 | 字符串 | 可选值=[province barony county duchy kingdom empire region] | 主要渲染层级。 |
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `padding` | 否 | 整数 | 最小值=0; 最大值=1024 | 以最终输出像素计的地图外边距。 |
+| `recipe` | 否 | 字符串 | 可选值=[political_atlas thematic_atlas duchy_political_atlas strategic_waterways_atlas] | — |
+| `relief_strength` | 否 | 字符串 | 可选值=[none subtle strong] | — |
+| `route` | 否 | 对象 |  | — |
+| `route_province_ids` | 否 | 数组 | 最多项数=5000 | 应纳入渲染视口的有序路线与端点省份 ID。 |
+| `style` | 否 | 字符串 | 可选值=[standard historical_atlas] | — |
+| `subtitle` | 否 | 字符串 |  | — |
+| `supersample` | 否 | 整数 | 可选值=[1 2] | — |
+| `target` | 否 | 字符串 |  | — |
+| `terrain_overlay` | 否 | 布尔值 |  | — |
+| `theme` | 否 | 字符串 | 可选值=[political culture faith development terrain custom] | — |
+| `title` | 否 | 字符串 |  | — |
+| `verbose` | 否 | 布尔值 |  | 包含完整指标值和配方目标；路线渲染默认返回紧凑元数据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `width` | 否 | 整数 | 最小值=1; 最大值=8192 | 可选的明确输出宽度；同时省略 width 与 height 时自动确定尺寸。 |
+| `year` | 否 | 整数 | 最小值=1 | 地图册显示年份。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## 已弃用的专家模式别名
+
+| 旧名称 | 规范替代工具 |
+|---|---|
+| `query_object` | `ck3_inspect` |
+| `find_refs` | `ck3_inspect` |
+| `query_loc` | `ck3_inspect` |
+| `query_resource` | `ck3_inspect` |
+| `inspect_object` | `ck3_inspect` |
+| `diagnose_key` | `ck3_inspect` |
+| `query_object_types` | `ck3_workspace` |
+| `architecture_overview` | `ck3_workspace` |
+| `dependency_graph` | `ck3_dependencies` |
+| `prepare_edit` | `ck3_prepare_edit` |
+| `query_examples` | `ck3_prepare_edit` |
+| `query_rules` | `ck3_prepare_edit` |
+| `query_patterns` | `ck3_prepare_edit` |
+| `preflight_code` | `ck3_preflight` |
+| `preflight_patch` | `ck3_preflight` |
+| `preflight_dirty` | `ck3_preflight` |
+| `impact_patch` | `ck3_impact` |
+| `validate_project` | `ck3_diagnostics` |
+| `explain_diagnostic` | `ck3_diagnostics` |
+| `lookup_scope` | `ck3_script_reference` |
+| `lookup_datatype` | `ck3_script_reference` |
+| `lookup_shape` | `ck3_script_reference` |
+| `lookup_define` | `ck3_script_reference` |
+| `lookup_on_action` | `ck3_script_reference` |
+| `lookup_iterator` | `ck3_script_reference` |
+| `lookup_example` | `ck3_script_reference` |
+| `lookup_modifier` | `ck3_script_reference` |
+| `health_check` | `ck3_health` |

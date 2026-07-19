@@ -21,20 +21,25 @@ import (
 )
 
 type ScanStats struct {
-	Database      string           `json:"database"`
-	Files         int              `json:"files"`
-	Nodes         int              `json:"nodes"`
-	Objects       int              `json:"objects"`
-	References    int              `json:"references"`
-	Localization  int              `json:"localization"`
-	Resources     int              `json:"resources"`
-	SchemaFields  int              `json:"schema_fields"`
-	ObjectFields  int              `json:"object_fields"`
-	Diagnostics   int              `json:"diagnostics"`
-	Overridden    int              `json:"overridden"`
-	ElapsedMillis int64            `json:"elapsed_ms"`
-	TimingsMillis map[string]int64 `json:"timings_ms,omitempty"`
-	BySource      map[string]int   `json:"by_source"`
+	Database     string `json:"database"`
+	Files        int    `json:"files"`
+	Nodes        int    `json:"nodes"`
+	Objects      int    `json:"objects"`
+	References   int    `json:"references"`
+	Localization int    `json:"localization"`
+	Resources    int    `json:"resources"`
+	SchemaFields int    `json:"schema_fields"`
+	ObjectFields int    `json:"object_fields"`
+	Diagnostics  int    `json:"diagnostics"`
+	Overridden   int    `json:"overridden"`
+	// Noop reports that the previously published semantic generation was
+	// already current. File mtime metadata may have been refreshed, but no
+	// global resolver, validator, map, engine, FTS, or overview work ran.
+	Noop          bool                 `json:"no_op,omitempty"`
+	ElapsedMillis int64                `json:"elapsed_ms"`
+	TimingsMillis map[string]int64     `json:"timings_ms,omitempty"`
+	BySource      map[string]int       `json:"by_source"`
+	WALCheckpoint *WALCheckpointResult `json:"wal_checkpoint,omitempty"`
 }
 
 type scanWriter struct {
@@ -51,18 +56,32 @@ type scanWriter struct {
 }
 
 type fileRecord struct {
-	ID         int64
-	SourceName string
-	SourceRank int
-	Path       string
-	RelPath    string
-	Kind       string
-	MTime      int64
-	SHA        string
-	Overridden bool
+	ID               int64
+	SourceName       string
+	SourceRank       int
+	Path             string
+	RelPath          string
+	Kind             string
+	MTime            int64
+	Size             int64
+	SHA              string
+	Overridden       bool
+	OverrideReason   string
+	OverrideBySource string
+	OverrideByRank   int
+	OverrideRule     string
 }
 
-const indexRuleVersion = "2026-07-10-v0.2.1-resource-scope-engine-evidence"
+const indexRuleVersion = "2026-07-19-v0.2.26-live-on-action-lint"
+
+// Keep ordinary full scans well below SQLite's variable limit when they take
+// the scoped resolver/validator path. Larger edits remain correct by falling
+// back to the established global finalizers.
+const (
+	scopedFinalizerFileLimit   = 128
+	scopedFinalizerSymbolLimit = 512
+	scopedValidatorFileLimit   = 500
+)
 
 func Scan(ctx context.Context, cfg Config) (ScanStats, error) {
 	return scanWithMode(ctx, cfg, cfg.ForceClean)
@@ -70,10 +89,16 @@ func Scan(ctx context.Context, cfg Config) (ScanStats, error) {
 
 func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, error) {
 	start := time.Now()
+	if err := validateSources(cfg.Sources); err != nil {
+		return ScanStats{}, err
+	}
 	if err := ConfigureEngineRules(cfg.EngineLogs); err != nil {
 		return ScanStats{}, err
 	}
-	dbPath := filepath.Join(filepath.Dir(cfg.ConfigPath), cfg.Database)
+	dbPath, err := ConfiguredDatabasePath(cfg)
+	if err != nil {
+		return ScanStats{}, err
+	}
 	db, err := Open(dbPath)
 	if err != nil {
 		return ScanStats{}, err
@@ -84,7 +109,6 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 	fmt.Fprintln(os.Stderr, "[scan] preparing sqlite cache")
 	for _, p := range []string{
 		`PRAGMA busy_timeout=60000`,
-		`PRAGMA wal_checkpoint(TRUNCATE)`,
 		`PRAGMA journal_mode=WAL`,
 		`PRAGMA synchronous=OFF`,
 		`PRAGMA temp_store=MEMORY`,
@@ -94,6 +118,13 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 			return ScanStats{}, err
 		}
 	}
+	if _, err := db.CheckpointWAL(ctx, "PASSIVE"); err != nil {
+		fmt.Fprintf(os.Stderr, "[scan] WAL checkpoint deferred before scan: %v\n", err)
+	}
+	// ensureSchema recreates a missing FTS table. Remember its pre-schema
+	// presence so a repaired-but-empty table cannot be mistaken for a complete
+	// published semantic index later in this scan.
+	ftsPresentBeforeSchema := !forceClean && db.tableExists(ctx, "search_fts")
 	if forceClean {
 		if err := db.reset(ctx); err != nil {
 			return ScanStats{}, err
@@ -118,14 +149,16 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 
 	existing := map[string]fileRecord{}
 	if !forceClean {
-		rows, err := db.sql.QueryContext(ctx, `SELECT id, source_name, source_rank, path, rel_path, kind, mtime, sha256, overridden FROM files`)
+		rows, err := db.sql.QueryContext(ctx, `SELECT id, source_name, source_rank, path, rel_path, kind, mtime, file_size, sha256, overridden,
+			override_reason,override_by_source,override_by_rank,override_rule FROM files`)
 		if err != nil {
 			return ScanStats{}, err
 		}
 		for rows.Next() {
 			var rec fileRecord
 			var recOvr int
-			if err := rows.Scan(&rec.ID, &rec.SourceName, &rec.SourceRank, &rec.Path, &rec.RelPath, &rec.Kind, &rec.MTime, &rec.SHA, &recOvr); err != nil {
+			if err := rows.Scan(&rec.ID, &rec.SourceName, &rec.SourceRank, &rec.Path, &rec.RelPath, &rec.Kind, &rec.MTime, &rec.Size, &rec.SHA, &recOvr,
+				&rec.OverrideReason, &rec.OverrideBySource, &rec.OverrideByRank, &rec.OverrideRule); err != nil {
 				rows.Close()
 				return ScanStats{}, err
 			}
@@ -142,16 +175,92 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 			forceClean = true
 		}
 	}
+	publishedState := IndexState{}
+	cachedEngineFingerprint := ""
+	cachedRuleVersion := ""
+	if !forceClean {
+		publishedState, err = db.IndexState(ctx)
+		if err != nil {
+			return ScanStats{}, err
+		}
+		if publishedState.Ready() {
+			cachedEngineFingerprint, err = db.metaValue(ctx, "engine_data_fingerprint")
+			if err != nil {
+				return ScanStats{}, err
+			}
+			cachedRuleVersion, err = db.metaValue(ctx, "index_rule_version")
+			if err != nil {
+				return ScanStats{}, err
+			}
+		}
+	}
+	engineFingerprint, err := engineDataFingerprint(cfg.EngineLogs)
+	if err != nil {
+		return ScanStats{}, err
+	}
+	engineDataDirty := forceClean || !publishedState.Ready() || engineFingerprint != cachedEngineFingerprint
 
 	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
 		return ScanStats{}, err
 	}
 	defer tx.Rollback()
+	ftsCurrent := false
+	if !forceClean && ftsPresentBeforeSchema && db.tableExists(ctx, "search_fts") {
+		ftsCurrent, err = searchFTSCacheMatches(ctx, tx)
+		if err != nil {
+			return ScanStats{}, err
+		}
+	}
 
 	locKeys := map[string]bool{}
 	resources := map[string]bool{}
 	tracked := map[string]bool{}
+	oldFileIDs := map[int64]bool{}
+	newFileIDs := map[int64]bool{}
+	affected := map[string]bool{}
+	fileChanges := forceClean
+	scopedFinalizerCandidate := !forceClean && !engineDataDirty
+	trackOldFile := func(fileID int64) error {
+		if fileID == 0 {
+			return nil
+		}
+		oldFileIDs[fileID] = true
+		if !scopedFinalizerCandidate {
+			return nil
+		}
+		if len(oldFileIDs)+len(newFileIDs) > scopedFinalizerFileLimit {
+			scopedFinalizerCandidate = false
+			return nil
+		}
+		if err := collectAffectedForFileTx(ctx, tx, fileID, affected); err != nil {
+			return err
+		}
+		if len(affected) > scopedFinalizerSymbolLimit {
+			scopedFinalizerCandidate = false
+		}
+		return nil
+	}
+	trackNewFile := func(fileID int64) error {
+		if fileID == 0 {
+			return nil
+		}
+		newFileIDs[fileID] = true
+		if !scopedFinalizerCandidate {
+			return nil
+		}
+		if len(oldFileIDs)+len(newFileIDs) > scopedFinalizerFileLimit {
+			scopedFinalizerCandidate = false
+			return nil
+		}
+		if err := collectAffectedForFileTx(ctx, tx, fileID, affected); err != nil {
+			return err
+		}
+		if len(affected) > scopedFinalizerSymbolLimit {
+			scopedFinalizerCandidate = false
+		}
+		return nil
+	}
 
 	// Collect file jobs first, then parse them concurrently.
 	var jobs []fileJob
@@ -159,13 +268,13 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 		if src.Name == "" || src.Path == "" {
 			continue
 		}
-		_ = filepath.WalkDir(src.Path, func(path string, d os.DirEntry, err error) error {
-			if err != nil {
-				return nil
+		if err := filepath.WalkDir(src.Path, func(path string, d os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
 			}
 			rel, relErr := filepath.Rel(src.Path, path)
 			if relErr != nil {
-				return nil
+				return relErr
 			}
 			rel = filepath.ToSlash(rel)
 			if d.IsDir() {
@@ -179,29 +288,52 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 				return nil
 			}
 			jobs = append(jobs, fileJob{
-				src:  src,
-				path: path,
-				rel:  rel,
-				kind: kind,
-				prev: existing[path],
+				src:        src,
+				path:       path,
+				rel:        rel,
+				kind:       kind,
+				prev:       existing[path],
+				forceParse: engineDataDirty && kind == "script",
 			})
 			return nil
-		})
+		}); err != nil {
+			return ScanStats{}, fmt.Errorf("scan source %q: %w", src.Name, err)
+		}
 	}
 
 	// Override pass: files with the same rel_path across sources.
 	// The source with the lowest rank (highest priority) wins; others
 	// are skipped entirely (only a file record is stored, no parsing).
-	overrideWinners := map[string]int{} // rel_path -> lowest rank
+	replacePaths, err := collectSourceReplacePaths(cfg.Sources)
+	if err != nil {
+		return ScanStats{}, err
+	}
+	overrideWinners := map[string]Source{} // rel_path -> highest-priority source
 	for _, j := range jobs {
-		if wr, ok := overrideWinners[j.rel]; !ok || j.src.Rank < wr {
-			overrideWinners[j.rel] = j.src.Rank
+		if winner, ok := overrideWinners[j.rel]; !ok || j.src.Rank < winner.Rank {
+			overrideWinners[j.rel] = j.src
 		}
+	}
+	sourceNameByRank := map[int]string{}
+	for _, source := range cfg.Sources {
+		sourceNameByRank[source.Rank] = source.Name
 	}
 	overriddenCount := 0
 	for i := range jobs {
-		if jobs[i].src.Rank > overrideWinners[jobs[i].rel] {
+		winner := overrideWinners[jobs[i].rel]
+		if jobs[i].src.Rank > winner.Rank {
 			jobs[i].overridden = true
+			jobs[i].overrideReason = "same_relative_path"
+			jobs[i].overrideBySource = winner.Name
+			jobs[i].overrideByRank = winner.Rank
+			jobs[i].overrideRule = jobs[i].rel
+			overriddenCount++
+		} else if rank, rule, ok := replacePathEvidence(jobs[i].rel, jobs[i].src.Rank, replacePaths); ok {
+			jobs[i].overridden = true
+			jobs[i].overrideReason = "descriptor_replace_path"
+			jobs[i].overrideBySource = sourceNameByRank[rank]
+			jobs[i].overrideByRank = rank
+			jobs[i].overrideRule = rule
 			overriddenCount++
 		}
 	}
@@ -239,17 +371,19 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 	processed := 0
 
 	// Prepared statements: avoid re-parsing the same SQL once per row.
-	fileStmt, err := tx.PrepareContext(ctx, `INSERT INTO files(source_name,source_rank,path,rel_path,kind,mtime,sha256,overridden) VALUES(?,?,?,?,?,?,?,?)`)
+	fileStmt, err := tx.PrepareContext(ctx, `INSERT INTO files(source_name,source_rank,path,rel_path,kind,mtime,file_size,sha256,overridden,
+		override_reason,override_by_source,override_by_rank,override_rule) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return ScanStats{}, err
 	}
 	defer fileStmt.Close()
-	objStmt, err := tx.PrepareContext(ctx, `INSERT INTO objects(object_type,name,file_id,node_local_id,source_name,source_rank,path,line,col) VALUES(?,?,?,?,?,?,?,?,?)`)
+	objStmt, err := tx.PrepareContext(ctx, `INSERT INTO objects(object_type,name,value,file_id,node_local_id,source_name,source_rank,path,line,col,end_line,end_col) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return ScanStats{}, err
 	}
 	defer objStmt.Close()
-	refStmt, err := tx.PrepareContext(ctx, `INSERT INTO refs(from_object_type,from_object_name,ref_kind,ref_name,file_id,node_local_id,line,col,raw,resolved) VALUES(?,?,?,?,?,?,?,?,?,?)`)
+	refStmt, err := tx.PrepareContext(ctx, `INSERT INTO refs(from_object_type,from_object_name,ref_kind,ref_name,file_id,node_local_id,line,col,raw,resolved,
+		relation,phase,confidence,resolution_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return ScanStats{}, err
 	}
@@ -274,7 +408,7 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 		return ScanStats{}, err
 	}
 	defer schemaStmt.Close()
-	fieldStmt, err := tx.PrepareContext(ctx, `INSERT INTO object_fields(object_type,object_name,field,value_shape,file_id,source_name,source_rank,path,line,raw) VALUES(?,?,?,?,?,?,?,?,?,?)`)
+	fieldStmt, err := tx.PrepareContext(ctx, `INSERT INTO object_fields(object_type,object_name,field,value_shape,date_key,file_id,source_name,source_rank,path,line,raw) VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return ScanStats{}, err
 	}
@@ -313,10 +447,17 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 		stats.Files++
 		stats.BySource[src.Name]++
 		if res.skip {
+			if err := refreshSkippedFileMetadata(ctx, tx, res); err != nil {
+				return ScanStats{}, err
+			}
 			continue
 		}
+		fileChanges = true
 		if res.info == nil {
 			if res.job.prev.ID != 0 {
+				if err := trackOldFile(res.job.prev.ID); err != nil {
+					return ScanStats{}, err
+				}
 				if err := deleteFileRecords(ctx, tx, res.job.prev.ID); err != nil {
 					return ScanStats{}, err
 				}
@@ -325,21 +466,32 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 		}
 		if res.overridden {
 			if res.job.prev.ID != 0 {
+				if err := trackOldFile(res.job.prev.ID); err != nil {
+					return ScanStats{}, err
+				}
 				if err := deleteFileRecords(ctx, tx, res.job.prev.ID); err != nil {
 					return ScanStats{}, err
 				}
 			}
-			if _, err := fileStmt.ExecContext(ctx, src.Name, src.Rank, res.job.path, res.job.rel, res.job.kind, res.info.ModTime().Unix(), res.sum, 1); err != nil {
+			if _, err := fileStmt.ExecContext(ctx, src.Name, src.Rank, res.job.path, res.job.rel, res.job.kind, res.info.ModTime().UnixNano(), res.info.Size(), res.sum, 1,
+				res.job.overrideReason, res.job.overrideBySource, res.job.overrideByRank, res.job.overrideRule); err != nil {
 				return ScanStats{}, err
 			}
 			continue
 		}
 		if res.job.prev.ID != 0 {
+			if err := trackOldFile(res.job.prev.ID); err != nil {
+				return ScanStats{}, err
+			}
 			if err := deleteFileRecords(ctx, tx, res.job.prev.ID); err != nil {
 				return ScanStats{}, err
 			}
 		}
-		if _, err := writeFileResult(ctx, writer, res, &stats, locKeys, resources); err != nil {
+		rec, err := writeFileResult(ctx, writer, res, &stats, locKeys, resources)
+		if err != nil {
+			return ScanStats{}, err
+		}
+		if err := trackNewFile(rec.ID); err != nil {
 			return ScanStats{}, err
 		}
 	}
@@ -349,9 +501,53 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 		if tracked[path] {
 			continue
 		}
+		if err := trackOldFile(ex.ID); err != nil {
+			return ScanStats{}, err
+		}
+		fileChanges = true
 		if err := deleteFileRecords(ctx, tx, ex.ID); err != nil {
 			return ScanStats{}, err
 		}
+	}
+
+	// CWTools-style scan planning: a full filesystem walk is allowed to prove
+	// that the semantic snapshot is still current. The proof has to include
+	// inputs outside ordinary script jobs (map CSV/.map files and engine logs),
+	// otherwise an apparently no-op scan could leave a derived cache stale.
+	if !fileChanges && !engineDataDirty && publishedState.Ready() && cachedRuleVersion == indexRuleVersion && ftsCurrent {
+		stageStart := time.Now()
+		mapFingerprint, mapReusable, activeMapFiles, err := mapInputFingerprint(cfg)
+		if err != nil {
+			return ScanStats{}, err
+		}
+		mapCurrent, err := mapCacheMatchesInput(ctx, tx, mapFingerprint, mapReusable, activeMapFiles)
+		if err != nil {
+			return ScanStats{}, err
+		}
+		if mapCurrent {
+			if err := refreshScanStatsTotals(ctx, tx, &stats); err != nil {
+				return ScanStats{}, err
+			}
+			if err := tx.Commit(); err != nil {
+				return ScanStats{}, err
+			}
+			stats.Noop = true
+			stats.TimingsMillis["reuse_published_index"] = time.Since(stageStart).Milliseconds()
+			stats.ElapsedMillis = time.Since(start).Milliseconds()
+			fmt.Fprintln(os.Stderr, "[scan] no input changes; reused published index")
+			return stats, nil
+		}
+	}
+	scopedFinalizer := scopedFinalizerCandidate && len(oldFileIDs)+len(newFileIDs) <= scopedFinalizerFileLimit && len(affected) <= scopedFinalizerSymbolLimit
+	if scopedFinalizer {
+		// A tiny provider edit can fan out to many consumers. Keep the scoped
+		// validator below its SQL batch limit; a broad fan-out is still correct,
+		// but is better served by the established global finalizer.
+		fits, err := scopedValidatorCandidatesFit(ctx, tx, newFileIDs, affected, scopedValidatorFileLimit)
+		if err != nil {
+			return ScanStats{}, err
+		}
+		scopedFinalizer = fits
 	}
 
 	// Build indexes before running the cross-table finalizer queries so they
@@ -361,6 +557,10 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 	// in a fresh connection, then run finalizers in a new tx.
 	fmt.Fprintln(os.Stderr, "[scan] committing indexed rows")
 	stageStart := time.Now()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('scan_status','finalizing')
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`); err != nil {
+		return ScanStats{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return ScanStats{}, err
 	}
@@ -383,54 +583,119 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 	tx = tx2
 	stats.TimingsMillis["begin_finalize_tx"] = time.Since(stageStart).Milliseconds()
 
-	fmt.Fprintln(os.Stderr, "[scan] loading active symbol tables")
+	if scopedFinalizer {
+		fmt.Fprintln(os.Stderr, "[scan] resolving changed references only")
+		stageStart = time.Now()
+		if err := refreshRefsResolvedScoped(ctx, tx, newFileIDs, affected); err != nil {
+			return ScanStats{}, err
+		}
+		stats.TimingsMillis["resolve_refs"] = time.Since(stageStart).Milliseconds()
+		stats.TimingsMillis["resolve_refs_scoped"] = stats.TimingsMillis["resolve_refs"]
+
+		fmt.Fprintln(os.Stderr, "[scan] writing changed validation diagnostics only")
+		stageStart = time.Now()
+		if err := refreshValidatorDiagnosticsScoped(ctx, tx, newFileIDs, affected); err != nil {
+			return ScanStats{}, err
+		}
+		// Title/duplicate integrity is a graph-level invariant. Keep its proven
+		// full refresh for semantic file changes, while map-only changes can skip
+		// it because they do not alter the indexed object graph.
+		if fileChanges {
+			if err := refreshTitleIntegrityDiagnostics(ctx, tx); err != nil {
+				return ScanStats{}, err
+			}
+		}
+		stats.TimingsMillis["validator"] = time.Since(stageStart).Milliseconds()
+		stats.TimingsMillis["validator_scoped"] = stats.TimingsMillis["validator"]
+	} else {
+		fmt.Fprintln(os.Stderr, "[scan] loading active symbol tables")
+		stageStart = time.Now()
+		// Re-resolve refs against the current state of active objects.
+		objectNames, err := loadAllObjectNames(ctx, tx)
+		if err != nil {
+			return ScanStats{}, err
+		}
+		// Load ALL existing localization keys and resources from the database
+		// BEFORE resolving refs, so unchanged files' keys are not treated as
+		// unresolved just because they were not parsed in this incremental scan.
+		if err := loadAllLocKeys(ctx, tx, locKeys); err != nil {
+			return ScanStats{}, err
+		}
+		if err := loadAllResources(ctx, tx, resources); err != nil {
+			return ScanStats{}, err
+		}
+		stats.TimingsMillis["load_symbols"] = time.Since(stageStart).Milliseconds()
+		fmt.Fprintln(os.Stderr, "[scan] resolving references")
+		stageStart = time.Now()
+		if err := refreshRefsResolvedGo(ctx, tx, objectNames, locKeys, resources); err != nil {
+			return ScanStats{}, err
+		}
+		stats.TimingsMillis["resolve_refs"] = time.Since(stageStart).Milliseconds()
+
+		// Re-run validator cross-file integrity diagnostics.
+		fmt.Fprintln(os.Stderr, "[scan] writing validation diagnostics")
+		stageStart = time.Now()
+		if _, err := tx.ExecContext(ctx, `DELETE FROM diagnostics WHERE source='validator'`); err != nil {
+			return ScanStats{}, err
+		}
+		if err := addValidationDiagnostics(ctx, tx, locKeys, resources, objectNames); err != nil {
+			return ScanStats{}, err
+		}
+		if err := refreshTitleIntegrityDiagnostics(ctx, tx); err != nil {
+			return ScanStats{}, err
+		}
+		stats.TimingsMillis["validator"] = time.Since(stageStart).Milliseconds()
+	}
+
+	fmt.Fprintln(os.Stderr, "[scan] checking map context cache inputs")
 	stageStart = time.Now()
-	// Re-resolve refs against the current state of active objects.
-	objectNames, err := loadAllObjectNames(ctx, tx)
+	mapFingerprint, mapReusable, activeMapFiles, err := mapInputFingerprint(cfg)
 	if err != nil {
 		return ScanStats{}, err
 	}
-	// Load ALL existing localization keys and resources from the database
-	// BEFORE resolving refs, so unchanged files' keys are not treated as
-	// unresolved just because they were not parsed in this incremental scan.
-	if err := loadAllLocKeys(ctx, tx, locKeys); err != nil {
+	mapCurrent, err := mapCacheMatchesInput(ctx, tx, mapFingerprint, mapReusable, activeMapFiles)
+	if err != nil {
 		return ScanStats{}, err
 	}
-	if err := loadAllResources(ctx, tx, resources); err != nil {
-		return ScanStats{}, err
-	}
-	stats.TimingsMillis["load_symbols"] = time.Since(stageStart).Milliseconds()
-	fmt.Fprintln(os.Stderr, "[scan] resolving references")
-	stageStart = time.Now()
-	if err := refreshRefsResolvedGo(ctx, tx, objectNames, locKeys, resources); err != nil {
-		return ScanStats{}, err
-	}
-	stats.TimingsMillis["resolve_refs"] = time.Since(stageStart).Milliseconds()
-
-	// Re-run validator cross-file integrity diagnostics.
-	fmt.Fprintln(os.Stderr, "[scan] writing validation diagnostics")
-	stageStart = time.Now()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM diagnostics WHERE source='validator'`); err != nil {
-		return ScanStats{}, err
-	}
-	if err := addValidationDiagnostics(ctx, tx, locKeys, resources, objectNames); err != nil {
-		return ScanStats{}, err
-	}
-	stats.TimingsMillis["validator"] = time.Since(stageStart).Milliseconds()
-
-	fmt.Fprintln(os.Stderr, "[scan] rebuilding map context cache")
-	stageStart = time.Now()
-	if err := rebuildMapCache(ctx, tx, cfg); err != nil {
-		return ScanStats{}, err
+	if mapCurrent {
+		fmt.Fprintln(os.Stderr, "[scan] reusing map context cache")
+		stats.TimingsMillis["map_context_reused"] = time.Since(stageStart).Milliseconds()
+	} else {
+		fmt.Fprintln(os.Stderr, "[scan] rebuilding map context cache")
+		if err := rebuildMapCache(ctx, tx, cfg); err != nil {
+			return ScanStats{}, err
+		}
+		stats.TimingsMillis["map_context_rebuild"] = time.Since(stageStart).Milliseconds()
 	}
 	stats.TimingsMillis["map_context"] = time.Since(stageStart).Milliseconds()
 
-	fmt.Fprintln(os.Stderr, "[scan] ingesting engine logs and rebuilding semantic FTS")
+	fmt.Fprintln(os.Stderr, "[scan] refreshing engine data and semantic FTS")
 	stageStart = time.Now()
-	if err := rebuildEngineData(ctx, tx, cfg.EngineLogs); err != nil {
-		return ScanStats{}, err
+	if engineDataDirty {
+		fmt.Fprintln(os.Stderr, "[scan] ingesting changed engine logs")
+		if err := rebuildEngineData(ctx, tx, cfg.EngineLogs); err != nil {
+			return ScanStats{}, err
+		}
+		if err := storeEngineDataFingerprint(ctx, tx, engineFingerprint); err != nil {
+			return ScanStats{}, err
+		}
 	}
-	if err := rebuildSearchFTS(ctx, tx); err != nil {
+	fullFTSRebuild := engineDataDirty || cachedRuleVersion != indexRuleVersion || !ftsPresentBeforeSchema || !ftsCurrent || !db.tableExists(ctx, "search_fts")
+	ftsStart := time.Now()
+	if fullFTSRebuild {
+		fmt.Fprintln(os.Stderr, "[scan] rebuilding semantic FTS")
+		if err := rebuildSearchFTS(ctx, tx); err != nil {
+			return ScanStats{}, err
+		}
+		stats.TimingsMillis["semantic_fts_rebuild"] = time.Since(ftsStart).Milliseconds()
+	} else {
+		fmt.Fprintf(os.Stderr, "[scan] refreshing semantic FTS for %d changed files\n", len(oldFileIDs)+len(newFileIDs))
+		if err := refreshSearchFTSForFiles(ctx, tx, oldFileIDs, newFileIDs); err != nil {
+			return ScanStats{}, err
+		}
+		stats.TimingsMillis["semantic_fts_scoped"] = time.Since(ftsStart).Milliseconds()
+	}
+	if err := storeSearchFTSRowCount(ctx, tx); err != nil {
 		return ScanStats{}, err
 	}
 	stats.TimingsMillis["semantic_fts"] = time.Since(stageStart).Milliseconds()
@@ -440,10 +705,23 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, indexRuleVersion); err != nil {
 		return ScanStats{}, err
 	}
-	if err := db.RefreshArchitectureOverviewCache(ctx, tx); err != nil {
+	if err := bumpScanGeneration(ctx, tx); err != nil {
 		return ScanStats{}, err
 	}
-	stats.Diagnostics = countDiagnostics(ctx, tx)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('scan_status','ready')
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`); err != nil {
+		return ScanStats{}, err
+	}
+	// The overview is derived only from the semantic tables. A map-only input
+	// change therefore has nothing new to publish here.
+	if fileChanges {
+		if err := db.RefreshArchitectureOverviewCache(ctx, tx); err != nil {
+			return ScanStats{}, err
+		}
+	}
+	if err := refreshScanStatsTotals(ctx, tx, &stats); err != nil {
+		return ScanStats{}, err
+	}
 	stats.TimingsMillis["count_diagnostics"] = time.Since(stageStart).Milliseconds()
 	stageStart = time.Now()
 	if err := tx.Commit(); err != nil {
@@ -451,20 +729,24 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 	}
 	stats.TimingsMillis["commit_finalize"] = time.Since(stageStart).Milliseconds()
 	stageStart = time.Now()
+	checkpoint, checkpointErr := db.checkpointWALAfterScan(ctx)
+	if checkpointErr != nil {
+		fmt.Fprintf(os.Stderr, "[scan] WAL checkpoint deferred after scan: %v\n", checkpointErr)
+	} else {
+		stats.WALCheckpoint = &checkpoint
+		fmt.Fprintf(os.Stderr, "[scan] WAL checkpoint %s busy=%d frames=%d/%d\n", checkpoint.Mode, checkpoint.Busy, checkpoint.CheckpointedFrames, checkpoint.LogFrames)
+	}
 	var freePages, totalPages int
 	_ = db.sql.QueryRowContext(ctx, `PRAGMA freelist_count`).Scan(&freePages)
 	_ = db.sql.QueryRowContext(ctx, `PRAGMA page_count`).Scan(&totalPages)
 	if totalPages > 0 && freePages*100/totalPages >= 5 {
-		fmt.Fprintf(os.Stderr, "[scan] compacting sqlite cache (%d free pages)\n", freePages)
-		if _, err := db.sql.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
-			return ScanStats{}, err
-		}
-		if _, err := db.sql.ExecContext(ctx, `VACUUM`); err != nil {
-			return ScanStats{}, err
-		}
+		// VACUUM is intentionally not a normal scan-finalizer. It needs a much
+		// stronger lock and can create another large write burst; leave space
+		// recovery to an explicit maintenance operation instead.
+		fmt.Fprintf(os.Stderr, "[scan] cache has %d free pages; deferred VACUUM to explicit maintenance\n", freePages)
 	}
-	stats.TimingsMillis["compact_cache"] = time.Since(stageStart).Milliseconds()
-	for _, key := range []string{"commit_indexed_rows", "build_indexes", "begin_finalize_tx", "load_symbols", "resolve_refs", "validator", "map_context", "semantic_fts", "count_diagnostics", "commit_finalize", "compact_cache"} {
+	stats.TimingsMillis["checkpoint_wal"] = time.Since(stageStart).Milliseconds()
+	for _, key := range []string{"commit_indexed_rows", "build_indexes", "begin_finalize_tx", "load_symbols", "resolve_refs", "resolve_refs_scoped", "validator", "validator_scoped", "map_context", "map_context_rebuild", "map_context_reused", "semantic_fts", "semantic_fts_rebuild", "semantic_fts_scoped", "count_diagnostics", "commit_finalize", "checkpoint_wal"} {
 		if ms, ok := stats.TimingsMillis[key]; ok {
 			fmt.Fprintf(os.Stderr, "[scan] timing %s=%dms\n", key, ms)
 		}
@@ -473,16 +755,36 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 	return stats, nil
 }
 
+func refreshScanStatsTotals(ctx context.Context, tx *sql.Tx, stats *ScanStats) error {
+	counts := []struct {
+		table string
+		value *int
+	}{
+		{"nodes", &stats.Nodes},
+		{"objects", &stats.Objects},
+		{"refs", &stats.References},
+		{"localization", &stats.Localization},
+		{"resources", &stats.Resources},
+		{"schema_fields", &stats.SchemaFields},
+		{"object_fields", &stats.ObjectFields},
+		{"diagnostics", &stats.Diagnostics},
+	}
+	for _, count := range counts {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+count.table).Scan(count.value); err != nil {
+			return fmt.Errorf("count indexed %s: %w", count.table, err)
+		}
+	}
+	return nil
+}
+
 func deleteFileRecords(ctx context.Context, tx *sql.Tx, fileID int64) error {
-	for _, table := range []string{"objects", "refs", "localization", "resources", "schema_fields", "object_fields", "diagnostics", "saved_scopes", "variables"} {
+	// nodes/object_defs are no longer written, but current schemas always
+	// contain them. Propagating deletion failures prevents a locked or corrupt
+	// cache from being partially refreshed under the guise of compatibility.
+	for _, table := range []string{"objects", "refs", "localization", "resources", "schema_fields", "object_fields", "diagnostics", "saved_scopes", "variables", "nodes", "object_defs"} {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE file_id=?`, fileID); err != nil {
 			return err
 		}
-	}
-	// nodes/object_defs are no longer written; clean them defensively if the
-	// database was created by an older ck3-index version.
-	for _, table := range []string{"nodes", "object_defs"} {
-		tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE file_id=?`, fileID) //nolint:errcheck
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM files WHERE id=?`, fileID); err != nil {
 		return err
@@ -490,9 +792,23 @@ func deleteFileRecords(ctx context.Context, tx *sql.Tx, fileID int64) error {
 	return nil
 }
 
+func refreshSkippedFileMetadata(ctx context.Context, tx *sql.Tx, result fileResult) error {
+	if result.job.prev.ID == 0 || result.info == nil {
+		return nil
+	}
+	mtime := result.info.ModTime().UnixNano()
+	size := result.info.Size()
+	if result.job.prev.MTime == mtime && result.job.prev.Size == size {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE files SET mtime=?,file_size=? WHERE id=?`,
+		mtime, size, result.job.prev.ID)
+	return err
+}
+
 func writeFileResult(ctx context.Context, w scanWriter, res fileResult, stats *ScanStats, locKeys, resources map[string]bool) (fileRecord, error) {
 	src := res.job.src
-	r2, err := w.fileStmt.ExecContext(ctx, src.Name, src.Rank, res.job.path, res.job.rel, res.job.kind, res.info.ModTime().Unix(), res.sum, 0)
+	r2, err := w.fileStmt.ExecContext(ctx, src.Name, src.Rank, res.job.path, res.job.rel, res.job.kind, res.info.ModTime().UnixNano(), res.info.Size(), res.sum, 0, "", "", 0, "")
 	if err != nil {
 		return fileRecord{}, err
 	}
@@ -500,7 +816,7 @@ func writeFileResult(ctx context.Context, w scanWriter, res fileResult, stats *S
 	if err != nil {
 		return fileRecord{}, err
 	}
-	rec := fileRecord{ID: fid, SourceName: src.Name, SourceRank: src.Rank, Path: res.job.path, RelPath: res.job.rel, Kind: res.job.kind, MTime: res.info.ModTime().Unix(), SHA: res.sum}
+	rec := fileRecord{ID: fid, SourceName: src.Name, SourceRank: src.Rank, Path: res.job.path, RelPath: res.job.rel, Kind: res.job.kind, MTime: res.info.ModTime().UnixNano(), Size: res.info.Size(), SHA: res.sum}
 	switch res.job.kind {
 	case "script":
 		for _, pe := range res.parsed.Errors {
@@ -529,21 +845,22 @@ func writeFileResult(ctx context.Context, w scanWriter, res fileResult, stats *S
 		}
 		objs := extractObjects(rec, res.parsed.Nodes)
 		for _, obj := range objs {
-			if _, err := w.objStmt.ExecContext(ctx, obj.Type, obj.Name, obj.FileID, obj.NodeID, obj.SourceName, obj.SourceRank, obj.Path, obj.Line, obj.Col); err != nil {
+			if _, err := w.objStmt.ExecContext(ctx, obj.Type, obj.Name, obj.Value, obj.FileID, obj.NodeID, obj.SourceName, obj.SourceRank, obj.Path, obj.Line, obj.Col, obj.EndLine, obj.EndCol); err != nil {
 				return fileRecord{}, err
 			}
 			stats.Objects++
 		}
 		refs := extractRefs(rec, res.parsed.Nodes, objs)
 		for _, ref := range refs {
-			if _, err := w.refStmt.ExecContext(ctx, ref.FromType, ref.FromName, ref.Kind, ref.Name, ref.FileID, ref.NodeID, ref.Line, ref.Col, ref.Raw, ref.Resolved); err != nil {
+			if _, err := w.refStmt.ExecContext(ctx, ref.FromType, ref.FromName, ref.Kind, ref.Name, ref.FileID, ref.NodeID, ref.Line, ref.Col, ref.Raw, ref.Resolved,
+				ref.Relation, ref.Phase, ref.Confidence, ref.ResolutionReason); err != nil {
 				return fileRecord{}, err
 			}
 			stats.References++
 		}
 		fields := extractObjectFields(rec, res.parsed.Nodes, objs)
 		for _, field := range fields {
-			if _, err := w.fieldStmt.ExecContext(ctx, field.Type, field.ObjectName, field.Field, field.Shape, field.FileID, field.SourceName, field.SourceRank, field.Path, field.Line, field.Raw); err != nil {
+			if _, err := w.fieldStmt.ExecContext(ctx, field.Type, field.ObjectName, field.Field, field.Shape, field.DateKey, field.FileID, field.SourceName, field.SourceRank, field.Path, field.Line, field.Raw); err != nil {
 				return fileRecord{}, err
 			}
 			stats.ObjectFields++
@@ -652,20 +969,22 @@ func loadAllResources(ctx context.Context, tx *sql.Tx, seen map[string]bool) err
 // an SQL EXISTS subquery. This avoids needing the objects index during a
 // clean scan, where indexes are built only after the bulk insert.
 func refreshRefsResolvedGo(ctx context.Context, tx *sql.Tx, objectNames map[string]bool, locKeys map[string]bool, resPaths map[string]bool) error {
-	rows, err := tx.QueryContext(ctx, `SELECT id, ref_kind, ref_name, resolved FROM refs`)
+	rows, err := tx.QueryContext(ctx, `SELECT id, ref_kind, ref_name, resolved, resolution_reason FROM refs`)
 	if err != nil {
 		return err
 	}
 	type rd struct {
 		id       int64
 		resolved bool
+		reason   string
 	}
 	var updates []rd
 	for rows.Next() {
 		var id int64
 		var kind, name string
 		var current int
-		if err := rows.Scan(&id, &kind, &name, &current); err != nil {
+		var currentReason string
+		if err := rows.Scan(&id, &kind, &name, &current, &currentReason); err != nil {
 			rows.Close()
 			return err
 		}
@@ -683,41 +1002,42 @@ func refreshRefsResolvedGo(ctx context.Context, tx *sql.Tx, objectNames map[stri
 			_, res = scopeTransitionsIn[name]
 		case "define":
 			_, res = tigerDefines[name]
-		case "flag", "global_var":
+		case "flag", "global_var", "variable", "character_flag":
 			res = true
 		default:
 			res = objectNames[kind+":"+name] || objectNames[name]
 		}
-		if (current != 0) == res {
+		reason := referenceResolutionReason(kind, res)
+		if (current != 0) == res && currentReason == reason {
 			continue
 		}
-		updates = append(updates, rd{id: id, resolved: res})
+		updates = append(updates, rd{id: id, resolved: res, reason: reason})
 	}
 	rows.Close()
 
-	// Batch only changed rows: group by resolved value and run two range updates.
+	// Batch only changed rows, grouped by the small set of resolution reasons.
 	if len(updates) == 0 {
 		return nil
 	}
-	resolvedIDs := make([]int64, 0, len(updates))
-	unresolvedIDs := make([]int64, 0, len(updates))
+	groups := map[string][]int64{}
 	for _, u := range updates {
-		if u.resolved {
-			resolvedIDs = append(resolvedIDs, u.id)
-		} else {
-			unresolvedIDs = append(unresolvedIDs, u.id)
+		key := strconv.FormatBool(u.resolved) + "\x00" + u.reason
+		groups[key] = append(groups[key], u.id)
+	}
+	for key, ids := range groups {
+		parts := strings.SplitN(key, "\x00", 2)
+		resolved := 0
+		if parts[0] == "true" {
+			resolved = 1
 		}
-	}
-	if err := batchUpdateResolved(ctx, tx, 1, resolvedIDs); err != nil {
-		return err
-	}
-	if err := batchUpdateResolved(ctx, tx, 0, unresolvedIDs); err != nil {
-		return err
+		if err := batchUpdateResolution(ctx, tx, resolved, parts[1], ids); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func batchUpdateResolved(ctx context.Context, tx *sql.Tx, val int, ids []int64) error {
+func batchUpdateResolution(ctx context.Context, tx *sql.Tx, val int, reason string, ids []int64) error {
 	const batchSize = 500
 	for i := 0; i < len(ids); i += batchSize {
 		end := i + batchSize
@@ -726,16 +1046,52 @@ func batchUpdateResolved(ctx context.Context, tx *sql.Tx, val int, ids []int64) 
 		}
 		placeholders := strings.Repeat("?,", end-i)
 		placeholders = placeholders[:len(placeholders)-1]
-		args := make([]any, 0, end-i+1)
-		args = append(args, val)
+		args := make([]any, 0, end-i+2)
+		args = append(args, val, reason)
 		for _, id := range ids[i:end] {
 			args = append(args, id)
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE refs SET resolved=? WHERE id IN (`+placeholders+`)`, args...); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE refs SET resolved=?,resolution_reason=? WHERE id IN (`+placeholders+`)`, args...); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func referenceResolutionReason(kind string, resolved bool) string {
+	if resolved {
+		switch kind {
+		case "localization":
+			return "indexed_localization"
+		case "resource":
+			return "indexed_resource"
+		case "sound":
+			return "known_engine_sound"
+		case "iterator", "scope_transition", "define":
+			return "known_engine_symbol"
+		case "flag", "global_var", "variable", "character_flag":
+			return "runtime_symbol"
+		default:
+			return "indexed_definition"
+		}
+	}
+	switch kind {
+	case "scope":
+		return "runtime_scope"
+	case "localization":
+		return "missing_localization"
+	case "resource":
+		return "missing_resource"
+	case "sound":
+		return "unknown_engine_sound"
+	case "iterator", "scope_transition", "define":
+		return "unknown_engine_symbol"
+	default:
+		if isObjectRefKind(kind) {
+			return "missing_definition"
+		}
+		return "unverified_runtime_symbol"
+	}
 }
 
 var ck3LoadRoots = map[string]bool{
@@ -785,6 +1141,9 @@ func classifyRel(rel string) string {
 	if strings.Contains(base, "summary") {
 		return ""
 	}
+	if ext == ".txt" && isGeographicalRegionDefinitionsPath(p) {
+		return "script"
+	}
 	switch ext {
 	case ".info":
 		if root == "common" || root == "events" {
@@ -794,11 +1153,14 @@ func classifyRel(rel string) string {
 		if root == "common" || root == "events" || root == "history" || root == "gui" {
 			return "script"
 		}
+		if root == "gfx" || root == "map_data" || root == "sound" {
+			return "resource"
+		}
 	case ".yml", ".yaml":
 		if root == "localization" {
 			return "localization"
 		}
-	case ".dds", ".png", ".tga", ".mesh", ".anim", ".wav", ".ogg":
+	case ".dds", ".png", ".tga", ".jpg", ".jpeg", ".bmp", ".mesh", ".anim", ".shader", ".bk2", ".ttf", ".otf", ".wav", ".ogg":
 		if root == "gfx" || root == "map_data" || root == "sound" {
 			return "resource"
 		}
@@ -807,13 +1169,13 @@ func classifyRel(rel string) string {
 }
 
 func insertFile(ctx context.Context, tx *sql.Tx, src Source, path, rel, kind string, info os.FileInfo, sum string) (fileRecord, error) {
-	res, err := tx.ExecContext(ctx, `INSERT INTO files(source_name,source_rank,path,rel_path,kind,mtime,sha256) VALUES(?,?,?,?,?,?,?)`,
-		src.Name, src.Rank, path, rel, kind, info.ModTime().Unix(), sum)
+	res, err := tx.ExecContext(ctx, `INSERT INTO files(source_name,source_rank,path,rel_path,kind,mtime,file_size,sha256) VALUES(?,?,?,?,?,?,?,?)`,
+		src.Name, src.Rank, path, rel, kind, info.ModTime().UnixNano(), info.Size(), sum)
 	if err != nil {
 		return fileRecord{}, err
 	}
 	id, _ := res.LastInsertId()
-	return fileRecord{ID: id, SourceName: src.Name, SourceRank: src.Rank, Path: path, RelPath: rel, Kind: kind, MTime: info.ModTime().Unix(), SHA: sum}, nil
+	return fileRecord{ID: id, SourceName: src.Name, SourceRank: src.Rank, Path: path, RelPath: rel, Kind: kind, MTime: info.ModTime().UnixNano(), Size: info.Size(), SHA: sum}, nil
 }
 
 func shaFile(path string) (string, error) {
@@ -830,12 +1192,17 @@ func shaFile(path string) (string, error) {
 }
 
 type fileJob struct {
-	src        Source
-	path       string
-	rel        string
-	kind       string
-	prev       fileRecord
-	overridden bool
+	src              Source
+	path             string
+	rel              string
+	kind             string
+	prev             fileRecord
+	overridden       bool
+	overrideReason   string
+	overrideBySource string
+	overrideByRank   int
+	overrideRule     string
+	forceParse       bool
 }
 
 // guiBuiltinTypes are CK3 GUI type-building-block names that appear in
@@ -849,7 +1216,12 @@ var guiBuiltinTypes = map[string]bool{
 	"window": true, "text": true, "tooltip": true, "tab": true,
 	"slider": true, "image": true, "combobox": true, "overlapping": true,
 	"button_group": true, "button_round": true, "button_flat": true,
-	"types": true, "var": true, "position": true, "animation": true,
+	"text_single": true, "text_multi": true, "scrollarea": true,
+	"fixedgridbox": true, "dynamicgridbox": true, "portrait": true,
+	"coat_of_arms": true, "background": true, "state": true,
+	"types": true, "type": true, "template": true, "local_template": true,
+	"block": true, "blockoverride": true,
+	"var": true, "position": true, "size": true, "animation": true,
 	"aigfx_window": true,
 }
 
@@ -936,7 +1308,10 @@ func parseOneFile(j fileJob) fileResult {
 		if err != nil {
 			sum = ""
 		}
-		if j.prev.ID != 0 && sum != "" && sum == j.prev.SHA && j.prev.Overridden {
+		if j.prev.ID != 0 && sum != "" && sum == j.prev.SHA && j.prev.Overridden &&
+			j.prev.SourceName == j.src.Name && j.prev.SourceRank == j.src.Rank && j.prev.Kind == j.kind &&
+			j.prev.OverrideReason == j.overrideReason && j.prev.OverrideBySource == j.overrideBySource &&
+			j.prev.OverrideByRank == j.overrideByRank && j.prev.OverrideRule == j.overrideRule {
 			return fileResult{job: j, info: info, sum: sum, skip: true}
 		}
 		return fileResult{job: j, info: info, sum: sum, overridden: true}
@@ -946,11 +1321,12 @@ func parseOneFile(j fileJob) fileResult {
 	if err != nil {
 		return fileResult{job: j}
 	}
-	// Incremental fast path: hash only if mtime+size is suspicious.
-	if j.prev.ID != 0 && j.prev.SHA != "" && !j.prev.Overridden && j.prev.MTime == info.ModTime().Unix() && j.prev.Kind == j.kind {
-		// Likely unchanged. We still verify by hash below only if cheap.
-		// To be safe without re-reading huge binary assets, trust mtime+size
-		// for non-script files and hash text files for correctness.
+	// Incremental fast path: text is always hashed for correctness. Large
+	// binary resources may trust nanosecond mtime plus size, avoiding repeated
+	// reads of map rasters while still detecting ordinary same-second edits.
+	if !j.forceParse && j.prev.ID != 0 && j.prev.SHA != "" && !j.prev.Overridden &&
+		j.prev.SourceName == j.src.Name && j.prev.SourceRank == j.src.Rank &&
+		j.prev.MTime == info.ModTime().UnixNano() && j.prev.Size == info.Size() && j.prev.Kind == j.kind {
 		if j.kind != "script" && j.kind != "localization" && j.kind != "schema" {
 			return fileResult{job: j, info: info, sum: j.prev.SHA, skip: true}
 		}
@@ -961,18 +1337,27 @@ func parseOneFile(j fileJob) fileResult {
 	}
 	h := sha256.Sum256(data)
 	sum := hex.EncodeToString(h[:])
-	if j.prev.ID != 0 && j.prev.SHA != "" && sum == j.prev.SHA {
+	if !j.forceParse && j.prev.ID != 0 && j.prev.SHA != "" && !j.prev.Overridden &&
+		j.prev.SourceName == j.src.Name && j.prev.SourceRank == j.src.Rank &&
+		j.prev.Kind == j.kind && sum == j.prev.SHA {
 		return fileResult{job: j, info: info, sum: sum, skip: true}
 	}
 	r := fileResult{job: j, info: info, sum: sum}
 	switch j.kind {
 	case "script":
-		r.parsed = script.Parse(string(data))
-		r.ctxDiags = checkScriptContext(r.parsed.Nodes, j.rel)
+		isGUI := strings.HasSuffix(strings.ToLower(j.rel), ".gui")
+		if isGUI {
+			r.parsed = script.ParseGUI(string(data))
+		} else {
+			r.parsed = script.Parse(string(data))
+			r.ctxDiags = checkScriptContext(r.parsed.Nodes, j.rel)
+		}
 		r.ctxDiags = append(r.ctxDiags, checkScriptLint(r.parsed.Nodes, j.rel, j.src.Name)...)
-		r.ctxDiags = append(r.ctxDiags, checkScopeTracker(r.parsed.Nodes, j.rel)...)
-		r.savedScopes = collectSavedScopes(r.parsed.Nodes)
-		r.variables = collectVariables(r.parsed.Nodes)
+		if !isGUI {
+			r.ctxDiags = append(r.ctxDiags, checkScopeTracker(r.parsed.Nodes, j.rel)...)
+			r.savedScopes = collectSavedScopes(r.parsed.Nodes)
+			r.variables = collectVariables(r.parsed.Nodes)
+		}
 		// M20: scripted effect recursion check needs the effect's name.
 		if strings.Contains(j.rel, "scripted_effects") {
 			for _, n := range r.parsed.Nodes {
@@ -1115,18 +1500,21 @@ func insertNodesPrepared(ctx context.Context, stmt *sql.Stmt, fileID int64, node
 }
 
 type objectRow struct {
-	Type, Name string
-	FileID     int64
-	NodeID     int64
-	SourceName string
-	SourceRank int
-	Path       string
-	Line, Col  int
+	Type, Name      string
+	Value           string
+	FileID          int64
+	NodeID          int64
+	SourceName      string
+	SourceRank      int
+	Path            string
+	Line, Col       int
+	EndLine, EndCol int
 }
 
 type objectFieldRow struct {
 	Type, ObjectName string
 	Field, Shape     string
+	DateKey          int
 	FileID           int64
 	SourceName       string
 	SourceRank       int
@@ -1139,10 +1527,86 @@ func extractObjects(rec fileRecord, nodes []*script.Node) []objectRow {
 	var out []objectRow
 	rel := filepath.ToSlash(strings.ToLower(rec.RelPath))
 	topType := objectTypeForPath(rel)
+	// Scripted variables are top-level @name = value substitutions. Keep them
+	// in the ordinary object graph so search, definitions, references, source
+	// priority, and public/private filtering all work without a parallel index.
+	walk(nodes, func(n *script.Node) {
+		if n.Kind == "atom" && scriptedVariableName.MatchString(strings.TrimSpace(n.Key)) {
+			out = append(out, obj(rec, "scripted_variable", n.Key, n))
+		}
+	})
 	if strings.Contains(rel, "/events/") || strings.HasPrefix(rel, "events/") {
 		for _, n := range nodes {
 			if n.Kind == "block" && strings.Contains(n.Key, ".") {
 				out = append(out, obj(rec, "event", n.Key, n))
+			}
+		}
+		return out
+	}
+	if isLawDefinitionsPath(rel) {
+		for _, group := range nodes {
+			if group.Kind != "block" || group.Key == "" {
+				continue
+			}
+			out = append(out, obj(rec, "law_group", group.Key, group))
+			for _, child := range group.Children {
+				if child.Kind == "block" && child.Key != "" && !lawGroupFields[child.Key] {
+					out = append(out, obj(rec, "law", child.Key, child))
+				}
+			}
+		}
+		return out
+	}
+	if isDoctrineDefinitionsPath(rel) {
+		for _, group := range nodes {
+			if group.Kind != "block" || group.Key == "" {
+				continue
+			}
+			out = append(out, obj(rec, "doctrine_group", group.Key, group))
+			for _, child := range group.Children {
+				if child.Kind == "block" && child.Key != "" && !doctrineGroupFields[child.Key] {
+					out = append(out, obj(rec, "doctrine", child.Key, child))
+				}
+			}
+		}
+		return out
+	}
+	if isGameRuleDefinitionsPath(rel) {
+		for _, rule := range nodes {
+			if rule.Kind != "block" || rule.Key == "" {
+				continue
+			}
+			out = append(out, obj(rec, "game_rule", rule.Key, rule))
+			for _, child := range rule.Children {
+				if child.Kind == "block" && child.Key != "" && !gameRuleFields[child.Key] {
+					out = append(out, obj(rec, "game_rule_setting", child.Key, child))
+				}
+			}
+		}
+		return out
+	}
+	if isCourtAmenityDefinitionsPath(rel) {
+		for _, category := range nodes {
+			if category.Kind != "block" || category.Key == "" {
+				continue
+			}
+			out = append(out, obj(rec, "court_amenity_category", category.Key, category))
+			for _, child := range category.Children {
+				if child.Kind == "block" && child.Key != "" {
+					out = append(out, obj(rec, "court_amenity_level", child.Key, child))
+				}
+			}
+		}
+		return out
+	}
+	if isAchievementGroupsPath(rel) {
+		for _, group := range nodes {
+			if group.Kind != "block" || group.Key != "group" {
+				continue
+			}
+			name := childAtomValue(group, "name")
+			if name != "" {
+				out = append(out, obj(rec, "achievement_group", name, group))
 			}
 		}
 		return out
@@ -1183,7 +1647,21 @@ func extractObjects(rec fileRecord, nodes []*script.Node) []objectRow {
 	}
 	if strings.HasSuffix(rel, ".gui") {
 		for _, n := range nodes {
-			if n.Kind == "block" && n.Key != "" && !guiBuiltinTypes[n.Key] {
+			if n.Kind == "block" && (n.Operator == "template" || n.Operator == "local_template") {
+				out = append(out, obj(rec, "gui_template", n.Key, n))
+				continue
+			}
+			if n.Kind == "block" && n.Key == "types" {
+				for _, child := range n.Children {
+					if child.Operator == "type" && child.Key != "" {
+						out = append(out, obj(rec, "gui", child.Key, child))
+					}
+				}
+				continue
+			}
+			// Preserve support for legacy/top-level GUI definitions while
+			// excluding Jomini primitives and utility blocks.
+			if n.Kind == "block" && n.Key != "" && !guiBuiltinTypes[strings.ToLower(n.Key)] {
 				out = append(out, obj(rec, "gui", n.Key, n))
 			}
 		}
@@ -1192,7 +1670,11 @@ func extractObjects(rec fileRecord, nodes []*script.Node) []objectRow {
 }
 
 func obj(rec fileRecord, typ, name string, n *script.Node) objectRow {
-	return objectRow{Type: typ, Name: name, FileID: rec.ID, NodeID: n.ID, SourceName: rec.SourceName, SourceRank: rec.SourceRank, Path: rec.Path, Line: n.Line, Col: n.Col}
+	value := ""
+	if typ == "scripted_variable" {
+		value = n.Value
+	}
+	return objectRow{Type: typ, Name: name, Value: value, FileID: rec.ID, NodeID: n.ID, SourceName: rec.SourceName, SourceRank: rec.SourceRank, Path: rec.Path, Line: n.Line, Col: n.Col, EndLine: n.EndLine, EndCol: n.EndCol}
 }
 
 func extractObjectFields(rec fileRecord, nodes []*script.Node, objs []objectRow) []objectFieldRow {
@@ -1219,11 +1701,32 @@ func extractObjectFields(rec fileRecord, nodes []*script.Node, objs []objectRow)
 			if child.Key == "" {
 				continue
 			}
+			if obj.Type == "character" {
+				if date, ok := parseDateKey(child.Key); ok && child.Kind == "block" {
+					for _, historyField := range child.Children {
+						appendCharacterHistoryFields(&out, rec, obj, historyField, date)
+					}
+					continue
+				}
+			}
+			if obj.Type == "law_group" && child.Kind == "block" && !lawGroupFields[child.Key] {
+				continue
+			}
+			if obj.Type == "doctrine_group" && child.Kind == "block" && !doctrineGroupFields[child.Key] {
+				continue
+			}
+			if obj.Type == "game_rule" && child.Kind == "block" && !gameRuleFields[child.Key] {
+				continue
+			}
+			if obj.Type == "court_amenity_category" && child.Kind == "block" {
+				continue
+			}
 			out = append(out, objectFieldRow{
 				Type:       obj.Type,
 				ObjectName: obj.Name,
 				Field:      child.Key,
 				Shape:      fieldValueShape(child),
+				DateKey:    0,
 				FileID:     rec.ID,
 				SourceName: rec.SourceName,
 				SourceRank: rec.SourceRank,
@@ -1236,36 +1739,163 @@ func extractObjectFields(rec fileRecord, nodes []*script.Node, objs []objectRow)
 	return out
 }
 
+// appendCharacterHistoryFields flattens one dated history block into the
+// ordinary object_fields index. The date remains metadata instead of becoming
+// a fake schema field such as "1066.1.1". CK3 also permits adoption and other
+// history effects inside effect={}, so those direct children are indexed with
+// the same date while the effect container itself is retained as evidence.
+func appendCharacterHistoryFields(out *[]objectFieldRow, rec fileRecord, obj objectRow, field *script.Node, date int) {
+	if field == nil || field.Key == "" {
+		return
+	}
+	appendField := func(n *script.Node) {
+		*out = append(*out, objectFieldRow{
+			Type: obj.Type, ObjectName: obj.Name, Field: n.Key, Shape: fieldValueShape(n), DateKey: date,
+			FileID: rec.ID, SourceName: rec.SourceName, SourceRank: rec.SourceRank,
+			Path: rec.Path, Line: n.Line, Raw: fieldRaw(n),
+		})
+	}
+	appendField(field)
+	if field.Kind == "block" && strings.EqualFold(field.Key, "effect") {
+		for _, child := range field.Children {
+			if child.Key != "" {
+				appendField(child)
+			}
+		}
+	}
+}
+
 var patternObjectTypes = map[string]bool{
-	"event":                 true,
-	"decision":              true,
-	"trait":                 true,
-	"modifier":              true,
-	"opinion_modifier":      true,
-	"scripted_effect":       true,
-	"scripted_trigger":      true,
-	"script_value":          true,
-	"character_interaction": true,
-	"scheme_type":           true,
-	"building":              true,
-	"government":            true,
-	"law":                   true,
-	"religion":              true,
-	"faith":                 true,
-	"holy_site":             true,
-	"culture":               true,
-	"culture_tradition":     true,
-	"culture_pillar":        true,
-	"innovation":            true,
-	"name_list":             true,
-	"men_at_arms_type":      true,
-	"casus_belli_type":      true,
-	"on_action":             true,
-	"scripted_gui":          true,
-	"gui":                   true,
+	"character":                     true,
+	"event":                         true,
+	"decision":                      true,
+	"trait":                         true,
+	"modifier":                      true,
+	"opinion_modifier":              true,
+	"scripted_effect":               true,
+	"scripted_trigger":              true,
+	"script_value":                  true,
+	"character_interaction":         true,
+	"scheme_type":                   true,
+	"scheme_agent_type":             true,
+	"scheme_pulse_action":           true,
+	"scheme_countermeasure":         true,
+	"building":                      true,
+	"government":                    true,
+	"law":                           true,
+	"law_group":                     true,
+	"doctrine":                      true,
+	"doctrine_group":                true,
+	"game_rule":                     true,
+	"game_rule_setting":             true,
+	"focus":                         true,
+	"court_amenity_category":        true,
+	"court_amenity_level":           true,
+	"death_reason":                  true,
+	"religion_family":               true,
+	"fervor_modifier":               true,
+	"lifestyle":                     true,
+	"lifestyle_perk":                true,
+	"achievement_group":             true,
+	"activity":                      true,
+	"activity_group_type":           true,
+	"activity_locale":               true,
+	"activity_guest_invite_rule":    true,
+	"activity_intent":               true,
+	"activity_pulse_action":         true,
+	"artifact_type":                 true,
+	"artifact_slot":                 true,
+	"artifact_blueprint":            true,
+	"artifact_feature_group":        true,
+	"artifact_feature":              true,
+	"artifact_template":             true,
+	"artifact_visual":               true,
+	"bookmark":                      true,
+	"bookmark_challenge_character":  true,
+	"bookmark_group":                true,
+	"court_position":                true,
+	"court_position_task":           true,
+	"diarchy":                       true,
+	"diarchy_mandate":               true,
+	"domicile":                      true,
+	"domicile_building":             true,
+	"legend":                        true,
+	"legend_chronicle":              true,
+	"legend_seed":                   true,
+	"raid_intent":                   true,
+	"situation":                     true,
+	"situation_catalyst":            true,
+	"situation_group_type":          true,
+	"struggle":                      true,
+	"struggle_catalyst":             true,
+	"subject_contract":              true,
+	"subject_contract_group":        true,
+	"tax_slot":                      true,
+	"tax_obligation":                true,
+	"travel_point_of_interest_type": true,
+	"travel_option":                 true,
+	"religion":                      true,
+	"faith":                         true,
+	"holy_site":                     true,
+	"culture":                       true,
+	"culture_tradition":             true,
+	"culture_pillar":                true,
+	"innovation":                    true,
+	"name_list":                     true,
+	"men_at_arms_type":              true,
+	"casus_belli_type":              true,
+	"on_action":                     true,
+	"scripted_gui":                  true,
+	"gui":                           true,
+	"geographical_region":           true,
+}
+
+var lawGroupFields = map[string]bool{
+	"can_change_law_group": true,
+}
+
+// Doctrine group fields come from common/religion/doctrines/_doctrines.info.
+// Other direct child blocks are doctrine definitions.
+var doctrineGroupFields = map[string]bool{
+	"name":                   true,
+	"group":                  true,
+	"grouping":               true,
+	"is_available_on_create": true,
+	"number_of_picks":        true,
+}
+
+// Game rule fields come from common/game_rules/_game_rules.info. Other direct
+// child blocks are selectable settings referenced by has_game_rule.
+var gameRuleFields = map[string]bool{
+	"categories": true,
+}
+
+func isLawDefinitionsPath(rel string) bool {
+	rel = filepath.ToSlash(strings.ToLower(rel))
+	return strings.Contains(rel, "common/laws/")
+}
+
+func isDoctrineDefinitionsPath(rel string) bool {
+	rel = filepath.ToSlash(strings.ToLower(rel))
+	return strings.Contains(rel, "common/religion/doctrines/")
+}
+
+func isGameRuleDefinitionsPath(rel string) bool {
+	rel = filepath.ToSlash(strings.ToLower(rel))
+	return strings.Contains(rel, "common/game_rules/")
+}
+
+func isCourtAmenityDefinitionsPath(rel string) bool {
+	rel = filepath.ToSlash(strings.ToLower(rel))
+	return strings.Contains(rel, "common/court_amenities/")
 }
 
 var numericValue = regexp.MustCompile(`^-?[0-9]+(\.[0-9]+)?$`)
+var scriptedVariableName = regexp.MustCompile(`^@[A-Za-z0-9_][A-Za-z0-9_.:-]*$`)
+
+func isArithmeticExpression(raw string) bool {
+	return strings.HasPrefix(strings.TrimSpace(raw), "@[")
+}
 
 func fieldValueShape(n *script.Node) string {
 	if n.Kind == "block" {
@@ -1287,6 +1917,8 @@ func fieldValueShape(n *script.Node) string {
 		return "scope_ref"
 	case strings.HasPrefix(v, "flag:"):
 		return "flag_ref"
+	case isArithmeticExpression(v):
+		return "expression"
 	case strings.HasPrefix(v, "@"):
 		return "define_ref"
 	case strings.HasPrefix(v, "event:/"):
@@ -1321,6 +1953,12 @@ func fieldRaw(n *script.Node) string {
 func objectTypeForPath(rel string) string {
 	rel = filepath.ToSlash(rel)
 	lowerRel := strings.ToLower(rel)
+	if isGeographicalRegionDefinitionsPath(lowerRel) {
+		return "geographical_region"
+	}
+	if isAchievementGroupsPath(lowerRel) {
+		return "achievement_group"
+	}
 	// Culture content has several independent CK3 object namespaces. Treating
 	// every file below common/culture as a generic culture hid tradition/pillar
 	// dependencies and made type-scoped queries misleading.
@@ -1343,9 +1981,97 @@ func objectTypeForPath(rel string) string {
 		return "culture_creation_name"
 	case strings.Contains(lowerRel, "common/culture/name_equivalency/"):
 		return "culture_name_equivalency"
+	case strings.Contains(lowerRel, "common/schemes/scheme_types/"):
+		return "scheme_type"
+	case strings.Contains(lowerRel, "common/schemes/agent_types/"):
+		return "scheme_agent_type"
+	case strings.Contains(lowerRel, "common/schemes/pulse_actions/"):
+		return "scheme_pulse_action"
+	case strings.Contains(lowerRel, "common/schemes/scheme_countermeasures/"):
+		return "scheme_countermeasure"
+	case strings.Contains(lowerRel, "common/activities/activity_types/"):
+		return "activity"
+	case strings.Contains(lowerRel, "common/activities/activity_group_types/"):
+		return "activity_group_type"
+	case strings.Contains(lowerRel, "common/activities/activity_locales/"):
+		return "activity_locale"
+	case strings.Contains(lowerRel, "common/activities/guest_invite_rules/"):
+		return "activity_guest_invite_rule"
+	case strings.Contains(lowerRel, "common/activities/intents/"):
+		return "activity_intent"
+	case strings.Contains(lowerRel, "common/activities/pulse_actions/"):
+		return "activity_pulse_action"
+	case strings.Contains(lowerRel, "common/artifacts/types/"):
+		return "artifact_type"
+	case strings.Contains(lowerRel, "common/artifacts/slots/"):
+		return "artifact_slot"
+	case strings.Contains(lowerRel, "common/artifacts/blueprints/"):
+		return "artifact_blueprint"
+	case strings.Contains(lowerRel, "common/artifacts/feature_groups/"):
+		return "artifact_feature_group"
+	case strings.Contains(lowerRel, "common/artifacts/features/"):
+		return "artifact_feature"
+	case strings.Contains(lowerRel, "common/artifacts/templates/"):
+		return "artifact_template"
+	case strings.Contains(lowerRel, "common/artifacts/visuals/"):
+		return "artifact_visual"
+	case strings.Contains(lowerRel, "common/bookmarks/bookmarks/"):
+		return "bookmark"
+	case strings.Contains(lowerRel, "common/bookmarks/challenge_characters/"):
+		return "bookmark_challenge_character"
+	case strings.Contains(lowerRel, "common/bookmarks/groups/"):
+		return "bookmark_group"
+	case strings.Contains(lowerRel, "common/court_positions/types/"):
+		return "court_position"
+	case strings.Contains(lowerRel, "common/court_positions/tasks/"):
+		return "court_position_task"
+	case strings.Contains(lowerRel, "common/diarchies/diarchy_types/"):
+		return "diarchy"
+	case strings.Contains(lowerRel, "common/diarchies/diarchy_mandates/"):
+		return "diarchy_mandate"
+	case strings.Contains(lowerRel, "common/domiciles/types/"):
+		return "domicile"
+	case strings.Contains(lowerRel, "common/domiciles/buildings/"):
+		return "domicile_building"
+	case strings.Contains(lowerRel, "common/legends/legend_types/"):
+		return "legend"
+	case strings.Contains(lowerRel, "common/legends/chronicles/"):
+		return "legend_chronicle"
+	case strings.Contains(lowerRel, "common/legends/legend_seeds/"):
+		return "legend_seed"
+	case strings.Contains(lowerRel, "common/raids/intents/"):
+		return "raid_intent"
+	case strings.Contains(lowerRel, "common/situation/situations/"):
+		return "situation"
+	case strings.Contains(lowerRel, "common/situation/catalysts/"):
+		return "situation_catalyst"
+	case strings.Contains(lowerRel, "common/situation/situation_group_types/"):
+		return "situation_group_type"
+	case strings.Contains(lowerRel, "common/struggle/struggles/"):
+		return "struggle"
+	case strings.Contains(lowerRel, "common/struggle/catalysts/"):
+		return "struggle_catalyst"
+	case strings.Contains(lowerRel, "common/subject_contracts/contracts/"):
+		return "subject_contract"
+	case strings.Contains(lowerRel, "common/subject_contracts/groups/"):
+		return "subject_contract_group"
+	case strings.Contains(lowerRel, "common/tax_slots/types/"):
+		return "tax_slot"
+	case strings.Contains(lowerRel, "common/tax_slots/obligations/"):
+		return "tax_obligation"
+	case strings.Contains(lowerRel, "common/travel/point_of_interest_types/"):
+		return "travel_point_of_interest_type"
+	case strings.Contains(lowerRel, "common/travel/travel_options/"):
+		return "travel_option"
 	}
 	if strings.Contains(lowerRel, "common/religion/holy_sites/") {
 		return "holy_site"
+	}
+	if strings.Contains(lowerRel, "common/religion/religion_families/") {
+		return "religion_family"
+	}
+	if strings.Contains(lowerRel, "common/religion/fervor_modifiers/") {
+		return "fervor_modifier"
 	}
 	if strings.Contains(lowerRel, "common/religion/religions/") {
 		return "religion"
@@ -1401,6 +2127,10 @@ func objectTypeForPath(rel string) string {
 			return "government"
 		case "laws":
 			return "law"
+		case "focuses":
+			return "focus"
+		case "deathreasons":
+			return "death_reason"
 		case "secrets":
 			return "secret"
 		case "artifacts":
@@ -1434,6 +2164,23 @@ func commonObjectType(rel string) string {
 	return ""
 }
 
+func isAchievementGroupsPath(rel string) bool {
+	p := filepath.ToSlash(strings.ToLower(rel))
+	return p == "common/achievement_groups.txt" || strings.HasSuffix(p, "/common/achievement_groups.txt")
+}
+
+func childAtomValue(parent *script.Node, key string) string {
+	if parent == nil {
+		return ""
+	}
+	for _, child := range parent.Children {
+		if child.Kind == "atom" && child.Key == key {
+			return cleanReferenceValue(child.Value)
+		}
+	}
+	return ""
+}
+
 func singularize(s string) string {
 	if strings.HasSuffix(s, "ies") && len(s) > 3 {
 		return s[:len(s)-3] + "y"
@@ -1445,8 +2192,8 @@ func singularize(s string) string {
 }
 
 func insertObject(ctx context.Context, tx *sql.Tx, o objectRow) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO objects(object_type,name,file_id,node_local_id,source_name,source_rank,path,line,col) VALUES(?,?,?,?,?,?,?,?,?)`,
-		o.Type, o.Name, o.FileID, o.NodeID, o.SourceName, o.SourceRank, o.Path, o.Line, o.Col)
+	_, err := tx.ExecContext(ctx, `INSERT INTO objects(object_type,name,value,file_id,node_local_id,source_name,source_rank,path,line,col,end_line,end_col) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		o.Type, o.Name, o.Value, o.FileID, o.NodeID, o.SourceName, o.SourceRank, o.Path, o.Line, o.Col, o.EndLine, o.EndCol)
 	if err != nil {
 		return err
 	}
@@ -1476,6 +2223,9 @@ func walkBlock(nodes []*script.Node, fn func(*script.Node)) {
 type refRow struct {
 	FromType, FromName string
 	Kind, Name, Raw    string
+	Relation, Phase    string
+	Confidence         string
+	ResolutionReason   string
 	FileID, NodeID     int64
 	Line, Col          int
 	Resolved           bool
@@ -1485,26 +2235,262 @@ var prefixTypes = map[string]string{
 	"trait": "trait", "title": "title", "faith": "faith", "culture": "culture",
 	"character": "character", "scope": "scope", "global_var": "global_var", "flag": "flag",
 	"artifact": "artifact", "dynasty": "dynasty", "house": "dynasty_house", "secret": "secret",
+	"geographical_region": "geographical_region",
 }
 
 var locKeys = map[string]bool{"title": true, "desc": true, "text": true, "custom_tooltip": true, "tooltip": true, "localization_key": true}
-var resourceExt = regexp.MustCompile(`(?i)\.(dds|png|tga|mesh|asset|gui|wav|ogg)$`)
+var resourceExt = regexp.MustCompile(`(?i)\.(dds|png|tga|jpe?g|bmp|mesh|anim|asset|gui|shader|bk2|ttf|otf|wav|ogg|txt)$`)
 
 var keyRefTypes = map[string]string{
 	"has_trait": "trait", "add_trait": "trait", "remove_trait": "trait", "trait": "trait",
 	"has_character_modifier": "modifier", "add_character_modifier": "modifier", "remove_character_modifier": "modifier", "modifier": "modifier",
 	"give_nickname": "nickname", "set_nickname": "nickname", "remove_nickname": "nickname",
-	"trigger_event": "event", "fire_event": "event", "on_action": "on_action",
 	"set_character_faith": "faith", "faith": "faith", "religion": "religion",
 	"set_culture": "culture", "culture": "culture",
 	"title": "title", "capital": "title", "capital_county": "title", "de_jure_liege": "title",
 	"government": "government", "has_government": "government",
 	"law": "law", "has_law": "law", "add_realm_law": "law",
-	"secret": "secret", "add_secret": "secret", "has_secret": "secret",
+	"doctrine": "doctrine", "has_doctrine": "doctrine", "add_doctrine": "doctrine", "remove_doctrine": "doctrine",
+	"has_game_rule": "game_rule_setting",
+	"has_focus":     "focus", "set_focus": "focus",
+	"lifestyle": "lifestyle", "has_lifestyle": "lifestyle", "refund_perks": "lifestyle",
+	"has_perk": "lifestyle_perk", "add_perk": "lifestyle_perk", "remove_perk": "lifestyle_perk",
+	"death_reason": "death_reason",
+	"secret":       "secret", "add_secret": "secret", "has_secret": "secret",
 	"casus_belli": "casus_belli_type", "using_cb": "casus_belli_type",
 	"men_at_arms": "men_at_arms_type", "men_at_arms_type": "men_at_arms_type",
 	"building": "building", "has_building": "building",
+	"has_innovation": "innovation", "add_innovation": "innovation", "discover_innovation": "innovation",
 	"artifact": "artifact", "create_artifact": "artifact",
+	"scheme_type": "scheme_type", "add_agent_slot": "scheme_agent_type",
+	"artifact_type":        "artifact_type",
+	"activity_group_type":  "activity_group_type",
+	"situation_group_type": "situation_group_type",
+	"geographical_region":  "geographical_region", "add_geographical_region": "geographical_region", "remove_geographical_region": "geographical_region",
+	"culture_overlaps_geographical_region": "geographical_region", "situation_sub_region_has_geographical_region": "geographical_region",
+}
+
+var eventVariableRelations = map[string]string{
+	"set_variable":                "set_variable",
+	"set_global_variable":         "set_global_variable",
+	"set_local_variable":          "set_local_variable",
+	"set_dead_character_variable": "set_dead_character_variable",
+	"has_variable":                "read_variable",
+	"change_variable":             "change_variable",
+	"remove_variable":             "remove_variable",
+	"clamp_variable":              "clamp_variable",
+	"clear_variable":              "clear_variable",
+}
+
+var eventFlagRelations = map[string]string{
+	"add_character_flag":      "add_character_flag",
+	"remove_character_flag":   "remove_character_flag",
+	"has_character_flag":      "read_character_flag",
+	"add_dead_character_flag": "add_dead_character_flag",
+	"has_dead_character_flag": "read_dead_character_flag",
+}
+
+func namedRuntimeValue(n *script.Node, fieldNames ...string) string {
+	if n.Value != "" {
+		return semanticTarget(n.Value)
+	}
+	for _, child := range n.Children {
+		for _, field := range fieldNames {
+			if child.Key == field && child.Value != "" {
+				return semanticTarget(child.Value)
+			}
+		}
+	}
+	return ""
+}
+
+// eventLogicRefs retains the high-value runtime facts CWTools keeps in its
+// event_logic table. They are relationships in the existing ref graph because
+// variables and flags are runtime symbols, not independently loadable CK3
+// definitions.
+func eventLogicRefs(rec fileRecord, n *script.Node, current objectRow, nodesByID map[int64]*script.Node) []refRow {
+	if current.Type != "event" && current.Type != "on_action" {
+		return nil
+	}
+	key := strings.ToLower(strings.TrimSpace(n.Key))
+	kind := ""
+	relation := ""
+	name := ""
+	if r, ok := eventVariableRelations[key]; ok {
+		kind, relation = "variable", r
+		name = namedRuntimeValue(n, "name")
+	} else if r, ok := eventFlagRelations[key]; ok {
+		kind, relation = "character_flag", r
+		name = namedRuntimeValue(n, "flag")
+	}
+	if name == "" {
+		return nil
+	}
+	return []refRow{{
+		FromType: current.Type, FromName: current.Name,
+		Kind: kind, Name: name, Raw: name,
+		Relation: relation, Phase: eventSemanticPhase(n, nodesByID), Confidence: "exact",
+		FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col,
+	}}
+}
+
+var eventSemanticPhases = map[string]bool{
+	"trigger": true, "immediate": true, "after": true, "option": true,
+	"on_trigger_fail": true, "effect": true,
+	"events": true, "random_events": true, "first_valid": true,
+	"on_actions": true, "random_on_actions": true, "first_valid_on_action": true,
+}
+
+func eventSemanticPhase(n *script.Node, nodesByID map[int64]*script.Node) string {
+	for current := n; current != nil; current = nodesByID[current.Parent] {
+		key := strings.ToLower(strings.TrimSpace(current.Key))
+		if eventSemanticPhases[key] {
+			return key
+		}
+		if current.Parent == 0 {
+			break
+		}
+	}
+	return ""
+}
+
+func semanticTarget(raw string) string {
+	name := cleanReferenceValue(raw)
+	if name == "" || name == "0" || name == "yes" || name == "no" || strings.ContainsAny(name, "$[]") {
+		return ""
+	}
+	return name
+}
+
+// eventSemanticRefs captures the current CK3 event/on_action forms documented
+// by common/on_action/_on_actions.info. These edges remain in the ordinary refs
+// table; relation and phase make them useful as an event graph without a second
+// event-only database.
+func eventSemanticRefs(rec fileRecord, n *script.Node, current objectRow, nodesByID map[int64]*script.Node) []refRow {
+	parent := nodesByID[n.Parent]
+	add := func(kind, name, relation string) []refRow {
+		name = semanticTarget(name)
+		if name == "" {
+			return nil
+		}
+		return []refRow{{
+			FromType: current.Type, FromName: current.Name,
+			Kind: kind, Name: name, Raw: name,
+			Relation: relation, Phase: eventSemanticPhase(n, nodesByID), Confidence: "exact",
+			FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col,
+		}}
+	}
+
+	key := strings.ToLower(strings.TrimSpace(n.Key))
+	if (key == "trigger_event" || key == "fire_event") && n.Value != "" {
+		return add("event", n.Value, key)
+	}
+	if key == "on_action" && n.Value != "" {
+		relation := "on_action"
+		if parent != nil && (parent.Key == "trigger_event" || parent.Key == "fire_event") {
+			relation = "trigger_on_action"
+		}
+		return add("on_action", n.Value, relation)
+	}
+	if key == "fallback" && current.Type == "on_action" && n.Value != "" {
+		return add("on_action", n.Value, "fallback")
+	}
+	if parent == nil {
+		return nil
+	}
+	parentKey := strings.ToLower(strings.TrimSpace(parent.Key))
+	if key == "id" && (parentKey == "trigger_event" || parentKey == "fire_event") {
+		return add("event", n.Value, parentKey)
+	}
+	if n.Kind == "bare" {
+		switch parentKey {
+		case "events", "first_valid":
+			return add("event", n.Key, parentKey)
+		case "on_actions", "first_valid_on_action":
+			return add("on_action", n.Key, parentKey)
+		}
+	}
+	if n.Value != "" {
+		if _, err := strconv.ParseFloat(strings.TrimSpace(n.Key), 64); err == nil {
+			switch parentKey {
+			case "random_events":
+				return add("event", n.Value, parentKey)
+			case "random_on_actions":
+				return add("on_action", n.Value, parentKey)
+			}
+		}
+	}
+	return nil
+}
+
+var characterHistoryReferenceKinds = map[string]string{
+	"father":                 "character",
+	"mother":                 "character",
+	"employer":               "character",
+	"spouse":                 "character",
+	"add_spouse":             "character",
+	"add_matrilineal_spouse": "character",
+	"remove_spouse":          "character",
+	"set_father":             "character",
+	"set_mother":             "character",
+	"set_real_father":        "character",
+	"set_real_mother":        "character",
+	"set_employer":           "character",
+	"dynasty":                "dynasty",
+	"dynasty_house":          "dynasty_house",
+}
+
+// characterHistoryPhase returns the normalized source date when n belongs to
+// a dated block of the current history character. A true result with an empty
+// phase means a static field directly or indirectly inside that character.
+func characterHistoryPhase(n *script.Node, current objectRow, nodesByID map[int64]*script.Node) (string, bool) {
+	if n == nil || current.Type != "character" || current.NodeID == 0 {
+		return "", false
+	}
+	phase := ""
+	for cursor := n; cursor != nil; cursor = nodesByID[cursor.Parent] {
+		if _, ok := parseDateKey(cursor.Key); ok {
+			phase = cursor.Key
+		}
+		if cursor.ID == current.NodeID {
+			return phase, true
+		}
+		if cursor.Parent == 0 {
+			break
+		}
+	}
+	return "", false
+}
+
+// characterHistoryRefs adds only mechanically certain identity/lifecycle
+// edges. Generic trait/culture/faith/death-reason refs are still handled by
+// keyRefTypes below and receive the same relation/date metadata there.
+func characterHistoryRefs(rec fileRecord, n *script.Node, current objectRow, nodesByID map[int64]*script.Node) []refRow {
+	phase, belongs := characterHistoryPhase(n, current, nodesByID)
+	if !belongs || n.Value == "" {
+		return nil
+	}
+	relation := strings.ToLower(strings.TrimSpace(n.Key))
+	kind, ok := characterHistoryReferenceKinds[relation]
+	if !ok {
+		return nil
+	}
+	name := semanticTarget(n.Value)
+	if name == "" {
+		return nil
+	}
+	if prefix, target, typed := strings.Cut(name, ":"); typed && prefixTypes[prefix] == kind {
+		name = target
+	}
+	if name == "" || strings.Contains(name, ".") {
+		return nil
+	}
+	return []refRow{{
+		FromType: current.Type, FromName: current.Name,
+		Kind: kind, Name: name, Raw: n.Value,
+		Relation: relation, Phase: phase, Confidence: "exact",
+		FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col,
+	}}
 }
 
 func extractRefs(rec fileRecord, nodes []*script.Node, objs []objectRow) []refRow {
@@ -1516,8 +2502,155 @@ func extractRefs(rec fileRecord, nodes []*script.Node, objs []objectRow) []refRo
 	isCultureTraditionFile := isCultureTraditionsPath(rec.RelPath)
 	isCultureDefinitionFile := isCultureCulturesPath(rec.RelPath)
 	isReligionFile := isReligionRelPath(rec.RelPath)
+	isLawFile := isLawDefinitionsPath(rec.RelPath)
+	isDoctrineFile := isDoctrineDefinitionsPath(rec.RelPath)
+	isGameRuleFile := isGameRuleDefinitionsPath(rec.RelPath)
+	isCourtAmenityFile := isCourtAmenityDefinitionsPath(rec.RelPath)
+	isAchievementGroupFile := isAchievementGroupsPath(rec.RelPath)
+	isGUIFile := strings.HasSuffix(strings.ToLower(rec.RelPath), ".gui")
 	walk(nodes, func(n *script.Node) {
 		current := ownerForLine(objs, n.Line)
+		out = append(out, eventSemanticRefs(rec, n, current, nodesByID)...)
+		out = append(out, eventLogicRefs(rec, n, current, nodesByID)...)
+		out = append(out, characterHistoryRefs(rec, n, current, nodesByID)...)
+		out = append(out, geographicalRegionRefs(rec, n, current, nodesByID)...)
+		addObjectRef := func(kind, raw string) {
+			if name := cleanReferenceValue(raw); name != "" {
+				out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: kind, Name: name, Raw: raw, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
+			}
+		}
+		if isLawFile {
+			parent := nodesByID[n.Parent]
+			if parent != nil && parent.Parent == 0 {
+				if n.Kind == "block" && n.Key != "" && !lawGroupFields[n.Key] {
+					out = append(out, refRow{FromType: "law", FromName: n.Key, Kind: "law_group", Name: parent.Key, Raw: parent.Key, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
+				}
+				if n.Key == "default" && n.Value != "" {
+					out = append(out, refRow{FromType: "law_group", FromName: parent.Key, Kind: "law", Name: n.Value, Raw: n.Value, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
+				}
+			}
+		}
+		if isDoctrineFile {
+			parent := nodesByID[n.Parent]
+			if parent != nil && parent.Parent == 0 && n.Kind == "block" && n.Key != "" && !doctrineGroupFields[n.Key] {
+				out = append(out, refRow{FromType: "doctrine", FromName: n.Key, Kind: "doctrine_group", Name: parent.Key, Raw: parent.Key, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
+			}
+		}
+		if isGameRuleFile {
+			parent := nodesByID[n.Parent]
+			if parent != nil && parent.Parent == 0 {
+				if n.Kind == "block" && n.Key != "" && !gameRuleFields[n.Key] {
+					out = append(out, refRow{FromType: "game_rule_setting", FromName: n.Key, Kind: "game_rule", Name: parent.Key, Raw: parent.Key, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
+				}
+				if n.Key == "default" && n.Value != "" {
+					out = append(out, refRow{FromType: "game_rule", FromName: parent.Key, Kind: "game_rule_setting", Name: n.Value, Raw: n.Value, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
+				}
+			}
+		}
+		if isCourtAmenityFile {
+			parent := nodesByID[n.Parent]
+			if parent != nil && parent.Parent == 0 {
+				if n.Kind == "block" && n.Key != "" {
+					out = append(out, refRow{FromType: "court_amenity_level", FromName: n.Key, Kind: "court_amenity_category", Name: parent.Key, Raw: parent.Key, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
+				}
+				if n.Key == "default" && n.Value != "" {
+					out = append(out, refRow{FromType: "court_amenity_category", FromName: parent.Key, Kind: "court_amenity_level", Name: n.Value, Raw: n.Value, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
+				}
+			}
+		}
+		if isAchievementGroupFile && current.Type == "achievement_group" && n.Kind == "bare" {
+			parent := nodesByID[n.Parent]
+			if parent != nil && parent.Key == "order" {
+				if name := cleanReferenceValue(n.Key); name != "" {
+					out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: "achievement", Name: name, Raw: n.Key, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
+				}
+			}
+		}
+		if parent := nodesByID[n.Parent]; parent != nil && n.Value != "" {
+			isAmenityCategory := (n.Key == "target" && parent.Key == "amenity_level") ||
+				(n.Key == "type" && (parent.Key == "set_amenity_level" || parent.Key == "add_amenity_level"))
+			if isAmenityCategory {
+				out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: "court_amenity_category", Name: n.Value, Raw: n.Value, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
+			}
+			if n.Key == "type" && schemeTypeReferenceContext[parent.Key] {
+				if name := cleanReferenceValue(n.Value); name != "" {
+					out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: "scheme_type", Name: name, Raw: n.Value, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
+				}
+			}
+		}
+		if current.Type == "scheme_type" && n.Kind == "bare" {
+			parent := nodesByID[n.Parent]
+			grandparent := (*script.Node)(nil)
+			if parent != nil {
+				grandparent = nodesByID[parent.Parent]
+			}
+			if parent != nil && parent.Key == "entries" && grandparent != nil && grandparent.Key == "pulse_actions" {
+				if name := cleanReferenceValue(n.Key); name != "" {
+					out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: "scheme_pulse_action", Name: name, Raw: n.Key, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
+				}
+			}
+		}
+		if current.Type == "activity" {
+			parent := nodesByID[n.Parent]
+			grandparent := (*script.Node)(nil)
+			if parent != nil {
+				grandparent = nodesByID[parent.Parent]
+			}
+			if n.Kind == "bare" && parent != nil && parent.Key == "intents" && grandparent != nil && (grandparent.Key == "host_intents" || grandparent.Key == "guest_intents") {
+				addObjectRef("activity_intent", n.Key)
+			}
+			if n.Key == "default" && parent != nil && (parent.Key == "host_intents" || parent.Key == "guest_intents") {
+				addObjectRef("activity_intent", n.Value)
+			}
+			if parent != nil && parent.Key == "rules" && grandparent != nil && grandparent.Key == "guest_invite_rules" {
+				addObjectRef("activity_guest_invite_rule", n.Value)
+			}
+			if n.Kind == "bare" && parent != nil && parent.Key == "entries" && grandparent != nil && grandparent.Key == "pulse_actions" {
+				addObjectRef("activity_pulse_action", n.Key)
+			}
+		}
+		if current.Type == "artifact_type" {
+			parent := nodesByID[n.Parent]
+			if n.Kind == "bare" && parent != nil && (parent.Key == "required_features" || parent.Key == "optional_features") {
+				addObjectRef("artifact_feature", n.Key)
+			}
+			if n.Key == "default_visuals" {
+				addObjectRef("artifact_visual", n.Value)
+			}
+		}
+		if current.Type == "bookmark" && n.Key == "group" {
+			addObjectRef("bookmark_group", n.Value)
+		}
+		if current.Type == "subject_contract_group" && n.Kind == "bare" {
+			if parent := nodesByID[n.Parent]; parent != nil && parent.Key == "contracts" {
+				addObjectRef("subject_contract", n.Key)
+			}
+		}
+		if current.Type == "tax_slot" {
+			if n.Key == "default_obligation" {
+				addObjectRef("tax_obligation", n.Value)
+			}
+			if n.Kind == "bare" {
+				if parent := nodesByID[n.Parent]; parent != nil && parent.Key == "obligations" {
+					addObjectRef("tax_obligation", n.Key)
+				}
+			}
+		}
+		if current.Type == "legend_seed" && n.Key == "type" {
+			addObjectRef("legend", n.Value)
+		}
+		if isGUIFile && n.Key == "using" && n.Value != "" {
+			name := cleanReferenceValue(n.Value)
+			if name != "" {
+				out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: "gui_template", Name: name, Raw: n.Value, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
+			}
+		}
+		if isGUIFile && n.Value != "" && (n.Operator == "type" || (n.Operator == "=" && n.Kind == "block")) {
+			base := cleanReferenceValue(n.Value)
+			if base != "" && !guiBuiltinTypes[strings.ToLower(base)] {
+				out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: "gui", Name: base, Raw: n.Value, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
+			}
+		}
 		raws := []string{n.Value}
 		if n.Kind == "bare" {
 			raws = append(raws, n.Key)
@@ -1531,9 +2664,20 @@ func extractRefs(rec fileRecord, nodes []*script.Node, objs []objectRow) []refRo
 				out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: "scope_transition", Name: k, Raw: k, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
 			}
 		}
-		// Track @define references.
-		if strings.HasPrefix(n.Value, "@") && len(n.Value) > 2 {
-			out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: "define", Name: n.Value, Raw: n.Value, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
+		// Track Jomini substitutions separately from engine defines. Scripted
+		// variables use @name and are defined in loaded script; engine defines
+		// use the @NAMESPACE|KEY form and remain validated by tiger data.
+		if value := strings.TrimSpace(n.Value); strings.HasPrefix(value, "@") && len(value) > 2 && !isArithmeticExpression(value) {
+			kind := ""
+			switch {
+			case scriptedVariableName.MatchString(value):
+				kind = "scripted_variable"
+			case strings.Contains(value, "|") && !strings.ContainsAny(value, " \t\r\n!#"):
+				kind = "define"
+			}
+			if kind != "" {
+				out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: kind, Name: value, Raw: n.Value, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
+			}
 		}
 		if isReligionFile {
 			if refs := religionSpecificRefs(rec, n, current); len(refs) > 0 {
@@ -1568,6 +2712,9 @@ func extractRefs(rec fileRecord, nodes []*script.Node, objs []objectRow) []refRo
 					if name == "prev" || name == "this" || name == "root" || strings.Contains(name, ".") || strings.HasPrefix(name, p+":") {
 						continue
 					}
+					if expectedKind, handled := characterHistoryReferenceKinds[strings.ToLower(strings.TrimSpace(n.Key))]; handled && current.Type == "character" && expectedKind == kind {
+						continue
+					}
 					out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: kind, Name: name, Raw: raw, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
 				}
 			}
@@ -1581,7 +2728,17 @@ func extractRefs(rec fileRecord, nodes []*script.Node, objs []objectRow) []refRo
 					out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: "localization", Name: raw, Raw: raw, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
 					continue
 				}
-				out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: kind, Name: raw, Raw: raw, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
+				ref := refRow{FromType: current.Type, FromName: current.Name, Kind: kind, Name: raw, Raw: raw, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col}
+				if current.Type == "event" || current.Type == "on_action" {
+					ref.Relation = n.Key
+					ref.Phase = eventSemanticPhase(n, nodesByID)
+					ref.Confidence = "exact"
+				} else if phase, ok := characterHistoryPhase(n, current, nodesByID); ok {
+					ref.Relation = n.Key
+					ref.Phase = phase
+					ref.Confidence = "exact"
+				}
+				out = append(out, ref)
 			}
 			if locKeys[n.Key] && !strings.Contains(raw, " ") && !strings.Contains(raw, "$") {
 				// Skip GUI animation states, single chars, known non-loc values,
@@ -1601,6 +2758,48 @@ func extractRefs(rec fileRecord, nodes []*script.Node, objs []objectRow) []refRo
 		}
 	})
 	return out
+}
+
+// geographicalRegionRefs handles list-shaped region references that the
+// ordinary key=value reference table cannot see. It covers region nesting as
+// well as CK3 situation/building lists while leaving generic `regions` blocks
+// alone outside geographical-region definitions.
+func geographicalRegionRefs(rec fileRecord, n *script.Node, current objectRow, nodesByID map[int64]*script.Node) []refRow {
+	if n == nil {
+		return nil
+	}
+	add := func(raw, relation string) []refRow {
+		name := cleanReferenceValue(raw)
+		if name == "" {
+			return nil
+		}
+		return []refRow{{
+			FromType: current.Type, FromName: current.Name,
+			Kind: "geographical_region", Name: name, Raw: raw,
+			Relation: relation, Confidence: "exact",
+			FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col,
+		}}
+	}
+	if current.Type == "geographical_region" && n.Kind == "atom" && (n.Key == "region" || n.Key == "regions") {
+		return add(n.Value, n.Key)
+	}
+	if n.Kind != "bare" {
+		return nil
+	}
+	parent := nodesByID[n.Parent]
+	if parent == nil {
+		return nil
+	}
+	relation := strings.ToLower(strings.TrimSpace(parent.Key))
+	switch relation {
+	case "geographical_region", "geographical_regions", "graphical_regions":
+		return add(n.Key, relation)
+	case "region", "regions":
+		if current.Type == "geographical_region" {
+			return add(n.Key, relation)
+		}
+	}
+	return nil
 }
 
 func isReligionRelPath(rel string) bool {
@@ -1629,6 +2828,16 @@ func religionSpecificRefs(rec fileRecord, n *script.Node, current objectRow) []r
 				continue
 			}
 			out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: "resource", Name: faithIconResource(raw), Raw: raw, FileID: rec.ID, NodeID: child.ID, Line: child.Line, Col: child.Col})
+		}
+	}
+	if current.Type == "religion" && n.Key == "family" {
+		if raw := cleanReferenceValue(n.Value); raw != "" {
+			out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: "religion_family", Name: raw, Raw: n.Value, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
+		}
+	}
+	if current.Type == "religion_family" && n.Key == "hostility_doctrine" {
+		if raw := cleanReferenceValue(n.Value); raw != "" {
+			out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: "doctrine", Name: raw, Raw: n.Value, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
 		}
 	}
 	if current.Type == "holy_site" {
@@ -1795,8 +3004,10 @@ func countDiagnostics(ctx context.Context, tx *sql.Tx) int {
 }
 
 func insertRef(ctx context.Context, tx *sql.Tx, r refRow) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO refs(from_object_type,from_object_name,ref_kind,ref_name,file_id,node_local_id,line,col,raw,resolved) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		r.FromType, r.FromName, r.Kind, r.Name, r.FileID, r.NodeID, r.Line, r.Col, r.Raw, r.Resolved)
+	_, err := tx.ExecContext(ctx, `INSERT INTO refs(from_object_type,from_object_name,ref_kind,ref_name,file_id,node_local_id,line,col,raw,resolved,
+		relation,phase,confidence,resolution_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		r.FromType, r.FromName, r.Kind, r.Name, r.FileID, r.NodeID, r.Line, r.Col, r.Raw, r.Resolved,
+		r.Relation, r.Phase, r.Confidence, r.ResolutionReason)
 	return err
 }
 

@@ -74,44 +74,17 @@ var triggerOnly = map[string]bool{
 
 func (db *DB) runCompilerChecks(ctx context.Context) error {
 	// Context diagnostics (effect_in_trigger, trigger_in_effect) are now
-	// produced during the parse pass and stored alongside parser diagnostics,
-	// so we only need the cross-file duplicate check here. Keep the existing
-	// compiler rows intact: delete only the duplicate_object rows we are about
-	// to refresh.
-	if _, err := db.sql.ExecContext(ctx, `DELETE FROM diagnostics WHERE source='compiler' AND code='duplicate_object'`); err != nil {
-		return err
-	}
+	// produced during the parse pass and stored alongside parser diagnostics.
+	// Title integrity is shared with scan and scan --files; the former generic
+	// duplicate query flattened mergeable namespaces such as GUI/on_action.
 	// Health checks produce "health" source diagnostics; delete stale ones.
 	if _, err := db.sql.ExecContext(ctx, `DELETE FROM diagnostics WHERE source='health'`); err != nil {
 		return err
 	}
-	if err := db.checkDuplicates(ctx); err != nil {
+	if err := refreshTitleIntegrityDiagnostics(ctx, db.sql); err != nil {
 		return err
 	}
 	return db.runHealthChecks(ctx)
-}
-
-func (db *DB) checkDuplicates(ctx context.Context) error {
-	rows, err := db.sql.QueryContext(ctx, `SELECT o.object_type,o.name,COUNT(*)
-		FROM objects o JOIN files f ON f.id=o.file_id
-		WHERE o.source_rank=1 AND f.overridden=0
-		GROUP BY o.object_type,o.name,o.source_name HAVING COUNT(*) > 1`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var typ, name string
-		var count int
-		if err := rows.Scan(&typ, &name, &count); err != nil {
-			return err
-		}
-		if _, err := db.sql.ExecContext(ctx, `INSERT INTO diagnostics(source,severity,code,message) VALUES(?,?,?,?)`,
-			"compiler", "warning", "duplicate_object", fmt.Sprintf("%s %q has %d definitions in the same source layer", typ, name, count)); err != nil {
-			return err
-		}
-	}
-	return rows.Err()
 }
 
 func (db *DB) checkContext(ctx context.Context) error {

@@ -1,0 +1,161 @@
+{
+  "runtime_facts": [
+    {
+      "expression": "DivergenceWindow.HasTraditionCategory( TraditionGrouping.GetCategory )",
+      "value": true
+    },
+    {
+      "expression": "GetVariableSystem.Exists('culture_creation_right_view')",
+      "value": true
+    }
+  ],
+  "sample_values": [
+    {
+      "property": "texture",
+      "expression": "[CultureTradition.GetLayeredIcon.GetTexture( '(int32)0' )]",
+      "value": "gfx/interface/icons/culture_tradition/0-background/default3.dds"
+    },
+    {
+      "property": "texture",
+      "expression": "[CultureTradition.GetLayeredIcon.GetTexture( '(int32)1' )]",
+      "value": "gfx/interface/icons/culture_tradition/1-pattern/mediterranean/medi2.dds"
+    },
+    {
+      "property": "texture",
+      "expression": "[CultureTradition.GetLayeredIcon.GetTexture( '(int32)2' )]",
+      "value": "gfx/interface/icons/culture_tradition/2-support/rec3 copy 2.dds"
+    },
+    {
+      "property": "texture",
+      "expression": "[CultureTradition.GetLayeredIcon.GetTexture( '(int32)3' )]",
+      "value": "gfx/interface/icons/culture_tradition/3-stroke/3.dds"
+    }
+  ],
+  "model_samples": [
+    {
+      "datamodel": "[TraditionGrouping.GetPossibleTraditions]",
+      "rows": [
+        {
+          "id": "stalwart_defenders",
+          "samples": [
+            {
+              "property": "text",
+              "expression": "[CultureTradition.GetNameNoTooltip]",
+              "value": "坚毅守军 / Stalwart Defenders"
+            },
+            {
+              "property": "text",
+              "expression": "[DivergenceWindow.GetTraditionCost( CultureTradition.Self )]",
+              "value": "2000"
+            },
+            {
+              "property": "texture",
+              "expression": "[CultureTradition.GetLayeredIcon.GetTexture( '(int32)4' )]",
+              "value": "gfx/interface/icons/culture_tradition/4-items/shield.dds"
+            },
+            {
+              "property": "visible",
+              "expression": "[ObjectsEqual( CultureTradition.Self, DivergenceWindow.GetSelectedTradition )]",
+              "value": "true"
+            },
+            {
+              "property": "visible",
+              "expression": "[Not( DivergenceWindow.CanPickTradition( CultureTradition.Self ) )]",
+              "value": "false"
+            }
+          ]
+        },
+        {
+          "id": "maritime_mercantilism",
+          "samples": [
+            {
+              "property": "text",
+              "expression": "[CultureTradition.GetNameNoTooltip]",
+              "value": "海洋重商 / Maritime Mercantilism"
+            },
+            {
+              "property": "text",
+              "expression": "[DivergenceWindow.GetTraditionCost( CultureTradition.Self )]",
+              "value": "3500"
+            },
+            {
+              "property": "texture",
+              "expression": "[CultureTradition.GetLayeredIcon.GetTexture( '(int32)4' )]",
+              "value": "gfx/interface/icons/culture_tradition/4-items/ship.dds"
+            },
+            {
+              "property": "visible",
+              "expression": "[ObjectsEqual( CultureTradition.Self, DivergenceWindow.GetSelectedTradition )]",
+              "value": "false"
+            },
+            {
+              "property": "visible",
+              "expression": "[Not( DivergenceWindow.CanPickTradition( CultureTradition.Self ) )]",
+              "value": "true"
+            }
+          ]
+        },
+        {
+          "id": "mountain_homes",
+          "samples": [
+            {
+              "property": "text",
+              "expression": "[CultureTradition.GetNameNoTooltip]",
+              "value": "山中故土 / Mountain Homes"
+            },
+            {
+              "property": "text",
+              "expression": "[DivergenceWindow.GetTraditionCost( CultureTradition.Self )]",
+              "value": "2750"
+            },
+            {
+              "property": "texture",
+              "expression": "[CultureTradition.GetLayeredIcon.GetTexture( '(int32)4' )]",
+              "value": "gfx/interface/icons/culture_tradition/4-items/mountain.dds"
+            },
+            {
+              "property": "visible",
+              "expression": "[ObjectsEqual( CultureTradition.Self, DivergenceWindow.GetSelectedTradition )]",
+              "value": "false"
+            },
+            {
+              "property": "visible",
+              "expression": "[Not( DivergenceWindow.CanPickTradition( CultureTradition.Self ) )]",
+              "value": "false"
+            }
+          ]
+        },
+        {
+          "id": "ritualized_friendship",
+          "samples": [
+            {
+              "property": "text",
+              "expression": "[CultureTradition.GetNameNoTooltip]",
+              "value": "仪式友谊 / Ritualized Friendship"
+            },
+            {
+              "property": "text",
+              "expression": "[DivergenceWindow.GetTraditionCost( CultureTradition.Self )]",
+              "value": "2250"
+            },
+            {
+              "property": "texture",
+              "expression": "[CultureTradition.GetLayeredIcon.GetTexture( '(int32)4' )]",
+              "value": "gfx/interface/icons/culture_tradition/4-items/ritualised_friendship.dds"
+            },
+            {
+              "property": "visible",
+              "expression": "[ObjectsEqual( CultureTradition.Self, DivergenceWindow.GetSelectedTradition )]",
+              "value": "false"
+            },
+            {
+              "property": "visible",
+              "expression": "[Not( DivergenceWindow.CanPickTradition( CultureTradition.Self ) )]",
+              "value": "false"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

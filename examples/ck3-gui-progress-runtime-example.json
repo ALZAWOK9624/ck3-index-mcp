@@ -1,0 +1,16 @@
+{
+  "runtime_facts": [
+    {
+      "expression": "UsesTimerLocking",
+      "value": true
+    },
+    {
+      "expression": "PdxGuiWidget.IsTooltipLocked",
+      "value": false
+    },
+    {
+      "expression": "PdxGuiWidget.GetTooltipLockProgress",
+      "value": 0.62
+    }
+  ]
+}

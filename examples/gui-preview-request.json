@@ -1,0 +1,10 @@
+{
+  "operation": "preview",
+  "symbol": "your_named_widget_or_type",
+  "path_prefix": "gui/your_gui_file.gui",
+  "format": "both",
+  "width": 1280,
+  "height": 720,
+  "limit": 20,
+  "visibility": "private"
+}

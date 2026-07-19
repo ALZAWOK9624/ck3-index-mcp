@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CK3 Route Overlay</title>
+  <style>
+    :root { color-scheme: dark; font-family: "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; }
+    * { box-sizing: border-box; }
+    html, body { width: 2200px; height: 1300px; margin: 0; overflow: hidden; background: #10181d; color: #f7f1dd; }
+    #route-card { position: relative; width: 2200px; height: 1300px; overflow: hidden; background: #17303a; }
+    #base-map, #route-overlay { position: absolute; inset: 0; width: 2200px; height: 1300px; }
+    #base-map { object-fit: fill; }
+    #route-overlay { pointer-events: none; }
+    .route-shadow { fill: none; stroke: rgba(5, 12, 16, .78); stroke-width: 15; stroke-linecap: round; stroke-linejoin: round; }
+    .route-line { fill: none; stroke: #f3bf45; stroke-width: 7; stroke-linecap: round; stroke-linejoin: round; marker-mid: url(#route-arrow); }
+    .route-point { fill: #f3bf45; stroke: #1a252b; stroke-width: 3; }
+    .endpoint { fill: #f7f1dd; stroke: #d94d3f; stroke-width: 7; }
+    .panel { position: absolute; background: rgba(13, 25, 31, .90); border: 1px solid rgba(247, 241, 221, .28); box-shadow: 0 12px 36px rgba(0, 0, 0, .30); }
+    #heading { left: 54px; top: 44px; max-width: 1260px; padding: 24px 30px 22px; }
+    #heading h1 { margin: 0; font-size: 48px; font-weight: 600; letter-spacing: .02em; }
+    #heading p { margin: 9px 0 0; font-size: 24px; color: #d8d2c0; }
+    #legend { right: 48px; top: 46px; width: 350px; padding: 20px 24px; }
+    #legend h2, #stages h2 { margin: 0 0 13px; font-size: 22px; font-weight: 600; text-transform: uppercase; letter-spacing: .12em; }
+    .legend-row { display: flex; align-items: center; gap: 13px; margin: 9px 0; font-size: 19px; }
+    .swatch { width: 46px; height: 7px; background: #f3bf45; box-shadow: 0 0 0 2px rgba(5, 12, 16, .65); }
+    .dot { width: 17px; height: 17px; border-radius: 50%; background: #f7f1dd; border: 4px solid #d94d3f; }
+    #stages { left: 54px; bottom: 42px; width: 720px; padding: 20px 26px; }
+    #stage-list { display: flex; flex-wrap: wrap; gap: 10px; }
+    .stage { padding: 8px 13px; border: 1px solid rgba(247, 241, 221, .22); background: rgba(247, 241, 221, .07); font-size: 18px; }
+    #status { position: absolute; inset: 0; display: grid; place-items: center; padding: 80px; text-align: center; font-size: 30px; background: #17303a; }
+    #status[hidden] { display: none; }
+  </style>
+</head>
+<body>
+  <main id="route-card" aria-label="CK3 route map">
+    <img id="base-map" alt="CK3 route context map">
+    <svg id="route-overlay" viewBox="0 0 2200 1300" role="img" aria-labelledby="route-title route-description">
+      <title id="route-title">Route</title>
+      <desc id="route-description">A route overlaid on the rendered CK3 map.</desc>
+      <defs>
+        <marker id="route-arrow" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse" markerUnits="strokeWidth">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#f3bf45"></path>
+        </marker>
+      </defs>
+      <g id="route-marks"></g>
+    </svg>
+    <section id="heading" class="panel">
+      <h1 id="card-title">Route</h1>
+      <p id="card-subtitle"></p>
+    </section>
+    <aside id="legend" class="panel" aria-label="Legend">
+      <h2>Legend / 图例</h2>
+      <div class="legend-row"><span class="swatch"></span><span>Route / 路线</span></div>
+      <div class="legend-row"><span class="dot"></span><span>Endpoints / 端点</span></div>
+    </aside>
+    <section id="stages" class="panel">
+      <h2>Journey stages / 行程阶段</h2>
+      <div id="stage-list"></div>
+    </section>
+    <div id="status">Loading route-render.json…</div>
+  </main>
+  <script>
+    (() => {
+      const params = new URLSearchParams(location.search);
+      const dataURL = params.get("data") || "route-render.json";
+      const mapURL = params.get("map") || "route.png";
+      const ns = "http://www.w3.org/2000/svg";
+      const byId = id => document.getElementById(id);
+      const subjectName = subject => {
+        if (!subject) return "";
+        const names = [subject.name_zh, subject.name_en].filter(Boolean);
+        return names.length ? names.join(" / ") : (subject.barony || subject.county || String(subject.province_id || ""));
+      };
+      const render = data => {
+        const routeOrder = point => point.role === "origin" ? -1 : point.role === "destination" ? Number.MAX_SAFE_INTEGER : (point.path_index ?? Number.MAX_SAFE_INTEGER - 1);
+        const points = [...(data.route_points_output || [])]
+          .filter(point => Number.isFinite(point.x) && Number.isFinite(point.y))
+          .sort((a, b) => routeOrder(a) - routeOrder(b));
+        if (points.length < 2) throw new Error("route_points_output must contain at least two transformed points");
+        const output = data.output || {};
+        if (output.width !== 2200 || output.height !== 1300) throw new Error(`Expected a 2200×1300 render, received ${output.width || "?"}×${output.height || "?"}`);
+        byId("base-map").src = data.base_map || mapURL;
+        const from = subjectName(data.resolved_from);
+        const to = subjectName(data.resolved_to);
+        byId("card-title").textContent = data.title || [from, to].filter(Boolean).join(" → ") || "CK3 Route";
+        byId("card-subtitle").textContent = [data.year ? `Year ${data.year}` : "", data.summary || ""].filter(Boolean).join(" · ");
+        byId("route-title").textContent = byId("card-title").textContent;
+        byId("route-description").textContent = `${points.length} route nodes positioned with renderer-provided output coordinates.`;
+        const marks = byId("route-marks");
+        const coordinates = points.map(point => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" ");
+        for (const className of ["route-shadow", "route-line"]) {
+          const line = document.createElementNS(ns, "polyline");
+          line.setAttribute("class", className);
+          line.setAttribute("points", coordinates);
+          marks.appendChild(line);
+        }
+        points.forEach((point, index) => {
+          const circle = document.createElementNS(ns, "circle");
+          circle.setAttribute("class", point.role === "origin" || point.role === "destination" || index === 0 || index === points.length - 1 ? "endpoint" : "route-point");
+          circle.setAttribute("cx", point.x);
+          circle.setAttribute("cy", point.y);
+          circle.setAttribute("r", circle.getAttribute("class") === "endpoint" ? "13" : "5");
+          marks.appendChild(circle);
+        });
+        const stageNames = { embark: "Embark / 登船", sea: "Sea / 航海", land: "Land / 陆行", disembark: "Disembark / 登陆" };
+        const legs = data.route_legs || [];
+        byId("stage-list").replaceChildren(...(legs.length ? legs : [{ kind: "route", start_index: 0, end_index: points.length - 1 }]).map(leg => {
+          const item = document.createElement("span");
+          item.className = "stage";
+          item.textContent = `${stageNames[leg.kind] || leg.kind} · ${leg.start_index}–${leg.end_index}`;
+          return item;
+        }));
+        byId("status").hidden = true;
+      };
+      fetch(dataURL, { cache: "no-store" })
+        .then(response => { if (!response.ok) throw new Error(`${response.status} ${response.statusText}`); return response.json(); })
+        .then(render)
+        .catch(error => { byId("status").textContent = `Cannot load route metadata: ${error.message}`; });
+    })();
+  </script>
+</body>
+</html>

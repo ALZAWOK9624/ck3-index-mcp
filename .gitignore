@@ -1,6 +1,7 @@
 # Build outputs
 /ck3-index.exe
 /ck3-index
+/bin/
 *.exe
 *.dll
 *.so
@@ -10,10 +11,14 @@
 /cache/
 /.gocache/
 /tmp/
+__pycache__/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
 *.db
+*.cover
+coverage.out
+$cover
 
 # External/vendor checkouts
 /external/
@@ -21,6 +26,12 @@
 
 # Local project config and transient outputs
 /ck3-index.toml
+/deploy/
+/SESSION_SUMMARY.md
+/examples/*.html
+/examples/*.png
+/examples/map-migration-demo/artifacts/
+/examples/map-migration-demo/snapshots/
 /diag.out.txt
 /validate.latest.json
 /wf.txt

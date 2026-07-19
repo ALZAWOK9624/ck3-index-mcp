@@ -1,0 +1,28 @@
+{
+  "runtime_facts": [
+    {
+      "expression": "GetVariableSystem.Exists('show_spells')",
+      "value": true
+    },
+    {
+      "expression": "GetVariableSystem.Exists('magic_tab')",
+      "value": true
+    },
+    {
+      "expression": "GetVariableSystem.Get('magic_tab')",
+      "value": "ritual"
+    },
+    {
+      "expression": "GetVariableSystem.Exists('magic_tab_aspect')",
+      "value": false
+    },
+    {
+      "expression": "DataModelHasItems(GetPlayer.MakeScope.GetList('owned_hex_list'))",
+      "value": true
+    },
+    {
+      "expression": "DataModelHasItems(GetPlayer.MakeScope.GetList('cantrip_list'))",
+      "value": true
+    }
+  ]
+}

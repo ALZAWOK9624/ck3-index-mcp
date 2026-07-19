@@ -1,0 +1,7 @@
+{
+  "source": "godherja",
+  "target": "project",
+  "min_share": 0.05,
+  "max_candidates": 5,
+  "allow_cross_water": false
+}

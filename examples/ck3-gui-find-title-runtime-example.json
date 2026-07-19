@@ -1,0 +1,12 @@
+{
+  "runtime_facts": [
+    {
+      "expression": "IsGameViewOpen('find_title')",
+      "value": false
+    },
+    {
+      "expression": "GetVariableSystem.Exists('extra_buttons_expand')",
+      "value": true
+    }
+  ]
+}

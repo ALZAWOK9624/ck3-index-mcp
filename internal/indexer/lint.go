@@ -132,18 +132,22 @@ func checkGUISafety(nodes []*script.Node, relPath string) []ctxDiag {
 		var inner func(ns []*script.Node)
 		inner = func(ns []*script.Node) {
 			for _, n := range ns {
-				k := n.Key
+				k := guiNodeKind(n)
 				switch k {
 				case "hbox", "vbox":
 					// M21: size = { 100% 100% } on hbox/vbox causes crash.
 					for _, c := range n.Children {
 						if c.Key == "size" && c.Kind == "block" {
 							for _, sc := range c.Children {
-								if strings.Contains(sc.Value, "%") {
+								raw := sc.Value
+								if sc.Kind == "bare" {
+									raw = sc.Key
+								}
+								if strings.Contains(raw, "%") {
 									out = append(out, ctxDiag{
 										severity: "error",
 										code:     "gui_crash_risk",
-										msg:      fmt.Sprintf("hbox/vbox with percent size (value=%q) may crash the game; use fixed or expand={}", sc.Value),
+										msg:      fmt.Sprintf("hbox/vbox with percent size (value=%q) may crash the game; use fixed or expand={}", raw),
 										line:     sc.Line, col: sc.Col,
 									})
 								}
@@ -164,11 +168,12 @@ func checkGUISafety(nodes []*script.Node, relPath string) []ctxDiag {
 				case "flowcontainer":
 					// M21: hbox/vbox inside flowcontainer may crash.
 					for _, c := range n.Children {
-						if c.Kind == "block" && (c.Key == "hbox" || c.Key == "vbox") {
+						childKind := guiNodeKind(c)
+						if c.Kind == "block" && (childKind == "hbox" || childKind == "vbox") {
 							out = append(out, ctxDiag{
 								severity: "error",
 								code:     "gui_crash_risk",
-								msg:      fmt.Sprintf("%s nested inside flowcontainer may crash the game", c.Key),
+								msg:      fmt.Sprintf("%s nested inside flowcontainer may crash the game", childKind),
 								line:     c.Line, col: c.Col,
 							})
 						}
@@ -207,6 +212,16 @@ func checkGUISafety(nodes []*script.Node, relPath string) []ctxDiag {
 		}
 	}
 	return filtered
+}
+
+func guiNodeKind(n *script.Node) string {
+	if n != nil && n.Value != "" && (n.Operator == "type" || (n.Operator == "=" && n.Kind == "block")) {
+		return n.Value
+	}
+	if n == nil {
+		return ""
+	}
+	return n.Key
 }
 
 // M6: Nested iterator explosion (e.g., every_living_character inside every_province).
@@ -603,7 +618,7 @@ func checkDefineRefs(nodes []*script.Node, relPath string) []ctxDiag {
 	walkNodes(nodes, func(n *script.Node) {
 		candidates := []string{n.Value, n.Key}
 		for _, raw := range candidates {
-			if !strings.HasPrefix(raw, "@") || len(raw) < 3 {
+			if !strings.HasPrefix(raw, "@") || len(raw) < 3 || isArithmeticExpression(raw) {
 				continue
 			}
 			if _, ok := tigerDefines[raw]; !ok {
@@ -624,7 +639,10 @@ func checkOnActionRefs(nodes []*script.Node, relPath string) []ctxDiag {
 	walkNodes(nodes, func(n *script.Node) {
 		for _, c := range n.Children {
 			if c.Kind == "bare" && c.Key != "" && n.Key == "on_actions" {
-				if _, ok := tigerOnActions[c.Key]; !ok {
+				// A published on_actions.log is newer and broader than the compact
+				// Tiger fallback. Use the shared lookup so a live engine hook does
+				// not become an avoidable unknown_on_action warning during scans.
+				if !IsOnAction(c.Key) {
 					out = append(out, ctxDiag{
 						severity: "warning",
 						code:     "unknown_on_action",

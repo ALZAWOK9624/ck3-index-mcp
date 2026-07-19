@@ -1,0 +1,11 @@
+{
+  "status": "ready",
+  "snapshot_id": "map-snapshot-66b79eab9ba94c36",
+  "project": "project",
+  "base": "old_base",
+  "file_count": 11,
+  "baseline_blob_count": 3,
+  "stored_bytes": 416,
+  "active_map_sha256": "1c13dfc1b8b49708736ed117fab3bb47ea78894d5440ceec86635346de831771",
+  "snapshot_relpath": "map-snapshot-66b79eab9ba94c36"
+}

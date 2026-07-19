@@ -17,6 +17,23 @@ var engineScopeRegistry = struct {
 	rules map[string]map[string][]string
 }{rules: map[string]map[string][]string{}}
 
+type engineScopeLogSpec struct {
+	name     string
+	kind     string
+	optional bool
+}
+
+var engineScopeLogSpecs = []engineScopeLogSpec{
+	{name: "effects.log", kind: "effect"},
+	{name: "triggers.log", kind: "trigger"},
+	{name: "event_targets.log", kind: "target"},
+	{name: "event_scopes.log", kind: "scope"},
+	// on_actions.log was missing from the original compact rule layer. It is
+	// optional only for compatibility with older game log bundles; when present
+	// it is a live source of truth and supersedes the generated Tiger name list.
+	{name: "on_actions.log", kind: "on_action", optional: true},
+}
+
 func ConfigureEngineRules(logs string) error {
 	rules := map[string]map[string][]string{}
 	if strings.TrimSpace(logs) == "" {
@@ -25,33 +42,27 @@ func ConfigureEngineRules(logs string) error {
 		engineScopeRegistry.Unlock()
 		return nil
 	}
-	for _, spec := range []struct{ name, kind string }{{"effects.log", "effect"}, {"triggers.log", "trigger"}, {"event_targets.log", "target"}, {"event_scopes.log", "scope"}} {
+	for _, spec := range engineScopeLogSpecs {
 		blocks, err := readDocBlocks(filepath.Join(logs, spec.name))
 		if err != nil {
+			if spec.optional && os.IsNotExist(err) {
+				continue
+			}
 			return err
 		}
 		for _, lines := range blocks {
 			if len(lines) == 0 {
 				continue
 			}
-			name := lines[0]
-			if a, _, ok := strings.Cut(name, " - "); ok {
-				name = strings.TrimSpace(a)
-			}
+			name := engineRuleName(lines[0])
 			for _, line := range lines[1:] {
-				prefix := ""
-				if strings.HasPrefix(line, "Supported Scopes:") {
-					prefix = "Supported Scopes:"
-				} else if strings.HasPrefix(line, "Input Scopes:") {
-					prefix = "Input Scopes:"
-				}
-				if prefix != "" {
+				if value, ok := inputScopeLine(line); ok {
 					m := rules[strings.ToLower(name)]
 					if m == nil {
 						m = map[string][]string{}
 						rules[strings.ToLower(name)] = m
 					}
-					m[spec.kind] = splitScopes(strings.TrimSpace(strings.TrimPrefix(line, prefix)))
+					m[spec.kind] = splitScopesWithNone(value, spec.kind == "on_action")
 				}
 			}
 		}
@@ -60,6 +71,30 @@ func ConfigureEngineRules(logs string) error {
 	engineScopeRegistry.rules = rules
 	engineScopeRegistry.Unlock()
 	return nil
+}
+
+func engineRuleName(head string) string {
+	name := strings.TrimSpace(head)
+	if a, _, ok := strings.Cut(name, " - "); ok {
+		name = strings.TrimSpace(a)
+	}
+	return strings.TrimSuffix(name, ":")
+}
+
+func inputScopeLine(line string) (string, bool) {
+	for _, prefix := range []string{"Supported Scopes:", "Input Scopes:", "Expected Scope:"} {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix)), true
+		}
+	}
+	return "", false
+}
+
+func engineOnActionKnown(key string) bool {
+	engineScopeRegistry.RLock()
+	defer engineScopeRegistry.RUnlock()
+	_, ok := engineScopeRegistry.rules[strings.ToLower(key)]["on_action"]
+	return ok
 }
 
 func engineScopeConfirms(key, kind string, need TigerScope) bool {
@@ -131,10 +166,8 @@ func rebuildEngineData(ctx context.Context, tx *sql.Tx, logs string) error {
 	if err := ingestDatatypes(ctx, tx, filepath.Join(logs, "data_types")); err != nil {
 		return err
 	}
-	for _, spec := range []struct{ name, kind string }{
-		{"event_scopes.log", "scope"}, {"event_targets.log", "target"}, {"effects.log", "effect"}, {"triggers.log", "trigger"},
-	} {
-		if err := ingestScopeLog(ctx, tx, filepath.Join(logs, spec.name), spec.kind); err != nil {
+	for _, spec := range engineScopeLogSpecs {
+		if err := ingestScopeLog(ctx, tx, filepath.Join(logs, spec.name), spec.kind, spec.optional); err != nil {
 			return err
 		}
 	}
@@ -193,9 +226,12 @@ func ingestDatatypes(ctx context.Context, tx *sql.Tx, dir string) error {
 	return nil
 }
 
-func ingestScopeLog(ctx context.Context, tx *sql.Tx, path, kind string) error {
+func ingestScopeLog(ctx context.Context, tx *sql.Tx, path, kind string, optional bool) error {
 	blocks, err := readDocBlocks(path)
 	if err != nil {
+		if optional && os.IsNotExist(err) {
+			return nil
+		}
 		return fmt.Errorf("engine %s log unavailable: %w", kind, err)
 	}
 	stmt, err := tx.PrepareContext(ctx, `INSERT OR REPLACE INTO engine_scope_rules(name,rule_kind,input_scopes,output_scopes,description,source_path) VALUES(?,?,?,?,?,?)`)
@@ -215,14 +251,13 @@ func ingestScopeLog(ctx context.Context, tx *sql.Tx, path, kind string) error {
 		if a, b, ok := strings.Cut(head, " - "); ok {
 			name, desc = strings.TrimSpace(a), strings.TrimSpace(b)
 		}
+		name = strings.TrimSuffix(strings.TrimSpace(name), ":")
 		input, output := "", ""
 		var extra []string
 		for _, line := range lines[1:] {
 			switch {
-			case strings.HasPrefix(line, "Supported Scopes:"):
-				input = strings.TrimSpace(strings.TrimPrefix(line, "Supported Scopes:"))
-			case strings.HasPrefix(line, "Input Scopes:"):
-				input = strings.TrimSpace(strings.TrimPrefix(line, "Input Scopes:"))
+			case strings.HasPrefix(line, "Supported Scopes:"), strings.HasPrefix(line, "Input Scopes:"), strings.HasPrefix(line, "Expected Scope:"):
+				input, _ = inputScopeLine(line)
 			case strings.HasPrefix(line, "Output Scopes:"):
 				output = strings.TrimSpace(strings.TrimPrefix(line, "Output Scopes:"))
 			default:
@@ -285,6 +320,7 @@ func (db *DB) LookupDatatype(ctx context.Context, query string, limit int) ([]Da
 		if err := rows.Scan(&d.Name, &d.Signature, &d.Description, &d.DefinitionType, &d.ReturnType, &d.Category, &d.Source); err != nil {
 			return nil, err
 		}
+		d.Source = logicalEngineEvidenceSource(d.Source)
 		out = append(out, d)
 	}
 	return out, rows.Err()
@@ -303,18 +339,60 @@ func (db *DB) LookupScopeEvidence(ctx context.Context, key string) ([]ScopeEvide
 		if err := rows.Scan(&e.Key, &e.RuleKind, &in, &outScopes, &e.Description, &e.RuleSource); err != nil {
 			return nil, err
 		}
-		e.InputScopes = splitScopes(in)
+		e.RuleSource = logicalEngineEvidenceSource(e.RuleSource)
+		e.InputScopes = splitScopesWithNone(in, e.RuleKind == "on_action")
 		e.OutputScopes = splitScopes(outScopes)
 		e.Confidence = "high"
 		out = append(out, e)
 	}
 	return out, rows.Err()
 }
+
+// logicalEngineEvidenceSource strips machine-specific engine-log roots from
+// query evidence. The database retains its physical source path for local
+// maintenance, while CLI/MCP consumers get a portable logical provenance.
+func logicalEngineEvidenceSource(sourcePath string) string {
+	parts := strings.FieldsFunc(strings.TrimSpace(sourcePath), func(r rune) bool { return r == '/' || r == '\\' })
+	if len(parts) == 0 {
+		return "engine_logs"
+	}
+	for index, part := range parts {
+		if strings.EqualFold(part, "data_types") {
+			return "engine_logs/" + strings.Join(parts[index:], "/")
+		}
+	}
+	return "engine_logs/" + parts[len(parts)-1]
+}
+
+// LookupOnActionEvidence returns the live on_action contract exposed by the
+// game logs. An empty result lets callers deliberately fall back to the
+// generated Tiger list rather than pretending the live rule was found.
+func (db *DB) LookupOnActionEvidence(ctx context.Context, key string) ([]ScopeEvidence, error) {
+	// Engine on_action ids are normalized to lower case at ingestion. Keep this
+	// public lookup consistent with IsOnAction and documentation lookup rather
+	// than treating a caller's casing as an engine-rule miss.
+	rules, err := db.LookupScopeEvidence(ctx, strings.ToLower(strings.TrimSpace(key)))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ScopeEvidence, 0, len(rules))
+	for _, rule := range rules {
+		if rule.RuleKind == "on_action" {
+			out = append(out, rule)
+		}
+	}
+	return out, nil
+}
+
 func splitScopes(s string) []string {
+	return splitScopesWithNone(s, false)
+}
+
+func splitScopesWithNone(s string, keepNone bool) []string {
 	var out []string
 	for _, v := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '|' }) {
 		v = strings.TrimSpace(v)
-		if v != "" && v != "none" {
+		if v != "" && (keepNone || v != "none") {
 			out = append(out, v)
 		}
 	}
@@ -326,15 +404,15 @@ func rebuildSearchFTS(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS search_fts`); err != nil {
 		return fmt.Errorf("FTS5 unavailable: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `CREATE VIRTUAL TABLE search_fts USING fts5(kind, name, text, source, path UNINDEXED, tokenize='unicode61 remove_diacritics 2')`); err != nil {
+	if _, err := tx.ExecContext(ctx, `CREATE VIRTUAL TABLE search_fts USING fts5(kind, name, text, source, path UNINDEXED, file_id UNINDEXED, tokenize='unicode61 remove_diacritics 2')`); err != nil {
 		return fmt.Errorf("FTS5 unavailable: %w", err)
 	}
 	stmts := []string{
-		`INSERT INTO search_fts(kind,name,text,source,path) SELECT 'object',o.name,o.object_type||' '||o.name||' '||f.rel_path,o.source_name,f.rel_path FROM objects o JOIN files f ON f.id=o.file_id WHERE f.overridden=0`,
-		`INSERT INTO search_fts(kind,name,text,source,path) SELECT 'resource',r.resource_path,r.kind||' '||r.resource_path,r.source_name,f.rel_path FROM resources r JOIN files f ON f.id=r.file_id WHERE f.overridden=0`,
-		`INSERT INTO search_fts(kind,name,text,source,path) SELECT 'script_key',o.field,o.field||' '||o.object_name||' '||o.raw,o.source_name,f.rel_path FROM object_fields o JOIN files f ON f.id=o.file_id WHERE f.overridden=0`,
-		`INSERT INTO search_fts(kind,name,text,source,path) SELECT 'localization',l.key,l.key||' '||l.value,l.source_name,f.rel_path FROM localization l JOIN files f ON f.id=l.file_id WHERE f.overridden=0 AND (lower(l.language) LIKE '%english%' OR lower(l.language) LIKE '%simp%')`,
-		`INSERT INTO search_fts(kind,name,text,source,path) SELECT 'datatype',name,signature||' '||COALESCE(description,'')||' '||COALESCE(return_type,''),'engine_logs',source_path FROM engine_datatypes`,
+		`INSERT INTO search_fts(kind,name,text,source,path,file_id) SELECT 'object',o.name,o.object_type||' '||o.name||' '||f.rel_path,o.source_name,f.rel_path,f.id FROM objects o JOIN files f ON f.id=o.file_id WHERE f.overridden=0`,
+		`INSERT INTO search_fts(kind,name,text,source,path,file_id) SELECT 'resource',r.resource_path,r.kind||' '||r.resource_path,r.source_name,f.rel_path,f.id FROM resources r JOIN files f ON f.id=r.file_id WHERE f.overridden=0`,
+		`INSERT INTO search_fts(kind,name,text,source,path,file_id) SELECT 'script_key',o.field,o.field||' '||o.object_name||' '||o.raw,o.source_name,f.rel_path,f.id FROM object_fields o JOIN files f ON f.id=o.file_id WHERE f.overridden=0`,
+		`INSERT INTO search_fts(kind,name,text,source,path,file_id) SELECT 'localization',l.key,l.key||' '||l.value,l.source_name,f.rel_path,f.id FROM localization l JOIN files f ON f.id=l.file_id WHERE f.overridden=0 AND (lower(l.language) LIKE '%english%' OR lower(l.language) LIKE '%simp%')`,
+		`INSERT INTO search_fts(kind,name,text,source,path,file_id) SELECT 'datatype',name,signature||' '||COALESCE(description,'')||' '||COALESCE(return_type,''),'engine_logs',source_path,0 FROM engine_datatypes`,
 	}
 	for _, s := range stmts {
 		if _, err := tx.ExecContext(ctx, s); err != nil {

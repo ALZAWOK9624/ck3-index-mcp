@@ -11,7 +11,7 @@ import (
 	"ck3-index/internal/script"
 )
 
-const architectureOverviewCacheKey = "architecture_overview_v1"
+const architectureOverviewCacheKey = "architecture_overview_v2"
 
 type architectureOverviewCache struct {
 	Counts   map[string]int           `json:"counts"`
@@ -50,7 +50,7 @@ func (db *DB) LLMArchitectureOverview(ctx context.Context, opts LLMOptions) (LLM
 	}
 	r.Counts = cache.Counts
 	r.Hotspots = limitHotspots(cache.Hotspots, limit)
-	for _, group := range []string{"sources", "objects", "refs", "diagnostics"} {
+	for _, group := range []string{"sources", "overrides", "objects", "refs", "event_relations", "diagnostics"} {
 		r.Evidence = append(r.Evidence, r.Hotspots[group]...)
 	}
 
@@ -112,6 +112,12 @@ func (db *DB) computeArchitectureOverviewTx(ctx context.Context, q queryer, limi
 	if cache.Hotspots["refs"], err = topRefKinds(ctx, q, limit); err != nil {
 		return nil, err
 	}
+	if cache.Hotspots["overrides"], err = overrideHotspots(ctx, q, limit); err != nil {
+		return nil, err
+	}
+	if cache.Hotspots["event_relations"], err = eventRelationHotspots(ctx, q, limit); err != nil {
+		return nil, err
+	}
 	if cache.Hotspots["diagnostics"], err = diagnosticHotspots(ctx, q, limit); err != nil {
 		return nil, err
 	}
@@ -139,7 +145,9 @@ func scalarCounts(ctx context.Context, q queryer, counts map[string]int) error {
 		"overridden_files": `SELECT COUNT(*) FROM files WHERE overridden!=0`,
 		"active_objects":   `SELECT COUNT(*) FROM objects o JOIN files f ON f.id=o.file_id WHERE f.overridden=0`,
 		"refs":             `SELECT COUNT(*) FROM refs r JOIN files f ON f.id=r.file_id WHERE f.overridden=0`,
-		"unresolved_refs":  `SELECT COUNT(*) FROM refs r JOIN files f ON f.id=r.file_id WHERE f.overridden=0 AND r.resolved=0`,
+		"unresolved_refs":  `SELECT COUNT(*) FROM refs r JOIN files f ON f.id=r.file_id WHERE f.overridden=0 AND r.resolved=0 AND r.resolution_reason NOT IN ('runtime_scope','unverified_runtime_symbol')`,
+		"dynamic_refs":     `SELECT COUNT(*) FROM refs r JOIN files f ON f.id=r.file_id WHERE f.overridden=0 AND r.resolved=0 AND r.resolution_reason IN ('runtime_scope','unverified_runtime_symbol')`,
+		"event_edges":      `SELECT COUNT(*) FROM refs r JOIN files f ON f.id=r.file_id WHERE f.overridden=0 AND r.ref_kind IN ('event','on_action') AND r.relation!=''`,
 		"localization":     `SELECT COUNT(*) FROM localization l JOIN files f ON f.id=l.file_id WHERE f.overridden=0`,
 		"resources":        `SELECT COUNT(*) FROM resources r JOIN files f ON f.id=r.file_id WHERE f.overridden=0`,
 		"schema_fields":    `SELECT COUNT(*) FROM schema_fields s JOIN files f ON f.id=s.file_id WHERE f.overridden=0`,
@@ -231,7 +239,8 @@ func (db *DB) appendTopRefKinds(ctx context.Context, r *LLMResult, limit int) er
 
 func topRefKinds(ctx context.Context, q queryer, limit int) ([]LLMEvidence, error) {
 	rows, err := q.QueryContext(ctx, `SELECT ref_kind,COUNT(*),
-		SUM(CASE WHEN resolved=0 THEN 1 ELSE 0 END)
+		SUM(CASE WHEN resolved=0 AND resolution_reason NOT IN ('runtime_scope','unverified_runtime_symbol') THEN 1 ELSE 0 END),
+		SUM(CASE WHEN resolved=0 AND resolution_reason IN ('runtime_scope','unverified_runtime_symbol') THEN 1 ELSE 0 END)
 		FROM refs r JOIN files f ON f.id=r.file_id
 		WHERE f.overridden=0
 		GROUP BY ref_kind ORDER BY COUNT(*) DESC, ref_kind LIMIT ?`, limit)
@@ -242,15 +251,60 @@ func topRefKinds(ctx context.Context, q queryer, limit int) ([]LLMEvidence, erro
 	var out []LLMEvidence
 	for rows.Next() {
 		var kind string
-		var total, unresolved int
-		if err := rows.Scan(&kind, &total, &unresolved); err != nil {
+		var total, unresolved, dynamic int
+		if err := rows.Scan(&kind, &total, &unresolved, &dynamic); err != nil {
 			return nil, err
 		}
 		out = append(out, LLMEvidence{
 			Kind:   "ref_kind",
 			Name:   kind,
-			Detail: fmt.Sprintf("refs=%d unresolved=%d", total, unresolved),
+			Detail: fmt.Sprintf("refs=%d unresolved=%d dynamic=%d", total, unresolved, dynamic),
 		})
+	}
+	return out, rows.Err()
+}
+
+func overrideHotspots(ctx context.Context, q queryer, limit int) ([]LLMEvidence, error) {
+	rows, err := q.QueryContext(ctx, `SELECT override_reason,override_by_source,override_rule,COUNT(*)
+		FROM files WHERE overridden!=0
+		GROUP BY override_reason,override_by_source,override_rule
+		ORDER BY COUNT(*) DESC,override_reason,override_by_source,override_rule LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LLMEvidence
+	for rows.Next() {
+		var reason, source, rule string
+		var count int
+		if err := rows.Scan(&reason, &source, &rule, &count); err != nil {
+			return nil, err
+		}
+		out = append(out, LLMEvidence{Kind: "file_override", Source: source, Path: rule,
+			Detail: fmt.Sprintf("reason=%s files=%d", reason, count)})
+	}
+	return out, rows.Err()
+}
+
+func eventRelationHotspots(ctx context.Context, q queryer, limit int) ([]LLMEvidence, error) {
+	rows, err := q.QueryContext(ctx, `SELECT relation,ref_kind,COUNT(*),
+		SUM(CASE WHEN resolved=0 THEN 1 ELSE 0 END)
+		FROM refs r JOIN files f ON f.id=r.file_id
+		WHERE f.overridden=0 AND r.ref_kind IN ('event','on_action') AND r.relation!=''
+		GROUP BY relation,ref_kind ORDER BY COUNT(*) DESC,relation,ref_kind LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LLMEvidence
+	for rows.Next() {
+		var relation, kind string
+		var count, unresolved int
+		if err := rows.Scan(&relation, &kind, &count, &unresolved); err != nil {
+			return nil, err
+		}
+		out = append(out, LLMEvidence{Kind: "event_relation", Type: kind, Name: relation,
+			Detail: fmt.Sprintf("edges=%d unresolved=%d", count, unresolved)})
 	}
 	return out, rows.Err()
 }
@@ -333,7 +387,7 @@ func (db *DB) LLMDependencyGraph(ctx context.Context, id string, opts LLMOptions
 		},
 		NextQueries: []LLMNextQuery{
 			{Tool: "inspect_object", ID: id, Reason: "inspect definition, localization, and diagnostics for the center node"},
-			{Tool: "impact_patch", ID: id, Reason: "use before delete or rename operations"},
+			{Tool: "preflight_code", ID: id, Reason: "check blockers before editing; use patch impact analysis once complete patch files exist"},
 		},
 	}
 	for i, d := range obj.Definitions {
@@ -367,6 +421,7 @@ type graphEdge struct {
 	Line, Column       int
 	Detail             string
 	Resolved           bool
+	Resolution         string
 	Semantic           bool
 }
 
@@ -395,7 +450,7 @@ func (db *DB) dependencyGraph(ctx context.Context, id string, depth, limit int) 
 			}
 			for _, e := range refGraphEdges(refs) {
 				if addGraphEdge(&result, seenEdges, seenNodes, e) {
-					if !e.Resolved {
+					if e.Resolution == "unresolved" {
 						result.unresolved++
 					}
 					if e.ToName != "" && seenIDs[e.ToName] == 0 && e.ToName != id {
@@ -452,14 +507,14 @@ func refGraphEdges(refs RefQuery) []graphEdge {
 		out = append(out, graphEdge{
 			FromType: h.FromType, FromName: h.FromName, ToType: h.Kind, ToName: h.Name,
 			EdgeType: "incoming:" + h.Kind, Source: h.Source, Path: h.Path, Line: h.Line, Column: h.Column,
-			Detail: refDetail(h), Resolved: h.Resolved,
+			Detail: refDetail(h), Resolved: h.Resolved, Resolution: h.Resolution,
 		})
 	}
 	for _, h := range refs.Outgoing {
 		out = append(out, graphEdge{
 			FromType: h.FromType, FromName: h.FromName, ToType: h.Kind, ToName: h.Name,
 			EdgeType: "outgoing:" + h.Kind, Source: h.Source, Path: h.Path, Line: h.Line, Column: h.Column,
-			Detail: refDetail(h), Resolved: h.Resolved,
+			Detail: refDetail(h), Resolved: h.Resolved, Resolution: h.Resolution,
 		})
 	}
 	return out
@@ -470,8 +525,17 @@ func refDetail(h RefHit) string {
 	if h.Raw != "" && h.Raw != h.Name {
 		detail += " raw=" + h.Raw
 	}
-	if !h.Resolved {
-		detail += " [unresolved]"
+	if h.Relation != "" {
+		detail += " relation=" + h.Relation
+	}
+	if h.Phase != "" {
+		detail += " phase=" + h.Phase
+	}
+	if h.Resolution != "" {
+		detail += " resolution=" + h.Resolution
+	}
+	if h.ResolutionReason != "" {
+		detail += " reason=" + h.ResolutionReason
 	}
 	return detail
 }
@@ -697,12 +761,12 @@ func nodeKey(typ, name string) string {
 func countUnresolvedRefs(refs RefQuery) int {
 	n := 0
 	for _, h := range refs.Incoming {
-		if !h.Resolved {
+		if h.Resolution == "unresolved" {
 			n++
 		}
 	}
 	for _, h := range refs.Outgoing {
-		if !h.Resolved {
+		if h.Resolution == "unresolved" {
 			n++
 		}
 	}

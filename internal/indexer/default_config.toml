@@ -1,22 +1,23 @@
 database = "cache/ck3_index.sqlite"
 engine_logs = "../../logs"
+artifact_root = "cache/artifacts"
+migration_snapshot_root = "cache/migration-snapshots"
+artifact_retention_hours = 168
+gis_enabled = true
+gis_analysis = "terrain"
+gis_cache_root = "cache/gis"
+gis_cache_max_gib = 8
+gis_timeout_seconds = 900
+# Release bundles set these to the bundled, verified WhiteboxTools binary.
+# gis_sidecar_path = "sidecar/whitebox_tools.exe"
+# gis_sidecar_sha256 = "<release-manifest-sha256>"
 
 [[source]]
-name = "project"
-path = "../../我的工程/22"
+name = "mod"
+path = "../my-ck3-mod"
 rank = 1
 
 [[source]]
-name = "godherja"
-path = "../../mod本体/godherja-beta"
-rank = 2
-
-[[source]]
 name = "game"
-path = "../../游戏本体/game"
-rank = 3
-
-[[source]]
-name = "translation"
-path = "../../mod翻译/Godherja CN"
-rank = 4
+path = "../Crusader Kings III/game"
+rank = 2

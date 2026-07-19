@@ -1,0 +1,2 @@
+1 = hills
+2 = forest

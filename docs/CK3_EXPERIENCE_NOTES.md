@@ -1,49 +1,49 @@
-# CK3 Experience Notes
+# CK3 经验笔记
 
-Source: local `ck3_modding_wiki` notes under the current mod workspace.
+来源：当前 Mod 工作区中的本地 `ck3_modding_wiki` 笔记。
 
-These notes are workflow and generation hints. They are not engine authority.
-Confirm risky mechanics through indexed scripts, `.info` schema hints, lookup tools,
-and fresh `ck3-index scan` diagnostics.
+这些内容只是工作流与生成提示，不是引擎权威结论。
+涉及高风险机制时，应通过已索引脚本、`.info` 结构提示、查询工具和最新的
+`ck3-index scan` 诊断进行确认。
 
-## Scripting
+## 脚本编写
 
-- Effects and triggers are never standalone prose. They need an argument or block.
-- Trigger-like blocks are usually AND blocks and may early-out after the first false trigger.
-- `trigger_if` chains should terminate with `trigger_else`, even when the else block is empty.
-- `limit = {}` inside iterators is a trigger context; iterator bodies are effect or trigger contexts depending on iterator family.
-- `any_*` iterators are trigger-style; `every_*`, `random_*`, and `ordered_*` are effect-style.
+- 效果和触发器不能像独立语句一样裸写，必须带参数或代码块。
+- 触发器类代码块通常采用 AND 关系，并可能在遇到第一个不成立的触发器后提前结束。
+- `trigger_if` 链应以 `trigger_else` 结尾，即使 else 代码块为空也是如此。
+- 迭代器中的 `limit = {}` 属于触发器上下文；迭代器主体属于效果还是触发器上下文，取决于迭代器类别。
+- `any_*` 迭代器属于触发器风格；`every_*`、`random_*` 和 `ordered_*` 属于效果风格。
 
-## Scopes
+## 作用域
 
-- `scope:name` means a saved scope, not an event target. Do not prefix normal event targets such as `root`, `this`, `prev`, `primary_heir`, or database ids with `scope:`.
-- Saved scopes are local to an uninterrupted script/effect chain. They should not be assumed to exist in unrelated events.
-- `save_scope_as` is for effect context. In trigger context prefer temporary saved-scope forms when valid.
-- Reusing the same saved-scope name overwrites the previous value.
-- In `every_*` loops, saving the same scope name repeatedly leaves only the last value after the loop.
+- `scope:name` 表示已保存作用域，不是事件目标。不要给 `root`、`this`、`prev`、`primary_heir` 或数据库标识符等普通事件目标添加 `scope:` 前缀。
+- 已保存作用域只在不中断的脚本/效果链中有效，不应假定它会存在于无关事件中。
+- `save_scope_as` 用于效果上下文；在触发器上下文中，应在语法允许时优先使用临时保存作用域形式。
+- 重复使用同一个已保存作用域名称会覆盖旧值。
+- 在 `every_*` 循环中反复保存同名作用域，循环结束后只会留下最后一个值。
 
-## Scripted Effects And Triggers
+## 脚本化效果与触发器
 
-- Scripted effects behave like textual macro expansion and must not recurse.
-- Scripted effects with template arguments should save important arguments into named scopes/values before complex nested use.
-- Avoid ambiguous `root` and `prev` inside reusable scripted effects unless the caller context is tightly controlled.
-- Scripted triggers can normally be used with `= yes` or negated with `= no`.
+- 脚本化效果类似文本宏展开，不能递归调用。
+- 带模板参数的脚本化效果在复杂嵌套使用前，应把重要参数保存到命名作用域或命名值中。
+- 除非调用方上下文受到严格控制，否则应避免在可复用脚本化效果中使用含义不明确的 `root` 和 `prev`。
+- 脚本化触发器通常可用 `= yes` 调用，也可用 `= no` 取反。
 
-## On Actions
+## On Action
 
-- Prefer adding a custom on_action through an existing on_action's `on_actions = {}` list.
-- Avoid directly overriding upstream `trigger` or `effect` blocks on vanilla on_actions; this is fragile and may produce engine errors.
-- `events`, `random_events`, and `on_actions` are append-style areas; direct trigger/effect replacement is the risky area.
+- 优先通过现有 on_action 的 `on_actions = {}` 列表添加自定义 on_action。
+- 避免直接覆盖原版 on_action 中的上游 `trigger` 或 `effect` 代码块；这种做法很脆弱，也可能导致引擎错误。
+- `events`、`random_events` 和 `on_actions` 属于追加式区域；直接替换 trigger/effect 才是高风险区域。
 
-## Localization
+## 本地化
 
-- CK3 expects `localization`, not `localisation`.
-- Localization files should be under `localization/<language>/` or `localization/replace/<language>/`.
-- Replace folders are for overriding existing localization values.
-- Localization proves display text only. It must not be used as proof of mechanics.
-- Event-style keys commonly use `.t`, `.desc`, `.a`, `.b`, and `.tt`.
+- CK3 使用目录名 `localization`，不是 `localisation`。
+- 本地化文件应放在 `localization/<language>/` 或 `localization/replace/<language>/` 下。
+- replace 目录用于覆盖已有本地化值。
+- 本地化只能证明显示文本，不能单独作为机制证据。
+- 事件类键通常使用 `.t`、`.desc`、`.a`、`.b` 和 `.tt` 后缀。
 
-## GUI
+## 界面
 
-- Scripted GUIs live under `common/scripted_guis/` and may receive extra scopes from UI.
-- GUI/scripted GUI scope assumptions should be checked against concrete vanilla examples before generation.
+- 脚本化 GUI 位于 `common/scripted_guis/` 下，并可能从界面接收额外作用域。
+- 生成前，应使用具体原版示例核对 GUI/脚本化 GUI 的作用域假设。

@@ -1,0 +1,105 @@
+{
+  "status": "ready",
+  "artifact_id": "ck3-map-migration-73cc276a7141ef7d",
+  "artifact_relpath": "ck3-map-migration-73cc276a7141ef7d",
+  "output_name": "demo_migrated",
+  "snapshot_id": "map-snapshot-66b79eab9ba94c36",
+  "target": "new_upstream",
+  "expires_at": "2026-07-22T18:34:24Z",
+  "mapping": {
+    "one_to_one": 0,
+    "renumbered": 2,
+    "splits": 0,
+    "merges": 0,
+    "complex": 0,
+    "unmapped_source": 0,
+    "unmapped_target": 0
+  },
+  "changed_files": 4,
+  "replacement_count": 4,
+  "conflict_count": 0,
+  "files": [
+    {
+      "path": "common/landed_titles/demo.txt",
+      "origin": "target",
+      "merge": "target_native",
+      "sha256": "798dbbbe29e9c0eade1bc8d2af958375ff8681ca1b8fcad0cff76f23b68c5580",
+      "size": 154
+    },
+    {
+      "path": "common/province_terrain/demo.txt",
+      "origin": "project",
+      "merge": "three_way",
+      "replacements": 2,
+      "sha256": "7a83a9887c6a28851f8b7d8512c65a5b77d355a3e01481cce09df426dea97cf6",
+      "size": 23
+    },
+    {
+      "path": "common/scripted_modifiers/new_upstream_added.txt",
+      "origin": "target",
+      "merge": "target_native",
+      "sha256": "4b540ddcd0deabfd6c83fe811510300ff2b1afd34614bab249aa66c3ebed1a6a",
+      "size": 55
+    },
+    {
+      "path": "common/scripted_modifiers/project_added.txt",
+      "origin": "project",
+      "merge": "project_added",
+      "sha256": "b450099a9d61d3fac6f1f434b593948d5194b2994a703903b7170f49e817a206",
+      "size": 53
+    },
+    {
+      "path": "descriptor.mod",
+      "origin": "project",
+      "merge": "project_metadata",
+      "sha256": "63d18d8801f0c2a75b80d8112dc2f343ed4556d885a2e8e55ee13c1237ed6b39",
+      "size": 47
+    },
+    {
+      "path": "history/provinces/demo.txt",
+      "origin": "project",
+      "merge": "three_way",
+      "replacements": 2,
+      "sha256": "525976dba555337c7daec72919f6ffd410bb31162a0eb10c38b166c06e17b089",
+      "size": 123
+    },
+    {
+      "path": "map_data/default.map",
+      "origin": "target",
+      "merge": "target_native",
+      "sha256": "fec6d7da51a5e20711d7d9fe4867190134ea168b058a245a9cf60faefd0debcb",
+      "size": 97
+    },
+    {
+      "path": "map_data/definition.csv",
+      "origin": "target",
+      "merge": "target_geometry",
+      "sha256": "437abe94abc2c9cfef7d12073ca9a3f067d8b806723a35071bbebe9435d8cc9e",
+      "size": 54
+    },
+    {
+      "path": "map_data/provinces.png",
+      "origin": "target",
+      "merge": "target_geometry",
+      "sha256": "7362be08babe7d24cca5889ae5db807be0345a05626ae5b80bc9f4ed24cf1705",
+      "size": 83
+    }
+  ],
+  "validation": {
+    "blocked": false,
+    "parse_errors": 0,
+    "missing_targets": 0,
+    "duplicate_history": 0,
+    "duplicate_terrain": 0,
+    "duplicate_barony": 0,
+    "invalid_adjacency": 0,
+    "invalid_default_map": 0,
+    "invalid_region": 0,
+    "suspicious_numeric": 0,
+    "map_audit_errors": 0,
+    "map_audit_warnings": 0
+  },
+  "guidance": [
+    "This is a local test fork. Scan it again and launch it in an isolated playset before packaging or publishing."
+  ]
+}

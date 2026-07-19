@@ -33,6 +33,59 @@ type LLMResult struct {
 	MissingLocKeys   []string                 `json:"missing_loc_keys,omitempty"`
 	MissingResources []string                 `json:"missing_resources,omitempty"`
 	ScopeFixHints    []string                 `json:"scope_fix_hints,omitempty"`
+	Topology         *LLMTopology             `json:"topology,omitempty"`
+}
+
+// LLMTopology is a compact, model-facing view over the indexed reference
+// graph. It deliberately carries conclusions such as roots, leaves, cycles,
+// and shortest traversal paths so clients do not need to reconstruct graph
+// algorithms from a long evidence list.
+type LLMTopology struct {
+	Center           string            `json:"center"`
+	Direction        string            `json:"direction"`
+	IncludeOnActions bool              `json:"include_on_actions"`
+	MaxDepth         int               `json:"max_depth"`
+	Nodes            []LLMTopologyNode `json:"nodes"`
+	Edges            []LLMTopologyEdge `json:"edges"`
+	Roots            []string          `json:"roots,omitempty"`
+	Leaves           []string          `json:"leaves,omitempty"`
+	Cycles           [][]string        `json:"cycles,omitempty"`
+	PathsFromCenter  []LLMTopologyPath `json:"paths_from_center,omitempty"`
+	Truncated        bool              `json:"truncated,omitempty"`
+}
+
+type LLMTopologyNode struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	Name      string `json:"name"`
+	Defined   bool   `json:"defined"`
+	Distance  int    `json:"distance"`
+	InDegree  int    `json:"in_degree"`
+	OutDegree int    `json:"out_degree"`
+	EventType string `json:"event_type,omitempty"`
+	Title     string `json:"title,omitempty"`
+	Source    string `json:"source,omitempty"`
+	Path      string `json:"path,omitempty"`
+	Line      int    `json:"line,omitempty"`
+}
+
+type LLMTopologyEdge struct {
+	From       string `json:"from"`
+	To         string `json:"to"`
+	Relation   string `json:"relation,omitempty"`
+	Phase      string `json:"phase,omitempty"`
+	Confidence string `json:"confidence,omitempty"`
+	Resolution string `json:"resolution"`
+	Reason     string `json:"reason,omitempty"`
+	Source     string `json:"source,omitempty"`
+	Path       string `json:"path,omitempty"`
+	Line       int    `json:"line,omitempty"`
+	Column     int    `json:"column,omitempty"`
+}
+
+type LLMTopologyPath struct {
+	To    string   `json:"to"`
+	Nodes []string `json:"nodes"`
 }
 
 type LLMEvidence struct {
@@ -147,7 +200,18 @@ func (db *DB) LLMQueryObject(ctx context.Context, id string, opts LLMOptions) (L
 	if err != nil {
 		return LLMResult{}, err
 	}
-	r := LLMResult{Query: id, Intent: "query_object", Counts: map[string]int{"definitions": len(obj.Definitions)}}
+	r := LLMResult{Query: id, Intent: "query_object", Counts: map[string]int{
+		"definitions":        len(obj.Definitions),
+		"resolution_groups":  len(obj.Resolution),
+		"file_overrides":     len(obj.FileOverrides),
+		"event_profiles":     len(obj.EventProfiles),
+		"character_profiles": len(obj.CharacterProfiles),
+		"diagnostics":        0,
+	}}
+	staticFields, historyDates, historyFields := characterProfileCounts(obj.CharacterProfiles)
+	r.Counts["character_static_fields"] = staticFields
+	r.Counts["character_history_dates"] = historyDates
+	r.Counts["character_history_fields"] = historyFields
 	if len(obj.Definitions) == 0 {
 		r.Summary = fmt.Sprintf("No indexed object definition matched %q.", id)
 		r.NeedsRefresh = true
@@ -160,10 +224,51 @@ func (db *DB) LLMQueryObject(ctx context.Context, id string, opts LLMOptions) (L
 		}
 		r.Evidence = append(r.Evidence, objectEvidence("definition", d))
 	}
+	for i, resolution := range obj.Resolution {
+		if i >= limit {
+			break
+		}
+		r.Evidence = append(r.Evidence, LLMEvidence{
+			Kind: "definition_resolution", Type: resolution.Type, Name: resolution.Name,
+			Detail: fmt.Sprintf("mode=%s status=%s candidates=%d active=%d reason=%s", resolution.Mode, resolution.Status, resolution.CandidateCount, resolution.ActiveCount, resolution.Reason),
+		})
+	}
+	liveDiagnostics := titleAmbiguityDiagnostics(obj)
+	r.Counts["diagnostics"] = len(liveDiagnostics)
+	for _, diagnostic := range liveDiagnostics {
+		r.Evidence = append(r.Evidence, diagnosticEvidence(diagnostic))
+	}
+	for i, file := range obj.FileOverrides {
+		if i >= limit {
+			break
+		}
+		detail := fmt.Sprintf("logical_path=%s rank=%d overridden=%t", file.LogicalPath, file.Rank, file.Overridden)
+		if file.OverrideReason != "" {
+			detail += fmt.Sprintf(" reason=%s by=%s rule=%s", file.OverrideReason, file.OverrideBySource, file.OverrideRule)
+		}
+		r.Evidence = append(r.Evidence, LLMEvidence{Kind: "file_override", Source: file.Source, Path: evidencePath(file.Path), Detail: detail})
+	}
+	for _, profile := range obj.EventProfiles {
+		for i, field := range profile.Fields {
+			if i >= limit {
+				break
+			}
+			r.Evidence = append(r.Evidence, LLMEvidence{
+				Kind: "event_field", Type: "event", Name: profile.Name, Source: profile.Source,
+				Path: evidencePath(profile.Path), Line: field.Line,
+				Detail: fmt.Sprintf("field=%s shape=%s raw=%s", field.Field, field.Shape, field.Raw),
+			})
+		}
+	}
+	r.Evidence = append(r.Evidence, characterProfileEvidence(obj.CharacterProfiles, limit)...)
 	first := obj.Definitions[0]
-	r.Summary = fmt.Sprintf("Found %d definition(s) for %q. First match is %s:%s from %s.", len(obj.Definitions), id, first.Type, first.Name, first.Source)
+	resolution := "unclassified"
+	if len(obj.Resolution) > 0 {
+		resolution = obj.Resolution[0].Status
+	}
+	r.Summary = fmt.Sprintf("Found %d definition candidate(s) for %q; resolution=%s. First match is %s:%s from %s.", len(obj.Definitions), id, resolution, first.Type, first.Name, first.Source)
 	r.Guidance = []string{
-		"Use the first definition as the active definition unless a later query shows a project override.",
+		"Use definition status and resolution evidence; do not assume the first row is active when status is ambiguous or merged.",
 		"Before editing, inspect refs, localization, examples, and rules for this object type.",
 	}
 	r.NextQueries = []LLMNextQuery{
@@ -176,7 +281,82 @@ func (db *DB) LLMQueryObject(ctx context.Context, id string, opts LLMOptions) (L
 }
 
 func objectEvidence(kind string, d ObjectDef) LLMEvidence {
-	return LLMEvidence{Kind: kind, Type: d.Type, Name: d.Name, Source: d.Source, Path: evidencePath(d.Path), Line: d.Line, Column: d.Column}
+	ev := LLMEvidence{Kind: kind, Type: d.Type, Name: d.Name, Source: d.Source, Path: evidencePath(d.Path), Line: d.Line, Column: d.Column}
+	if d.Status != "" {
+		ev.Detail = "status=" + d.Status
+	}
+	if d.Type == "scripted_variable" && d.Value != "" {
+		if ev.Detail != "" {
+			ev.Detail += " "
+		}
+		ev.Detail += "value=" + d.Value
+	}
+	return ev
+}
+
+func characterProfileCounts(profiles []CharacterProfile) (staticFields, historyDates, historyFields int) {
+	for _, profile := range profiles {
+		staticFields += len(profile.StaticFields)
+		historyDates += len(profile.Timeline)
+		for _, entry := range profile.Timeline {
+			historyFields += len(entry.Fields)
+		}
+	}
+	return staticFields, historyDates, historyFields
+}
+
+func characterProfileEvidence(profiles []CharacterProfile, limit int) []LLMEvidence {
+	if limit <= 0 {
+		limit = defaultLLMLimit
+	}
+	var staticEvidence, historyEvidence []LLMEvidence
+	for _, profile := range profiles {
+		for _, field := range profile.StaticFields {
+			staticEvidence = append(staticEvidence, LLMEvidence{
+				Kind: "character_field", Type: "character", Name: profile.Name, Source: profile.Source,
+				Path: evidencePath(profile.Path), Line: field.Line,
+				Detail: fmt.Sprintf("field=%s shape=%s raw=%s", field.Field, field.Shape, field.Raw),
+			})
+		}
+		for _, entry := range profile.Timeline {
+			for _, field := range entry.Fields {
+				historyEvidence = append(historyEvidence, LLMEvidence{
+					Kind: "character_history", Type: "character", Name: profile.Name, Source: profile.Source,
+					Path: evidencePath(profile.Path), Line: field.Line,
+					Detail: fmt.Sprintf("date=%s field=%s shape=%s raw=%s", entry.Date, field.Field, field.Shape, field.Raw),
+				})
+			}
+		}
+	}
+	if len(staticEvidence) == 0 {
+		return historyEvidence[:minInt(limit, len(historyEvidence))]
+	}
+	if len(historyEvidence) == 0 {
+		return staticEvidence[:minInt(limit, len(staticEvidence))]
+	}
+	// Keep both identity and lifecycle evidence visible at the default limit;
+	// otherwise long character headers hide every dated entry.
+	staticLimit := (limit + 1) / 2
+	historyLimit := limit - staticLimit
+	out := append([]LLMEvidence(nil), staticEvidence[:minInt(staticLimit, len(staticEvidence))]...)
+	out = append(out, historyEvidence[:minInt(historyLimit, len(historyEvidence))]...)
+	if len(out) < limit {
+		for _, evidence := range staticEvidence[minInt(staticLimit, len(staticEvidence)):] {
+			if len(out) >= limit {
+				break
+			}
+			out = append(out, evidence)
+		}
+	}
+	if len(out) < limit {
+		for _, evidence := range historyEvidence[minInt(historyLimit, len(historyEvidence)):] {
+			if len(out) >= limit {
+				break
+			}
+			out = append(out, evidence)
+		}
+	}
+	return out
 }
 
 func (db *DB) LLMQueryObjectTypes(ctx context.Context, opts LLMOptions) (LLMResult, error) {
@@ -228,11 +408,20 @@ func refEvidence(kind string, h RefHit) LLMEvidence {
 	if h.Raw != "" && h.Raw != h.Name {
 		detail += " raw=" + h.Raw
 	}
-	if !h.Resolved {
-		detail += " [unresolved]"
+	if h.Relation != "" {
+		detail += " relation=" + h.Relation
+	}
+	if h.Phase != "" {
+		detail += " phase=" + h.Phase
+	}
+	if h.Resolution != "" {
+		detail += " resolution=" + h.Resolution
+	}
+	if h.ResolutionReason != "" {
+		detail += " reason=" + h.ResolutionReason
 	}
 	ev := LLMEvidence{Kind: kind, Type: h.FromType, Name: name, Source: h.Source, Path: evidencePath(h.Path), Line: h.Line, Column: h.Column, Detail: detail}
-	if !h.Resolved {
+	if h.Resolution == "unresolved" {
 		ev.Suggestion, ev.RuleSource = refHint(h.Kind)
 	}
 	return ev
@@ -448,8 +637,8 @@ func (db *DB) LLMValidate(ctx context.Context, opts LLMOptions) (LLMResult, erro
 	r.Summary = fmt.Sprintf("Cached validation has %d error(s), %d warning(s), and %d info diagnostic(s).", rep.Counts["error"], rep.Counts["warning"], rep.Counts["info"])
 	r.Guidance = []string{
 		"This summary is limited to the current project source plus global diagnostics; upstream game and Godherja files remain searchable as reference evidence.",
-		"This MCP tool is chat-fast and reads cached diagnostics only.",
-		"After editing files, run ck3-index scan or CLI validate to refresh diagnostics before trusting a clean result.",
+		"This MCP tool reads diagnostics refreshed by full or incremental scan; ambiguous title definitions are also synthesized live by ck3_inspect.",
+		"After editing files, run ck3-index scan --files for small changes or ck3-index scan for a full refresh before trusting a clean result.",
 	}
 	if len(rep.Diagnostics) > 0 {
 		r.NextQueries = []LLMNextQuery{{Tool: "explain_diagnostic", ID: rep.Diagnostics[0].Code, Reason: "inspect the most severe diagnostic class"}}
@@ -502,23 +691,30 @@ func (db *DB) LLMInspectObject(ctx context.Context, id string, opts LLMOptions) 
 	if err != nil {
 		return LLMResult{}, err
 	}
+	diags = aggregateDiagnostics(append(diags, titleAmbiguityDiagnostics(obj)...))
 	r := LLMResult{
 		Query:  id,
 		Intent: "inspect_object",
 		Counts: map[string]int{
-			"definitions":   len(obj.Definitions),
-			"incoming_refs": refs.IncomingTotal,
-			"outgoing_refs": refs.OutgoingTotal,
-			"localization":  len(loc.Values),
-			"diagnostics":   len(diags),
+			"definitions":        len(obj.Definitions),
+			"incoming_refs":      refs.IncomingTotal,
+			"outgoing_refs":      refs.OutgoingTotal,
+			"localization":       len(loc.Values),
+			"diagnostics":        len(diags),
+			"character_profiles": len(obj.CharacterProfiles),
 		},
 	}
+	staticFields, historyDates, historyFields := characterProfileCounts(obj.CharacterProfiles)
+	r.Counts["character_static_fields"] = staticFields
+	r.Counts["character_history_dates"] = historyDates
+	r.Counts["character_history_fields"] = historyFields
 	for i, d := range obj.Definitions {
 		if i >= limit {
 			break
 		}
 		r.Evidence = append(r.Evidence, objectEvidence("definition", d))
 	}
+	r.Evidence = append(r.Evidence, characterProfileEvidence(obj.CharacterProfiles, limit)...)
 	for i, h := range refs.Incoming {
 		if i >= limit {
 			break
@@ -886,13 +1082,17 @@ func (db *DB) LLMDiagnoseKey(ctx context.Context, id string, opts LLMOptions) (L
 		Query:  id,
 		Intent: "diagnose_key",
 		Counts: map[string]int{
-			"definitions":  obj.Counts["definitions"],
-			"localization": loc.Counts["values"],
-			"resources":    res.Counts["resources"],
-			"known_sounds": res.Counts["known_sounds"],
-			"incoming":     refs.Counts["incoming"],
-			"outgoing":     refs.Counts["outgoing"],
-			"diagnostics":  len(diags),
+			"definitions":              obj.Counts["definitions"],
+			"character_profiles":       obj.Counts["character_profiles"],
+			"character_static_fields":  obj.Counts["character_static_fields"],
+			"character_history_dates":  obj.Counts["character_history_dates"],
+			"character_history_fields": obj.Counts["character_history_fields"],
+			"localization":             loc.Counts["values"],
+			"resources":                res.Counts["resources"],
+			"known_sounds":             res.Counts["known_sounds"],
+			"incoming":                 refs.Counts["incoming"],
+			"outgoing":                 refs.Counts["outgoing"],
+			"diagnostics":              len(diags),
 		},
 	}
 	r.Evidence = append(r.Evidence, obj.Evidence...)

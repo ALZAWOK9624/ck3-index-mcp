@@ -1,0 +1,9 @@
+{
+  "sample_values": [
+    {
+      "property": "text",
+      "expression": "event_window_widget_migration",
+      "value": "当前移民贡献：87.5 / Current migration contribution: 87.5"
+    }
+  ]
+}

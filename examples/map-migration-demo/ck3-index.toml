@@ -1,0 +1,19 @@
+database = "cache/demo.sqlite"
+artifact_root = "artifacts"
+migration_snapshot_root = "snapshots"
+artifact_retention_hours = 168
+
+[[source]]
+name = "project"
+path = "project"
+rank = 1
+
+[[source]]
+name = "old_base"
+path = "old_base"
+rank = 2
+
+[[source]]
+name = "new_upstream"
+path = "new_upstream"
+rank = 3

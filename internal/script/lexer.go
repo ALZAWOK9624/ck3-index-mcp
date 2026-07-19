@@ -54,6 +54,9 @@ func (l *Lexer) Next() Token {
 	if !ok {
 		return Token{Kind: TokenEOF, Line: startLine, Col: startCol}
 	}
+	if r == '@' && l.peekN(1) == '[' {
+		return l.arithmeticExpression(startLine, startCol)
+	}
 	switch r {
 	case '#':
 		return l.comment(startLine, startCol)
@@ -77,6 +80,37 @@ func (l *Lexer) Next() Token {
 		return Token{Kind: TokenError, Text: "unexpected character ?", Line: startLine, Col: startCol}
 	}
 	return l.ident(startLine, startCol)
+}
+
+// arithmeticExpression keeps Jomini's @[ ... ] value syntax as one token.
+// Expressions may contain whitespace and nested brackets, so ordinary
+// identifier scanning would otherwise split a valid value into unrelated
+// bare statements and corrupt every following source node on the line.
+func (l *Lexer) arithmeticExpression(line, col int) Token {
+	var buf []rune
+	depth := 0
+	for {
+		r, ok := l.peek()
+		if !ok {
+			return Token{Kind: TokenError, Text: "unterminated arithmetic expression", Line: line, Col: col}
+		}
+		if r == '\r' && l.peekN(1) == '\n' {
+			buf = append(buf, '\r', '\n')
+			l.advance()
+			continue
+		}
+		buf = append(buf, r)
+		l.advance()
+		switch r {
+		case '[':
+			depth++
+		case ']':
+			depth--
+			if depth == 0 {
+				return Token{Kind: TokenIdent, Text: string(buf), Line: line, Col: col}
+			}
+		}
+	}
 }
 
 func (l *Lexer) skipSpace() {

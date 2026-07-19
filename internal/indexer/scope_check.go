@@ -105,8 +105,9 @@ func IsDefine(key string) bool {
 
 // IsOnAction returns true if the key is a known CK3 on_action name.
 func IsOnAction(key string) bool {
-	_, ok := tigerOnActions[key]
-	return ok
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	_, ok := tigerOnActions[normalized]
+	return ok || engineOnActionKnown(normalized)
 }
 
 // LookupExample returns description and usage example for a trigger/effect key

@@ -1,0 +1,11 @@
+{
+  "from": "俄赖斯波尔",
+  "to": "阿西乌波利",
+  "year": 6254,
+  "mode": "sea",
+  "objective": "shortest",
+  "corridor_radius_pixels": 120,
+  "context_level": "duchy",
+  "label_language": "bilingual",
+  "max_nodes": 5000
+}

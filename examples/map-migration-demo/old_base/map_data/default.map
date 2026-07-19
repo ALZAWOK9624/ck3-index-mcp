@@ -1,0 +1,4 @@
+definitions = "definition.csv"
+provinces = "provinces.png"
+sea_zones = LIST { }
+lakes = LIST { }

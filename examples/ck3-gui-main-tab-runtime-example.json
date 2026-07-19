@@ -1,0 +1,8 @@
+{
+  "runtime_facts": [
+    {
+      "expression": "IsGameViewOpen('military')",
+      "value": false
+    }
+  ]
+}

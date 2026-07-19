@@ -1,0 +1,16 @@
+{
+  "metadata": {
+    "name": "CK3 Index Package Fixture",
+    "slug": "ck3_index_package_fixture",
+    "version": "1.0.0",
+    "supported_version": "1.19.*",
+    "tags": ["Utilities"],
+    "kind": "addon"
+  },
+  "files": [
+    {
+      "path": "common/scripted_triggers/ck3_index_package_fixture.txt",
+      "content": "ck3_index_package_fixture_trigger = { always = yes }\n"
+    }
+  ]
+}

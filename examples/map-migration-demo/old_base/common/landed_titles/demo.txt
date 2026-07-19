@@ -1,0 +1,10 @@
+e_demo = {
+  k_demo = {
+    d_demo = {
+      c_demo = {
+        b_demo_one = { province = 1 }
+        b_demo_two = { province = 2 }
+      }
+    }
+  }
+}

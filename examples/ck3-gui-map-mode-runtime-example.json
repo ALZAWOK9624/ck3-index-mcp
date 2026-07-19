@@ -1,0 +1,48 @@
+{
+  "runtime_facts": [
+    {
+      "expression": "IsMapMode('simple_realms')",
+      "value": true
+    },
+    {
+      "expression": "IsMapMode('terrain')",
+      "value": false
+    },
+    {
+      "expression": "IsMapMode('baronies')",
+      "value": false
+    },
+    {
+      "expression": "IsGameViewOpen('barbershop')",
+      "value": false
+    },
+    {
+      "expression": "CanChangeMapMode",
+      "value": true
+    },
+    {
+      "expression": "IsObserver",
+      "value": false
+    },
+    {
+      "expression": "GetScriptedGui('biodiversity_map').IsValid(GuiScope.End)",
+      "value": true
+    },
+    {
+      "expression": "GetScriptedGui('biodiversity_map').IsShown(GuiScope.End)",
+      "value": false
+    }
+  ],
+  "action_effects": [
+    {
+      "expression": "[GetScriptedGui('biodiversity_map').Execute(GuiScope.End)]",
+      "updates": [
+        {
+          "expression": "GetScriptedGui('biodiversity_map').IsShown(GuiScope.End)",
+          "operation": "set",
+          "value": true
+        }
+      ]
+    }
+  ]
+}

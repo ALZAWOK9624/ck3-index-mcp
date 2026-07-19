@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "name": "WhiteboxTools Open Core",
+  "version": "2.4.0",
+  "license": "MIT",
+  "license_file": "WHITEBOXTOOLS_LICENSE.txt",
+  "project_url": "https://github.com/jblindsay/whitebox-tools",
+  "platforms": {
+    "windows-x64": {
+      "archive_url": "https://www.whiteboxgeo.com/WBT_Windows/WhiteboxTools_win_amd64.zip",
+      "archive_sha256": "2b39f0fc90f73b295467850bd470bfacd3dab34e84b8550c049d30b4f7600d6b",
+      "archive_root": "WhiteboxTools_win_amd64/WBT",
+      "binary": "whitebox_tools.exe",
+      "binary_sha256": "1212c668f89048e3189b9ad73f2670e60f8cd4b7a976272fc27f502c5157c925"
+    },
+    "linux-x64": {
+      "archive_url": "https://www.whiteboxgeo.com/WBT_Linux/WhiteboxTools_linux_amd64.zip",
+      "archive_sha256": "370493b569aaf84977fde95921f96d4a39c1820a2d36d907da9d53772295f440",
+      "archive_root": "WhiteboxTools_linux_amd64/WBT",
+      "binary": "whitebox_tools",
+      "binary_sha256": "96bb47a9d1f0fe8a3cb46df524242c990eab9bc2ae1930e540e09328331172e4"
+    }
+  },
+  "allowed_tools": [
+    "Aspect",
+    "BreachDepressions",
+    "D8FlowAccumulation",
+    "D8Pointer",
+    "ExtractStreams",
+    "PlanCurvature",
+    "ProfileCurvature",
+    "RuggednessIndex",
+    "Slope",
+    "Watershed"
+  ]
+}

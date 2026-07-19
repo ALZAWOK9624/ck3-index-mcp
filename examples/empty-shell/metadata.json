@@ -1,0 +1,8 @@
+{
+  "name": "CK3 Index Empty Shell",
+  "slug": "ck3_index_empty_shell",
+  "version": "1.0.0",
+  "supported_version": "1.19.*",
+  "tags": ["Utilities"],
+  "kind": "addon"
+}

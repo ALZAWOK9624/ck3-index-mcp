@@ -1,0 +1,12 @@
+{
+  "runtime_facts": [
+    {
+      "expression": "IsGameViewOpen('travel_planner')",
+      "value": false
+    },
+    {
+      "expression": "Character.IsTraveling",
+      "value": true
+    }
+  ]
+}

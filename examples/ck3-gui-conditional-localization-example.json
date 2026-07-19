@@ -1,0 +1,16 @@
+{
+  "runtime_facts": [
+    {
+      "expression": "Character.IsLocalPlayer",
+      "value": true
+    },
+    {
+      "expression": "Character.HasArtifacts",
+      "value": false
+    },
+    {
+      "expression": "Character.HasAnyArtifactClaims",
+      "value": false
+    }
+  ]
+}

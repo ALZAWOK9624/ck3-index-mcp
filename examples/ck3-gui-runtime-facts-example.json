@@ -1,0 +1,26 @@
+{
+  "runtime_facts": [
+    {"expression": "IsPauseMenuShown", "value": false},
+    {"expression": "IsDefaultGUIMode", "value": true},
+    {"expression": "IsObserver", "value": false},
+    {"expression": "GetPlayer.IsValid", "value": true},
+    {"expression": "IsRightWindowOpen", "value": false},
+    {"expression": "ReleaseMode", "value": true},
+	{"expression": "IsGameViewOpen('barbershop')", "value": false},
+	{"expression": "IsGameViewOpen('struggle')", "value": false},
+    {"expression": "IsGameViewOpen('hud_ruler_objective')", "value": false},
+    {"expression": "IsGameViewOpen('outliner')", "value": false},
+    {"expression": "InGameTopbar.ShouldBeVisible", "value": true},
+    {"expression": "GetPlayersRulerObjectiveDecision.IsValid", "value": true},
+    {"expression": "Decision.GetTitleForPlayer", "value": "Restore the Ashen Crown"},
+    {"expression": "InDebugMode", "value": true},
+    {"expression": "GetPlayer.MakeScope.Var('magic_counter').GetValue", "value": 125.4},
+    {"expression": "GetPlayer.MakeScope.ScriptValue('character_magic_baseline_value')", "value": 80},
+    {"expression": "GetPlayer.MakeScope.ScriptValue('character_extended_magic_baseline_value')", "value": 100},
+    {"expression": "GuiScope.SetRoot(GetPlayer.MakeScope).ScriptValue('character_magic_regeneration_ratio_percentage_value')", "value": 1.75},
+    {"expression": "FixedPointToFloat(GetPlayer.MakeScope.Var('magic_counter').GetValue)", "value": 125.4},
+    {"expression": "GuiScope.SetRoot(GetPlayer.MakeScope).ScriptValue('character_magic_baseline_income_value')", "value": 2.75},
+    {"expression": "GetPlayer.MakeScope.Var('hide_ui_top_bar').GetValue", "value": 0},
+    {"expression": "GetPlayer.MakeScope.Var('hide_ui_main_tabs').GetValue", "value": 0}
+  ]
+}

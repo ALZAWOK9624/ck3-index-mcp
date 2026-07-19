@@ -1,0 +1,6 @@
+{
+  "target_type": "region",
+  "target": "region:GH_geographic_shattered_coast",
+  "operation": "oceanography",
+  "include_adjacent_water": true
+}

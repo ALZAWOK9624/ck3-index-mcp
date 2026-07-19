@@ -16,12 +16,17 @@ type scopedResolver struct {
 	missCache map[string]bool
 }
 
+// affectedTypedMarker is an internal bookkeeping prefix. It uses NUL because
+// parsed script identifiers cannot contain it, leaving raw object ids (which
+// may contain colons) untouched for ref-name matching.
+const affectedTypedMarker = "\x00"
+
 func refreshRefsResolvedScoped(ctx context.Context, tx *sql.Tx, fileIDs map[int64]bool, affected map[string]bool) error {
 	where, args := scopedRefWhere(fileIDs, affected, "r")
 	if where == "" {
 		return nil
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT r.id,r.ref_kind,r.ref_name,r.resolved FROM refs r WHERE `+where, args...)
+	rows, err := tx.QueryContext(ctx, `SELECT r.id,r.ref_kind,r.ref_name,r.resolved,r.resolution_reason FROM refs r WHERE `+where, args...)
 	if err != nil {
 		return err
 	}
@@ -29,13 +34,15 @@ func refreshRefsResolvedScoped(ctx context.Context, tx *sql.Tx, fileIDs map[int6
 	type upd struct {
 		id       int64
 		resolved bool
+		reason   string
 	}
 	var updates []upd
 	for rows.Next() {
 		var id int64
 		var kind, name string
 		var current int
-		if err := rows.Scan(&id, &kind, &name, &current); err != nil {
+		var currentReason string
+		if err := rows.Scan(&id, &kind, &name, &current, &currentReason); err != nil {
 			rows.Close()
 			return err
 		}
@@ -44,25 +51,30 @@ func refreshRefsResolvedScoped(ctx context.Context, tx *sql.Tx, fileIDs map[int6
 			rows.Close()
 			return err
 		}
-		if (current != 0) != resolved {
-			updates = append(updates, upd{id: id, resolved: resolved})
+		reason := referenceResolutionReason(kind, resolved)
+		if (current != 0) != resolved || currentReason != reason {
+			updates = append(updates, upd{id: id, resolved: resolved, reason: reason})
 		}
 	}
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	var yes, no []int64
+	groups := map[string][]int64{}
 	for _, u := range updates {
-		if u.resolved {
-			yes = append(yes, u.id)
-		} else {
-			no = append(no, u.id)
+		key := fmt.Sprintf("%t\x00%s", u.resolved, u.reason)
+		groups[key] = append(groups[key], u.id)
+	}
+	for key, ids := range groups {
+		parts := strings.SplitN(key, "\x00", 2)
+		resolved := 0
+		if parts[0] == "true" {
+			resolved = 1
+		}
+		if err := batchUpdateResolution(ctx, tx, resolved, parts[1], ids); err != nil {
+			return err
 		}
 	}
-	if err := batchUpdateResolved(ctx, tx, 1, yes); err != nil {
-		return err
-	}
-	return batchUpdateResolved(ctx, tx, 0, no)
+	return nil
 }
 
 func refreshValidatorDiagnosticsScoped(ctx context.Context, tx *sql.Tx, fileIDs map[int64]bool, affected map[string]bool) error {
@@ -167,6 +179,51 @@ func validatorCandidateFileIDs(ctx context.Context, tx *sql.Tx, seed map[int64]b
 	return out, rows.Err()
 }
 
+// scopedValidatorCandidatesFit estimates the validator closure before a full
+// scan selects its bounded incremental path. A provider can have a small
+// symbol set but a very large consumer set; returning false lets Scan use the
+// proven global finalizer instead of creating an oversized SQL IN clause.
+func scopedValidatorCandidatesFit(ctx context.Context, tx *sql.Tx, seed map[int64]bool, affected map[string]bool, limit int) (bool, error) {
+	if len(seed) > limit {
+		return false, nil
+	}
+	candidates := make(map[int64]bool, len(seed))
+	for id := range seed {
+		candidates[id] = true
+	}
+	names := affectedNames(affected)
+	if len(names) == 0 {
+		return true, nil
+	}
+	ph := strings.TrimRight(strings.Repeat("?,", len(names)), ",")
+	args := make([]any, 0, len(names))
+	for _, name := range names {
+		args = append(args, name)
+	}
+	args = append(args, limit+1)
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT r.file_id
+		FROM refs r JOIN files f ON f.id=r.file_id
+		WHERE f.source_rank=1 AND r.ref_name IN (`+ph+`) LIMIT ?`, args...)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return false, err
+		}
+		candidates[id] = true
+		if len(candidates) > limit {
+			return false, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (r scopedResolver) resolved(ctx context.Context, kind, name string) (bool, error) {
 	switch kind {
 	case "localization":
@@ -184,15 +241,13 @@ func (r scopedResolver) resolved(ctx context.Context, kind, name string) (bool, 
 	case "define":
 		_, ok := tigerDefines[name]
 		return ok, nil
-	case "flag", "global_var":
+	case "flag", "global_var", "variable", "character_flag":
 		return true, nil
 	default:
-		if !isObjectRefKind(kind) {
-			return false, nil
-		}
-		if prefix := kind + ":"; strings.HasPrefix(name, prefix) {
-			name = strings.TrimPrefix(name, prefix)
-		}
+		// Match the global resolver: unknown runtime-looking ref kinds can still
+		// resolve through an indexed object with the same name. That outcome is
+		// rare, but preserving it avoids a scoped refresh changing a reference
+		// merely because it took the incremental path.
 		typedKey := "obj:" + kind + ":" + name
 		if ok, seen := r.objCache[typedKey]; seen {
 			return ok, nil
@@ -265,7 +320,7 @@ func fileIDWhere(fileIDs map[int64]bool, column string) (string, []any) {
 func affectedNames(affected map[string]bool) []string {
 	out := make([]string, 0, len(affected))
 	for name := range affected {
-		if strings.Contains(name, ":") {
+		if strings.HasPrefix(name, affectedTypedMarker) {
 			continue
 		}
 		out = append(out, name)

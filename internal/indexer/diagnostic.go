@@ -23,7 +23,9 @@ func (db *DB) ExplainDiagnosticFiltered(ctx context.Context, f DiagnosticFilter)
 	rows, err := db.sql.QueryContext(ctx, `SELECT d.source,d.severity,d.code,d.message,COALESCE(d.path,''),COALESCE(d.line,0),COALESCE(d.col,0),COALESCE(fi.source_name,d.source_layer,''),d.confidence,d.fingerprint,d.occurrences
 		FROM diagnostics d LEFT JOIN files fi ON fi.id=d.file_id
 		WHERE (?='' OR d.code=?) AND (?='' OR fi.source_name=?) AND (?='' OR d.path LIKE ?) AND (?='' OR d.confidence=?)
-		ORDER BY d.path,d.line LIMIT 5000`, f.Code, f.Code, f.Source, f.Source, f.PathPrefix, f.PathPrefix+"%", f.Confidence, f.Confidence)
+		ORDER BY CASE d.severity WHEN 'error' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
+			CASE WHEN COALESCE(fi.source_name,d.source_layer,'')='project' THEN 0 ELSE 1 END,
+			d.code,d.path,d.line`, f.Code, f.Code, f.Source, f.Source, f.PathPrefix, f.PathPrefix+"%", f.Confidence, f.Confidence)
 	if err != nil {
 		return nil, err
 	}

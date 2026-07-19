@@ -13,6 +13,9 @@ import (
 
 func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (ScanStats, error) {
 	start := time.Now()
+	if err := validateSources(cfg.Sources); err != nil {
+		return ScanStats{}, err
+	}
 	if err := ConfigureEngineRules(cfg.EngineLogs); err != nil {
 		return ScanStats{}, err
 	}
@@ -23,7 +26,10 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (ScanStats, e
 	if err != nil {
 		return ScanStats{}, err
 	}
-	dbPath := filepath.Join(filepath.Dir(cfg.ConfigPath), cfg.Database)
+	dbPath, err := ConfiguredDatabasePath(cfg)
+	if err != nil {
+		return ScanStats{}, err
+	}
 	db, err := Open(dbPath)
 	if err != nil {
 		return ScanStats{}, err
@@ -31,6 +37,31 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (ScanStats, e
 	defer db.Close()
 	if err := db.ensureSchema(ctx); err != nil {
 		return ScanStats{}, err
+	}
+	version, err := db.metaValue(ctx, "index_rule_version")
+	if err != nil {
+		return ScanStats{}, err
+	}
+	if version != indexRuleVersion {
+		return ScanStats{}, fmt.Errorf("incremental scan cannot apply index rule change %q -> %q; run a full ck3-index scan first", version, indexRuleVersion)
+	}
+	state, err := db.IndexState(ctx)
+	if err != nil {
+		return ScanStats{}, err
+	}
+	if !state.Ready() {
+		return ScanStats{}, fmt.Errorf("incremental scan requires a ready published index; current scan status is %q, run or wait for a full ck3-index scan", state.Status)
+	}
+	engineFingerprint, err := engineDataFingerprint(cfg.EngineLogs)
+	if err != nil {
+		return ScanStats{}, err
+	}
+	cachedEngineFingerprint, err := db.metaValue(ctx, "engine_data_fingerprint")
+	if err != nil {
+		return ScanStats{}, err
+	}
+	if cachedEngineFingerprint != engineFingerprint {
+		return ScanStats{}, fmt.Errorf("incremental scan detected changed engine log rules; run a full ck3-index scan before refreshing project files")
 	}
 	stats := ScanStats{Database: dbPath, BySource: map[string]int{}, TimingsMillis: map[string]int64{}}
 
@@ -80,6 +111,10 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (ScanStats, e
 		return ScanStats{}, err
 	}
 	defer tx.Rollback()
+	ftsCurrent, err := searchFTSCacheMatches(ctx, tx)
+	if err != nil {
+		return ScanStats{}, err
+	}
 	writer, closeWriter, err := prepareScanWriter(ctx, tx)
 	if err != nil {
 		return ScanStats{}, err
@@ -96,6 +131,9 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (ScanStats, e
 			return ScanStats{}, fmt.Errorf("could not read %s", job.rel)
 		}
 		if res.skip {
+			if err := refreshSkippedFileMetadata(ctx, tx, res); err != nil {
+				return ScanStats{}, err
+			}
 			if job.prev.ID != 0 {
 				newFileIDs[job.prev.ID] = true
 			}
@@ -106,7 +144,18 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (ScanStats, e
 				return ScanStats{}, err
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE files SET overridden=1 WHERE rel_path=? AND source_rank>?`, job.rel, src.Rank); err != nil {
+		// A newly added project file can take over a same-relative-path file
+		// that was previously active in a lower-priority source. That hidden
+		// file is not part of the rank-1 `existing` map above, so record its
+		// exported symbols before flipping its override bit. Otherwise refs,
+		// validator diagnostics, and semantic FTS rows can keep treating the
+		// previous winner as active.
+		if err := collectProjectOverrideVictims(ctx, tx, job.rel, src.Rank, oldFileIDs, affected); err != nil {
+			return ScanStats{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE files SET overridden=1,override_reason='same_relative_path',
+			override_by_source=?,override_by_rank=?,override_rule=? WHERE rel_path=? AND source_rank>?`,
+			src.Name, src.Rank, job.rel, job.rel, src.Rank); err != nil {
 			return ScanStats{}, err
 		}
 		rec, err := writeFileResult(ctx, writer, res, &stats, locKeys, resources)
@@ -119,20 +168,63 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (ScanStats, e
 			return ScanStats{}, err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('index_rule_version',?)
-		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, indexRuleVersion); err != nil {
-		return ScanStats{}, err
+	scopedFinalizer := len(newFileIDs) <= scopedFinalizerFileLimit && len(affected) <= scopedFinalizerSymbolLimit
+	if scopedFinalizer {
+		fits, err := scopedValidatorCandidatesFit(ctx, tx, newFileIDs, affected, scopedValidatorFileLimit)
+		if err != nil {
+			return ScanStats{}, err
+		}
+		scopedFinalizer = fits
 	}
 	stageStart := time.Now()
-	if err := refreshRefsResolvedScoped(ctx, tx, newFileIDs, affected); err != nil {
-		return ScanStats{}, err
+	if scopedFinalizer {
+		if err := refreshRefsResolvedScoped(ctx, tx, newFileIDs, affected); err != nil {
+			return ScanStats{}, err
+		}
+		stats.TimingsMillis["resolve_refs"] = time.Since(stageStart).Milliseconds()
+		stats.TimingsMillis["resolve_refs_scoped"] = stats.TimingsMillis["resolve_refs"]
+		stageStart = time.Now()
+		if err := refreshValidatorDiagnosticsScoped(ctx, tx, newFileIDs, affected); err != nil {
+			return ScanStats{}, err
+		}
+		if err := refreshTitleIntegrityDiagnostics(ctx, tx); err != nil {
+			return ScanStats{}, err
+		}
+		stats.TimingsMillis["validator"] = time.Since(stageStart).Milliseconds()
+		stats.TimingsMillis["validator_scoped"] = stats.TimingsMillis["validator"]
+	} else {
+		// `scan --files` is usually tiny, but a small provider can fan out to
+		// hundreds of consumers. Retain correctness and SQL safety by using the
+		// same global finalizer as a broad full scan in that case.
+		stageStart = time.Now()
+		objectNames, err := loadAllObjectNames(ctx, tx)
+		if err != nil {
+			return ScanStats{}, err
+		}
+		if err := loadAllLocKeys(ctx, tx, locKeys); err != nil {
+			return ScanStats{}, err
+		}
+		if err := loadAllResources(ctx, tx, resources); err != nil {
+			return ScanStats{}, err
+		}
+		stats.TimingsMillis["load_symbols"] = time.Since(stageStart).Milliseconds()
+		stageStart = time.Now()
+		if err := refreshRefsResolvedGo(ctx, tx, objectNames, locKeys, resources); err != nil {
+			return ScanStats{}, err
+		}
+		stats.TimingsMillis["resolve_refs"] = time.Since(stageStart).Milliseconds()
+		stageStart = time.Now()
+		if _, err := tx.ExecContext(ctx, `DELETE FROM diagnostics WHERE source='validator'`); err != nil {
+			return ScanStats{}, err
+		}
+		if err := addValidationDiagnostics(ctx, tx, locKeys, resources, objectNames); err != nil {
+			return ScanStats{}, err
+		}
+		if err := refreshTitleIntegrityDiagnostics(ctx, tx); err != nil {
+			return ScanStats{}, err
+		}
+		stats.TimingsMillis["validator"] = time.Since(stageStart).Milliseconds()
 	}
-	stats.TimingsMillis["resolve_refs"] = time.Since(stageStart).Milliseconds()
-	stageStart = time.Now()
-	if err := refreshValidatorDiagnosticsScoped(ctx, tx, newFileIDs, affected); err != nil {
-		return ScanStats{}, err
-	}
-	stats.TimingsMillis["validator"] = time.Since(stageStart).Milliseconds()
 	if err := db.RefreshArchitectureOverviewCache(ctx, tx); err != nil {
 		return ScanStats{}, err
 	}
@@ -141,15 +233,35 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (ScanStats, e
 			return ScanStats{}, err
 		}
 	}
-	if err := rebuildEngineData(ctx, tx, cfg.EngineLogs); err != nil {
+	stageStart = time.Now()
+	if ftsCurrent {
+		if err := refreshSearchFTSForFiles(ctx, tx, oldFileIDs, newFileIDs); err != nil {
+			return ScanStats{}, err
+		}
+		stats.TimingsMillis["semantic_fts_scoped"] = time.Since(stageStart).Milliseconds()
+	} else {
+		if err := rebuildSearchFTS(ctx, tx); err != nil {
+			return ScanStats{}, err
+		}
+		stats.TimingsMillis["semantic_fts_rebuild"] = time.Since(stageStart).Milliseconds()
+	}
+	if err := storeSearchFTSRowCount(ctx, tx); err != nil {
 		return ScanStats{}, err
 	}
-	if err := rebuildSearchFTS(ctx, tx); err != nil {
+	stats.TimingsMillis["semantic_fts"] = time.Since(stageStart).Milliseconds()
+	if err := bumpScanGeneration(ctx, tx); err != nil {
 		return ScanStats{}, err
 	}
 	stats.Diagnostics = countDiagnostics(ctx, tx)
 	if err := tx.Commit(); err != nil {
 		return ScanStats{}, err
+	}
+	checkpoint, checkpointErr := db.checkpointWALAfterScan(ctx)
+	if checkpointErr != nil {
+		fmt.Fprintf(os.Stderr, "[scan --files] WAL checkpoint deferred: %v\n", checkpointErr)
+	} else {
+		stats.WALCheckpoint = &checkpoint
+		fmt.Fprintf(os.Stderr, "[scan --files] WAL checkpoint %s busy=%d frames=%d/%d\n", checkpoint.Mode, checkpoint.Busy, checkpoint.CheckpointedFrames, checkpoint.LogFrames)
 	}
 	stats.ElapsedMillis = time.Since(start).Milliseconds()
 	return stats, nil
@@ -172,7 +284,8 @@ func projectSource(cfg Config) (Source, error) {
 }
 
 func (db *DB) fileRecordsByProjectRel(ctx context.Context, sourceRank int) (map[string]fileRecord, error) {
-	rows, err := db.sql.QueryContext(ctx, `SELECT id,source_name,source_rank,path,rel_path,kind,mtime,sha256,overridden
+	rows, err := db.sql.QueryContext(ctx, `SELECT id,source_name,source_rank,path,rel_path,kind,mtime,file_size,sha256,overridden,
+		override_reason,override_by_source,override_by_rank,override_rule
 		FROM files WHERE source_rank=?`, sourceRank)
 	if err != nil {
 		return nil, err
@@ -182,7 +295,8 @@ func (db *DB) fileRecordsByProjectRel(ctx context.Context, sourceRank int) (map[
 	for rows.Next() {
 		var rec fileRecord
 		var overridden int
-		if err := rows.Scan(&rec.ID, &rec.SourceName, &rec.SourceRank, &rec.Path, &rec.RelPath, &rec.Kind, &rec.MTime, &rec.SHA, &overridden); err != nil {
+		if err := rows.Scan(&rec.ID, &rec.SourceName, &rec.SourceRank, &rec.Path, &rec.RelPath, &rec.Kind, &rec.MTime, &rec.Size, &rec.SHA, &overridden,
+			&rec.OverrideReason, &rec.OverrideBySource, &rec.OverrideByRank, &rec.OverrideRule); err != nil {
 			return nil, err
 		}
 		rec.Overridden = overridden != 0
@@ -206,17 +320,19 @@ func prepareScanWriter(ctx context.Context, tx *sql.Tx) (scanWriter, func(), err
 			_ = stmt.Close()
 		}
 	}
-	fileStmt, err := prep(`INSERT INTO files(source_name,source_rank,path,rel_path,kind,mtime,sha256,overridden) VALUES(?,?,?,?,?,?,?,?)`)
+	fileStmt, err := prep(`INSERT INTO files(source_name,source_rank,path,rel_path,kind,mtime,file_size,sha256,overridden,
+		override_reason,override_by_source,override_by_rank,override_rule) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		closeFn()
 		return scanWriter{}, nil, err
 	}
-	objStmt, err := prep(`INSERT INTO objects(object_type,name,file_id,node_local_id,source_name,source_rank,path,line,col) VALUES(?,?,?,?,?,?,?,?,?)`)
+	objStmt, err := prep(`INSERT INTO objects(object_type,name,value,file_id,node_local_id,source_name,source_rank,path,line,col,end_line,end_col) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		closeFn()
 		return scanWriter{}, nil, err
 	}
-	refStmt, err := prep(`INSERT INTO refs(from_object_type,from_object_name,ref_kind,ref_name,file_id,node_local_id,line,col,raw,resolved) VALUES(?,?,?,?,?,?,?,?,?,?)`)
+	refStmt, err := prep(`INSERT INTO refs(from_object_type,from_object_name,ref_kind,ref_name,file_id,node_local_id,line,col,raw,resolved,
+		relation,phase,confidence,resolution_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		closeFn()
 		return scanWriter{}, nil, err
@@ -241,7 +357,7 @@ func prepareScanWriter(ctx context.Context, tx *sql.Tx) (scanWriter, func(), err
 		closeFn()
 		return scanWriter{}, nil, err
 	}
-	fieldStmt, err := prep(`INSERT INTO object_fields(object_type,object_name,field,value_shape,file_id,source_name,source_rank,path,line,raw) VALUES(?,?,?,?,?,?,?,?,?,?)`)
+	fieldStmt, err := prep(`INSERT INTO object_fields(object_type,object_name,field,value_shape,date_key,file_id,source_name,source_rank,path,line,raw) VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		closeFn()
 		return scanWriter{}, nil, err
@@ -312,13 +428,50 @@ func collectAffectedForFileTx(ctx context.Context, tx *sql.Tx, fileID int64, aff
 	return nil
 }
 
+// collectProjectOverrideVictims finds currently active lower-priority files
+// that a rank-1 scan --files update is about to hide. Their exported symbols
+// must join the incremental invalidation set before UPDATE files marks them
+// overridden; the source-file scan itself only knows its rank-1 predecessor.
+func collectProjectOverrideVictims(ctx context.Context, tx *sql.Tx, relPath string, projectRank int, oldFileIDs map[int64]bool, affected map[string]bool) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM files
+		WHERE rel_path=? AND source_rank>? AND overridden=0`, relPath, projectRank)
+	if err != nil {
+		return err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if oldFileIDs[id] {
+			continue
+		}
+		if err := collectAffectedForFileTx(ctx, tx, id, affected); err != nil {
+			return err
+		}
+		oldFileIDs[id] = true
+	}
+	return nil
+}
+
 func addAffectedSymbol(affected map[string]bool, kind, name string) {
 	if name == "" {
 		return
 	}
 	affected[name] = true
 	if kind != "" {
-		affected[kind+":"+name] = true
+		// Keep bookkeeping identities disjoint from raw Paradox ids. Colons are
+		// valid inside some object names, so `kind:name` cannot safely double as
+		// an internal marker.
+		affected[affectedTypedMarker+kind+"\x00"+name] = true
 	}
 }
 

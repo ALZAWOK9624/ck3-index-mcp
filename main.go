@@ -6,15 +6,52 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"ck3-index/internal/indexer"
+	"ck3-index/internal/mcpserver"
+	"ck3-index/internal/migrator"
+	"ck3-index/internal/packager"
 )
 
 const defaultConfig = "ck3-index.toml"
+
+type mapPhysicalContextCLIRequest struct {
+	TargetType           string   `json:"target_type,omitempty"`
+	Target               string   `json:"target,omitempty"`
+	Targets              []string `json:"targets,omitempty"`
+	Operation            string   `json:"operation,omitempty"`
+	IncludeAdjacentWater bool     `json:"include_adjacent_water,omitempty"`
+	Limit                int      `json:"limit,omitempty"`
+}
+
+func (request mapPhysicalContextCLIRequest) spec() indexer.MapPhysicalContextSpec {
+	return indexer.MapPhysicalContextSpec{
+		TargetType:           request.TargetType,
+		Target:               request.Target,
+		Targets:              request.Targets,
+		Operation:            request.Operation,
+		IncludeAdjacentWater: request.IncludeAdjacentWater,
+	}
+}
+
+func (request mapPhysicalContextCLIRequest) normalizedLimit() (int, error) {
+	limit := request.Limit
+	if limit == 0 {
+		limit = 16
+	}
+	if limit < 1 || limit > 20 {
+		return 0, fmt.Errorf("limit must be between 1 and 20, got %d", limit)
+	}
+	return limit, nil
+}
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -73,6 +110,60 @@ func run(ctx context.Context, args []string) error {
 			path = args[0]
 		}
 		return indexer.WriteDefaultConfig(path)
+	case "package":
+		if len(args) != 1 {
+			return errors.New("usage: ck3-index package <spec.json>")
+		}
+		cfg, err := indexer.LoadConfig(cfgPath)
+		if err != nil {
+			return err
+		}
+		var request packager.Request
+		if err := readStrictJSONFile(args[0], &request); err != nil {
+			return err
+		}
+		db, err := openReadOnlyDB(cfgPath)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		result, err := packager.Build(ctx, request, packager.BuildOptions{
+			ArtifactRoot: cfg.ArtifactRoot, Retention: time.Duration(cfg.ArtifactRetentionHours) * time.Hour,
+			Limits: packager.MCPLimits, Validator: packager.IndexerValidator{DB: db},
+		})
+		if err != nil {
+			return err
+		}
+		return printJSON(result)
+	case "package-dir":
+		if len(args) != 3 || args[1] != "--meta" {
+			return errors.New("usage: ck3-index package-dir <mod-dir> --meta <metadata.json>")
+		}
+		cfg, err := indexer.LoadConfig(cfgPath)
+		if err != nil {
+			return err
+		}
+		var metadata packager.Metadata
+		if err := readStrictJSONFile(args[2], &metadata); err != nil {
+			return err
+		}
+		request, excluded, err := packager.RequestFromDirectory(args[0], metadata, packager.DirectoryLimits)
+		if err != nil {
+			return err
+		}
+		db, err := openReadOnlyDB(cfgPath)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		result, err := packager.Build(ctx, request, packager.BuildOptions{
+			ArtifactRoot: cfg.ArtifactRoot, Retention: time.Duration(cfg.ArtifactRetentionHours) * time.Hour,
+			Limits: packager.DirectoryLimits, Validator: packager.IndexerValidator{DB: db}, ExcludedFiles: excluded,
+		})
+		if err != nil {
+			return err
+		}
+		return printJSON(result)
 	case "scan":
 		cfg, err := indexer.LoadConfig(cfgPath)
 		if err != nil {
@@ -161,6 +252,225 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		return printJSON(result)
+	case "gui":
+		if len(args) < 1 {
+			return errors.New("usage: ck3-index gui <summary|file|type|template|preview> [path-or-symbol] [path-prefix] [--format png|html|both] [--html-mode static|inspector] [--language raw|english|simp_chinese|bilingual] [--width px] [--height px] [--limit nodes] [--scenario samples.json] [--out file] [--html-out file.html]")
+		}
+		options := indexer.GUIQueryOptions{Operation: args[0], AllowProject: true}
+		previewOutput := ""
+		htmlOutput := ""
+		switch args[0] {
+		case "summary":
+			if len(args) > 1 {
+				options.PathPrefix = args[1]
+			}
+		case "file":
+			if len(args) < 2 {
+				return errors.New("usage: ck3-index gui file <gui/path.gui>")
+			}
+			options.Path = args[1]
+		case "type", "template":
+			if len(args) < 2 {
+				return fmt.Errorf("usage: ck3-index gui %s <symbol> [gui/path-prefix]", args[0])
+			}
+			options.Symbol = args[1]
+			if len(args) > 2 {
+				options.PathPrefix = args[2]
+			}
+		case "preview":
+			if len(args) < 2 {
+				return errors.New("usage: ck3-index gui preview <type-template-or-element> [gui/path-prefix] [--format png|html|both] [--html-mode static|inspector] [--language raw|english|simp_chinese|bilingual] [--width px] [--height px] [--limit nodes] [--scenario samples.json] [--out file] [--html-out file.html]")
+			}
+			options.Symbol = args[1]
+			for index := 2; index < len(args); index++ {
+				if args[index] == "--out" {
+					if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
+						return errors.New("usage: ck3-index gui preview <type-template-or-element> [gui/path-prefix] [--format png|html|both] [--html-mode static|inspector] [--language raw|english|simp_chinese|bilingual] [--out file] [--html-out file.html]")
+					}
+					previewOutput = args[index+1]
+					index++
+					continue
+				}
+				if args[index] == "--html-out" {
+					if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
+						return errors.New("usage: ck3-index gui preview <type-template-or-element> [gui/path-prefix] [--format png|html|both] [--html-mode static|inspector] [--language raw|english|simp_chinese|bilingual] [--out file] [--html-out file.html]")
+					}
+					htmlOutput = args[index+1]
+					index++
+					continue
+				}
+				if args[index] == "--format" {
+					if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
+						return errors.New("GUI preview --format requires png, html, or both")
+					}
+					options.Format = args[index+1]
+					index++
+					continue
+				}
+				if args[index] == "--html-mode" {
+					if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
+						return errors.New("GUI preview --html-mode requires static or inspector")
+					}
+					options.HTMLMode = args[index+1]
+					index++
+					continue
+				}
+				if args[index] == "--language" {
+					if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
+						return errors.New("GUI preview --language requires raw, english, simp_chinese, or bilingual")
+					}
+					options.Language = args[index+1]
+					index++
+					continue
+				}
+				if args[index] == "--width" || args[index] == "--height" || args[index] == "--limit" {
+					flag := args[index]
+					if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
+						return fmt.Errorf("GUI preview %s requires an integer value", flag)
+					}
+					value, err := strconv.Atoi(args[index+1])
+					if err != nil {
+						return fmt.Errorf("GUI preview %s requires an integer value: %w", flag, err)
+					}
+					switch flag {
+					case "--width":
+						if value < 64 || value > indexer.GUIPreviewMaxWidth {
+							return fmt.Errorf("GUI preview --width must be between 64 and %d", indexer.GUIPreviewMaxWidth)
+						}
+						options.Width = value
+					case "--height":
+						if value < 64 || value > indexer.GUIPreviewMaxHeight {
+							return fmt.Errorf("GUI preview --height must be between 64 and %d", indexer.GUIPreviewMaxHeight)
+						}
+						options.Height = value
+					case "--limit":
+						if value < 1 || value > 500 {
+							return errors.New("GUI preview --limit must be between 1 and 500")
+						}
+						options.Limit = value
+					}
+					index++
+					continue
+				}
+				if args[index] == "--scenario" {
+					if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
+						return errors.New("GUI preview --scenario requires a JSON file containing sample_values, model_samples, runtime_facts, and/or action_effects")
+					}
+					data, err := os.ReadFile(args[index+1])
+					if err != nil {
+						return fmt.Errorf("read GUI scenario: %w", err)
+					}
+					var spec struct {
+						SampleValues  []indexer.GUIScenarioSample           `json:"sample_values"`
+						ModelSamples  []indexer.GUIModelSampleCollection    `json:"model_samples"`
+						RuntimeFacts  []indexer.GUIRuntimeFactInput         `json:"runtime_facts"`
+						ActionEffects []indexer.GUIRuntimeActionEffectInput `json:"action_effects"`
+					}
+					decoder := json.NewDecoder(bytes.NewReader(data))
+					decoder.DisallowUnknownFields()
+					if err := decoder.Decode(&spec); err != nil {
+						return fmt.Errorf("decode GUI scenario: %w", err)
+					}
+					if err := decoder.Decode(&struct{}{}); err != io.EOF {
+						return errors.New("decode GUI scenario: expected one JSON object")
+					}
+					options.Samples = spec.SampleValues
+					options.ModelSamples = spec.ModelSamples
+					options.RuntimeFacts = spec.RuntimeFacts
+					options.ActionEffects = spec.ActionEffects
+					index++
+					continue
+				}
+				if options.PathPrefix != "" {
+					return fmt.Errorf("unexpected GUI preview argument %q", args[index])
+				}
+				options.PathPrefix = args[index]
+			}
+			if htmlOutput != "" && (options.Format == "" || strings.EqualFold(options.Format, "png")) {
+				options.Format = "both"
+			}
+		default:
+			return errors.New("usage: ck3-index gui <summary|file|type|template|preview> [path-or-symbol] [path-prefix] [--format png|html|both] [--html-mode static|inspector] [--language raw|english|simp_chinese|bilingual] [--width px] [--height px] [--limit nodes] [--scenario samples.json] [--out file] [--html-out file.html]")
+		}
+		db, err := openReadOnlyDB(cfgPath)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		result, err := db.QueryGUI(ctx, options)
+		if err != nil {
+			return err
+		}
+		htmlWritten := false
+		if previewOutput != "" {
+			if result.Preview == nil {
+				return fmt.Errorf("GUI preview symbol %q was not found", options.Symbol)
+			}
+			if strings.EqualFold(result.Preview.Format, "html") {
+				if result.Preview.HTML == nil || result.Preview.HTML.Document == "" {
+					return errors.New("GUI HTML preview was not generated")
+				}
+				if err := os.WriteFile(previewOutput, []byte(result.Preview.HTML.Document), 0644); err != nil {
+					return err
+				}
+				htmlWritten = true
+			} else {
+				if len(result.Preview.PNG) == 0 {
+					return errors.New("GUI PNG preview was not generated")
+				}
+				if err := os.WriteFile(previewOutput, result.Preview.PNG, 0644); err != nil {
+					return err
+				}
+				result.Preview.PNG = nil
+			}
+		}
+		if htmlOutput != "" {
+			if result.Preview == nil || result.Preview.HTML == nil || result.Preview.HTML.Document == "" {
+				return errors.New("GUI HTML preview was not generated")
+			}
+			if err := os.WriteFile(htmlOutput, []byte(result.Preview.HTML.Document), 0644); err != nil {
+				return err
+			}
+			htmlWritten = true
+		}
+		if htmlWritten {
+			result.Preview.HTML.Document = ""
+		}
+		return printJSON(result)
+	case "gui-model":
+		if len(args) < 1 {
+			return errors.New("usage: ck3-index gui-model <file.gui>")
+		}
+		data, err := os.ReadFile(args[0])
+		if err != nil {
+			return err
+		}
+		return printJSON(indexer.BuildGUIModel(string(data)))
+	case "gui-resolve":
+		if len(args) < 1 {
+			return errors.New("usage: ck3-index gui-resolve <file-or-directory> [more...] [--summary]")
+		}
+		summaryOnly := false
+		paths := args[:0]
+		for _, arg := range args {
+			if arg == "--summary" {
+				summaryOnly = true
+				continue
+			}
+			paths = append(paths, arg)
+		}
+		if len(paths) == 0 {
+			return errors.New("usage: ck3-index gui-resolve <file-or-directory> [more...] [--summary]")
+		}
+		inputs, err := loadGUIInputs(paths)
+		if err != nil {
+			return err
+		}
+		resolution := indexer.ResolveGUIModels(inputs)
+		if summaryOnly {
+			return printJSON(resolution.Summary())
+		}
+		return printJSON(resolution)
 	case "examples":
 		if len(args) < 1 {
 			return errors.New("usage: ck3-index examples <object-type[:contains]>")
@@ -178,7 +488,81 @@ func run(ctx context.Context, args []string) error {
 		return printJSON(result)
 	case "rules":
 		if len(args) < 1 {
-			return errors.New("usage: ck3-index rules <object-type>")
+			return errors.New("usage: ck3-index rules <object-type>|audit|contracts|evidence [--limit N]")
+		}
+		if args[0] == "audit" {
+			limit := 50
+			if len(args) == 3 && args[1] == "--limit" {
+				value, err := strconv.Atoi(args[2])
+				if err != nil || value < 1 || value > 500 {
+					return errors.New("usage: ck3-index rules audit [--limit 1..500]")
+				}
+				limit = value
+			} else if len(args) != 1 {
+				return errors.New("usage: ck3-index rules audit [--limit 1..500]")
+			}
+			db, err := openReadOnlyDB(cfgPath)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			result, err := db.AuditOnActionRules(ctx, limit)
+			if err != nil {
+				return err
+			}
+			return printJSON(result)
+		}
+		if args[0] == "contracts" {
+			limit := 50
+			if len(args) == 3 && args[1] == "--limit" {
+				value, err := strconv.Atoi(args[2])
+				if err != nil || value < 1 || value > 500 {
+					return errors.New("usage: ck3-index rules contracts [--limit 1..500]")
+				}
+				limit = value
+			} else if len(args) != 1 {
+				return errors.New("usage: ck3-index rules contracts [--limit 1..500]")
+			}
+			cfg, err := indexer.LoadConfig(cfgPath)
+			if err != nil {
+				return err
+			}
+			db, err := openReadOnlyDB(cfgPath)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			result, err := db.AuditOnActionScopeContracts(ctx, cfg, limit)
+			if err != nil {
+				return err
+			}
+			return printJSON(result)
+		}
+		if args[0] == "evidence" {
+			limit := 50
+			if len(args) == 3 && args[1] == "--limit" {
+				value, err := strconv.Atoi(args[2])
+				if err != nil || value < 1 || value > 500 {
+					return errors.New("usage: ck3-index rules evidence [--limit 1..500]")
+				}
+				limit = value
+			} else if len(args) != 1 {
+				return errors.New("usage: ck3-index rules evidence [--limit 1..500]")
+			}
+			cfg, err := indexer.LoadConfig(cfgPath)
+			if err != nil {
+				return err
+			}
+			db, err := openReadOnlyDB(cfgPath)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			result, err := db.AuditOnActionEvidence(ctx, cfg, limit)
+			if err != nil {
+				return err
+			}
+			return printJSON(result)
 		}
 		db, err := openDB(ctx, cfgPath)
 		if err != nil {
@@ -190,6 +574,77 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		return printJSON(result)
+	case "override":
+		if len(args) < 1 {
+			return errors.New("usage: ck3-index override audit [--source configured-source] [--base configured-source] [--path source-root-relative-prefix] [--limit 1..500]\n       ck3-index override compare <type:id> [--source configured-source] [--base configured-source]")
+		}
+		switch args[0] {
+		case "audit":
+			options := indexer.OverrideDriftAuditOptions{Limit: 50}
+			for index := 1; index < len(args); index++ {
+				if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
+					return errors.New("usage: ck3-index override audit [--source configured-source] [--base configured-source] [--path source-root-relative-prefix] [--limit 1..500]")
+				}
+				value := args[index+1]
+				switch args[index] {
+				case "--source":
+					options.Source = value
+				case "--base":
+					options.Base = value
+				case "--path":
+					options.PathPrefix = value
+				case "--limit":
+					limit, err := strconv.Atoi(value)
+					if err != nil || limit < 1 || limit > 500 {
+						return errors.New("usage: ck3-index override audit [--source configured-source] [--base configured-source] [--path source-root-relative-prefix] [--limit 1..500]")
+					}
+					options.Limit = limit
+				default:
+					return fmt.Errorf("unknown override audit flag %q", args[index])
+				}
+				index++
+			}
+			cfg, err := indexer.LoadConfig(cfgPath)
+			if err != nil {
+				return err
+			}
+			result, err := indexer.AuditOverrideDrift(ctx, cfg, options)
+			if err != nil {
+				return err
+			}
+			return printJSON(result)
+		case "compare":
+			if len(args) < 2 || strings.TrimSpace(args[1]) == "" {
+				return errors.New("usage: ck3-index override compare <type:id> [--source configured-source] [--base configured-source]")
+			}
+			options := indexer.ObjectCompareOptions{}
+			for index := 2; index < len(args); index++ {
+				if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
+					return errors.New("usage: ck3-index override compare <type:id> [--source configured-source] [--base configured-source]")
+				}
+				value := args[index+1]
+				switch args[index] {
+				case "--source":
+					options.Source = value
+				case "--base":
+					options.Base = value
+				default:
+					return fmt.Errorf("unknown override compare flag %q", args[index])
+				}
+				index++
+			}
+			cfg, err := indexer.LoadConfig(cfgPath)
+			if err != nil {
+				return err
+			}
+			result, err := indexer.CompareObjectAgainstBase(ctx, cfg, args[1], options)
+			if err != nil {
+				return err
+			}
+			return printJSON(result)
+		default:
+			return fmt.Errorf("unknown override operation %q; expected audit or compare", args[0])
+		}
 	case "patterns":
 		if len(args) < 1 {
 			return errors.New("usage: ck3-index patterns <object-type>")
@@ -391,8 +846,34 @@ func run(ctx context.Context, args []string) error {
 		if len(args) < 1 {
 			return errors.New("usage: ck3-index lookup-on-action <on-action-name>")
 		}
+		db, err := openReadOnlyDB(cfgPath)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		state, err := db.IndexState(ctx)
+		if err != nil {
+			return err
+		}
+		if state.Ready() {
+			live, err := db.LookupOnActionEvidence(ctx, args[0])
+			if err != nil {
+				return err
+			}
+			if len(live) > 0 {
+				result := map[string]any{"found": true, "key": args[0], "rules": live, "confidence": "high", "rule_source": "engine_logs"}
+				if tiger, found := indexer.ResolveTigerOnActionContract(args[0]); found {
+					result["tiger_contract"] = tiger
+				}
+				return printJSON(result)
+			}
+		}
 		found := indexer.IsOnAction(args[0])
-		return printJSON(map[string]any{"found": found, "key": args[0]})
+		result := map[string]any{"found": found, "key": args[0], "confidence": "medium", "rule_source": "tiger_fallback"}
+		if tiger, staticFound := indexer.ResolveTigerOnActionContract(args[0]); staticFound {
+			result["tiger_contract"] = tiger
+		}
+		return printJSON(result)
 	case "lookup-iterator":
 		if len(args) < 1 {
 			return errors.New("usage: ck3-index lookup-iterator <iterator-key>")
@@ -434,6 +915,198 @@ func run(ctx context.Context, args []string) error {
 			"key":       args[0],
 			"use_areas": ml.UseAreas,
 		})
+	case "map":
+		if len(args) < 1 {
+			return errors.New("usage: ck3-index map <audit|province-mapping|physical-context|migration-snapshot|migrate|recipes|metric|route|render> [operation|spec.json] [--out path] [--meta sidecar.json]")
+		}
+		switch args[0] {
+		case "audit":
+			operation := "summary"
+			if len(args) > 1 {
+				operation = args[1]
+			}
+			cfg, err := indexer.LoadConfig(cfgPath)
+			if err != nil {
+				return err
+			}
+			result, err := indexer.AuditMapAssets(ctx, cfg, operation, 20)
+			if err != nil {
+				return err
+			}
+			return printJSON(result)
+		case "province-mapping":
+			if len(args) < 2 {
+				return errors.New("usage: ck3-index map province-mapping <spec.json>")
+			}
+			var spec indexer.MapProvinceMappingSpec
+			if err := readJSONFile(args[1], &spec); err != nil {
+				return err
+			}
+			cfg, err := indexer.LoadConfig(cfgPath)
+			if err != nil {
+				return err
+			}
+			result, err := indexer.MapProvinceMapping(ctx, cfg, spec)
+			if err != nil {
+				return err
+			}
+			return printJSON(result)
+		case "physical-context":
+			if len(args) != 2 {
+				return errors.New("usage: ck3-index map physical-context <spec.json>")
+			}
+			var request mapPhysicalContextCLIRequest
+			if err := readStrictJSONFile(args[1], &request); err != nil {
+				return err
+			}
+			limit, err := request.normalizedLimit()
+			if err != nil {
+				return err
+			}
+			db, err := openReadOnlyDB(cfgPath)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			result, err := db.LLMMapPhysicalContext(ctx, request.spec(), indexer.LLMOptions{AllowProject: true, Limit: limit})
+			if err != nil {
+				return err
+			}
+			return printJSON(result)
+		case "migration-snapshot":
+			if len(args) != 2 {
+				return errors.New("usage: ck3-index map migration-snapshot <spec.json>")
+			}
+			var spec migrator.SnapshotSpec
+			if err := readStrictJSONFile(args[1], &spec); err != nil {
+				return err
+			}
+			cfg, err := indexer.LoadConfig(cfgPath)
+			if err != nil {
+				return err
+			}
+			result, err := migrator.CreateSnapshot(ctx, cfg, spec)
+			if err != nil {
+				return err
+			}
+			return printJSON(result)
+		case "migrate":
+			if len(args) < 2 || len(args) > 4 || (len(args) == 4 && args[2] != "--out") || len(args) == 3 {
+				return errors.New("usage: ck3-index map migrate <spec.json> [--out <new-mod-dir>]")
+			}
+			var spec migrator.MigrationSpec
+			if err := readStrictJSONFile(args[1], &spec); err != nil {
+				return err
+			}
+			cfg, err := indexer.LoadConfig(cfgPath)
+			if err != nil {
+				return err
+			}
+			db, err := openReadOnlyDB(cfgPath)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			output := ""
+			if len(args) == 4 {
+				output = args[3]
+			}
+			result, err := migrator.BuildMigration(ctx, cfg, spec, migrator.BuildOptions{
+				ArtifactRoot: cfg.ArtifactRoot, OutputDir: output, Retention: time.Duration(cfg.ArtifactRetentionHours) * time.Hour, DB: db,
+			})
+			if err != nil {
+				return err
+			}
+			return printJSON(result)
+		case "recipes":
+			return printJSON(indexer.MapRecipeCatalog())
+		case "metric":
+			if len(args) < 2 {
+				return errors.New("usage: ck3-index map metric <spec.json>")
+			}
+			var spec indexer.MapMetricSpec
+			if err := readJSONFile(args[1], &spec); err != nil {
+				return err
+			}
+			db, err := openReadOnlyDB(cfgPath)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			result, err := db.LLMMapBuildMetric(ctx, spec, indexer.LLMOptions{AllowProject: true, Limit: 20})
+			if err != nil {
+				return err
+			}
+			return printJSON(result)
+		case "route":
+			if len(args) != 2 {
+				return errors.New("usage: ck3-index map route <spec.json>")
+			}
+			var spec indexer.MapRouteSpec
+			if err := readStrictJSONFile(args[1], &spec); err != nil {
+				return err
+			}
+			db, err := openReadOnlyDB(cfgPath)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			result, err := db.LLMMapRoute(ctx, spec, indexer.LLMOptions{AllowProject: true, Limit: 20})
+			if err != nil {
+				return err
+			}
+			return printJSON(result)
+		case "render":
+			if len(args) < 4 {
+				return errors.New("usage: ck3-index map render <spec.json> --out <file.png> [--meta <sidecar.json>]")
+			}
+			outputPath, metadataPath := "", ""
+			for index := 2; index < len(args); index += 2 {
+				if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
+					return errors.New("usage: ck3-index map render <spec.json> --out <file.png> [--meta <sidecar.json>]")
+				}
+				switch args[index] {
+				case "--out":
+					outputPath = args[index+1]
+				case "--meta":
+					metadataPath = args[index+1]
+				default:
+					return fmt.Errorf("unknown map render flag %q", args[index])
+				}
+			}
+			if outputPath == "" {
+				return errors.New("map render requires --out <file.png>")
+			}
+			var spec indexer.MapRenderSpec
+			if err := readStrictJSONFile(args[1], &spec); err != nil {
+				return err
+			}
+			db, err := openReadOnlyDB(cfgPath)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			result, err := db.LLMMapRender(ctx, spec, indexer.LLMOptions{AllowProject: true, Limit: 20})
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(outputPath, result.PNG, 0644); err != nil {
+				return err
+			}
+			result.PNG = nil
+			if metadataPath != "" {
+				data, err := json.MarshalIndent(result, "", "  ")
+				if err != nil {
+					return err
+				}
+				if err := os.WriteFile(metadataPath, append(data, '\n'), 0644); err != nil {
+					return err
+				}
+			}
+			return printJSON(result)
+		default:
+			return errors.New("usage: ck3-index map <audit|province-mapping|physical-context|migration-snapshot|migrate|recipes|metric|route|render> [operation|spec.json] [--out path]")
+		}
 	case "validate":
 		db, err := openDB(ctx, cfgPath)
 		if err != nil {
@@ -450,8 +1123,11 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		dbPath := filepath.Join(filepath.Dir(cfg.ConfigPath), cfg.Database)
-		return serveMCP(ctx, cfg, dbPath, os.Stdin, os.Stdout)
+		dbPath, err := indexer.ConfiguredDatabasePath(cfg)
+		if err != nil {
+			return err
+		}
+		return mcpserver.Serve(ctx, cfg, dbPath, os.Stdin, os.Stdout)
 	case "diag_stats":
 		db, err := openDB(ctx, cfgPath)
 		if err != nil {
@@ -486,10 +1162,16 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		defer db.Close()
-		report, err := db.Health(ctx)
+		cfg, err := indexer.LoadConfig(cfgPath)
 		if err != nil {
 			return err
 		}
+		report, err := db.HealthConfigured(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		gis := db.GISSidecarStatus(ctx, cfg)
+		report.GIS = &gis
 		return printJSON(report)
 	default:
 		if strings.TrimSpace(cmd) == "" {
@@ -505,7 +1187,11 @@ func openDB(ctx context.Context, cfgPath string) (*indexer.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, err := indexer.Open(filepath.Join(filepath.Dir(cfg.ConfigPath), cfg.Database))
+	dbPath, err := indexer.ConfiguredDatabasePath(cfg)
+	if err != nil {
+		return nil, err
+	}
+	db, err := indexer.Open(dbPath)
 	if err != nil {
 		return nil, err
 	}
@@ -521,7 +1207,11 @@ func openReadOnlyDB(cfgPath string) (*indexer.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	return indexer.OpenReadOnly(filepath.Join(filepath.Dir(cfg.ConfigPath), cfg.Database))
+	dbPath, err := indexer.ConfiguredDatabasePath(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return indexer.OpenReadOnly(dbPath)
 }
 
 func readPatchInput(path string) (indexer.PreflightPatchInput, error) {
@@ -537,6 +1227,71 @@ func readPatchInput(path string) (indexer.PreflightPatchInput, error) {
 	return input, nil
 }
 
+func readJSONFile(path string, target any) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+	return json.Unmarshal(data, target)
+}
+
+func readStrictJSONFile(path string, target any) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("JSON input must contain exactly one value")
+		}
+		return err
+	}
+	return nil
+}
+
+func loadGUIInputs(paths []string) ([]indexer.GUIModelInput, error) {
+	var files []string
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, err
+		}
+		if !info.IsDir() {
+			files = append(files, path)
+			continue
+		}
+		err = filepath.WalkDir(path, func(candidate string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if !entry.IsDir() && strings.EqualFold(filepath.Ext(candidate), ".gui") {
+				files = append(files, candidate)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	sort.Strings(files)
+	inputs := make([]indexer.GUIModelInput, 0, len(files))
+	for _, path := range files {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		inputs = append(inputs, indexer.GUIModelInput{Path: filepath.ToSlash(path), Model: indexer.BuildGUIModel(string(data))})
+	}
+	return inputs, nil
+}
+
 func printJSON(v any) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
@@ -546,14 +1301,24 @@ func printJSON(v any) error {
 func printHelp() {
 	fmt.Println(`ck3-index commands:
   init [path]              write ck3-index.toml
+	package <spec.json>      validate and build a portable CK3 mod ZIP from proposed files
+	package-dir <dir> --meta validate and build a portable CK3 mod ZIP from an existing directory
   scan [--clean]           rebuild SQLite index (incremental by default; --clean drops everything)
   scan --files <paths...>  refresh current-project files and affected refs without full scan
   query object <id>        show object definitions and override chain
   refs <id>                show incoming/outgoing references
   loc <key>                show localization values
   resource <path-or-id>    show resource files and references
+  gui <view> [...]         query active GUI or export bounded PNG/HTML previews with resolved runtime metadata
+  gui-model <file.gui>     parse CK3 Jomini GUI into a renderer/editor-neutral tree
+  gui-resolve <paths...>   recursively expand GUI templates, inheritance, custom children, and block overrides; supports --summary
   examples <type[:term]>   show vanilla-first examples for an object type
-  rules <type>             show self-owned schema fields learned from local .info files
+	  rules <type>             show self-owned schema fields learned from local .info files
+	  rules audit              report live on_actions.log drift against generated Tiger names (read-only)
+	  rules contracts          audit adjacent vanilla on_action comment contracts against live root evidence (read-only)
+	  rules evidence           reconcile engine, Tiger, and vanilla-comment on_action evidence (read-only)
+	  override audit           compare unique top-level common/events definitions across configured source layers (read-only)
+	  override compare <id>    compare one typed object against its upstream layer, including field drift (read-only)
   patterns <type>          show empirical field shapes learned from indexed scripts
   inspect <id>             show LLM-ready object summary, refs, loc, and diagnostics
   prepare-edit <id|type>   show LLM-ready examples, rules, and edit context
@@ -570,7 +1335,16 @@ func printHelp() {
   lookup-on-action <key>   check if on_action name is known in local rules
   lookup-iterator <key>    check if iterator/scope name is known in local rules
   lookup-example <key>     show local trigger/effect description and syntax example
-  lookup-modifier <key>    check if static modifier key is known in local rules
+	  lookup-modifier <key>    check if static modifier key is known in local rules
+	  map audit [operation]    audit active province and river raster integrity
+	  map province-mapping     compare two configured province maps and classify renumbers, splits, and merges
+	  map physical-context     query normalized terrain, hydrology, water bodies, and relative bathymetry
+	  map migration-snapshot  persist the old-upstream/current-project baseline before a map update
+	  map migrate <json>       create a validated local fork from a saved snapshot and new upstream
+	  map recipes              list thematic map recipes and supported fields/layers
+  map metric <json>        build an auditable indexed/custom map metric
+  map route <json>         resolve places and calculate a legal land, sea, or mixed route
+  map render <json> --out  render a thematic or route-context PNG; add --meta for transform JSON
   validate                 run built-in read-only validation
   accuracy [dir]           run golden accuracy fixtures (default testdata/accuracy)
   bench                    benchmark hot LLM query paths and index plans

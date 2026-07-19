@@ -1,0 +1,5 @@
+{
+  "recipe": "relative_bathymetry",
+  "target": "all",
+  "level": "province"
+}

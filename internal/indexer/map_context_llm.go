@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -86,43 +87,129 @@ type MapProvinceRow struct {
 }
 
 type MapNeighborRow struct {
-	ProvinceID    int      `json:"province_id"`
-	BorderLen     int      `json:"border_len"`
-	Blocked       bool     `json:"blocked"`
-	BlockKind     string   `json:"block_kind,omitempty"`
-	WaterKind     string   `json:"water_kind,omitempty"`
-	Terrain       string   `json:"terrain,omitempty"`
-	County        string   `json:"county,omitempty"`
-	Culture       string   `json:"culture,omitempty"`
-	Religion      string   `json:"religion,omitempty"`
-	Holder        string   `json:"holder,omitempty"`
-	GeographyTags []string `json:"geography_tags,omitempty"`
-	Direction     string   `json:"direction,omitempty"`
+	FromProvinceID int      `json:"from_province_id,omitempty"`
+	ProvinceID     int      `json:"province_id"`
+	Center         MapPoint `json:"center"`
+	DeltaX         float64  `json:"delta_x_pixels"`
+	DeltaY         float64  `json:"delta_y_pixels"`
+	DistancePixels float64  `json:"distance_pixels"`
+	BearingDegrees float64  `json:"bearing_degrees"`
+	Direction      string   `json:"direction,omitempty"`
+	BorderLen      int      `json:"border_len"`
+	Blocked        bool     `json:"blocked"`
+	AdjacencyKind  string   `json:"adjacency_kind"`
+	EdgeWaterKind  string   `json:"edge_water_kind,omitempty"`
+	BlockKind      string   `json:"block_kind,omitempty"`
+	WaterKind      string   `json:"water_kind,omitempty"`
+	Terrain        string   `json:"terrain,omitempty"`
+	County         string   `json:"county,omitempty"`
+	Culture        string   `json:"culture,omitempty"`
+	Religion       string   `json:"religion,omitempty"`
+	Holder         string   `json:"holder,omitempty"`
+	GeographyTags  []string `json:"geography_tags,omitempty"`
+}
+
+type MapAdjacencySummary struct {
+	LandNeighbors               int            `json:"land_neighbors"`
+	WaterNeighbors              int            `json:"water_neighbors"`
+	ImpassableMountainNeighbors int            `json:"impassable_mountain_neighbors"`
+	OtherBlockedNeighbors       int            `json:"other_blocked_neighbors"`
+	WaterKinds                  []MapCount     `json:"water_kinds,omitempty"`
+	WaterByDirection            map[string]int `json:"water_by_direction,omitempty"`
+	MountainsByDirection        map[string]int `json:"impassable_mountains_by_direction,omitempty"`
 }
 
 type MapProvinceInfoResult struct {
-	Intent    string           `json:"intent"`
-	Query     string           `json:"query"`
-	Year      int              `json:"year"`
-	Summary   string           `json:"summary"`
-	Province  MapProvinceRow   `json:"province"`
-	Neighbors []MapNeighborRow `json:"neighbors,omitempty"`
-	Guidance  []string         `json:"guidance,omitempty"`
+	Intent            string                      `json:"intent"`
+	Query             string                      `json:"query"`
+	Year              int                         `json:"year"`
+	Summary           string                      `json:"summary"`
+	Province          MapProvinceRow              `json:"province"`
+	Surface           *MapSurfaceContext          `json:"surface,omitempty"`
+	ResolvedSubject   MapResolvedSubject          `json:"resolved_subject"`
+	Neighbors         []MapNeighborRow            `json:"neighbors,omitempty"`
+	AdjacentFeatures  MapAdjacencySummary         `json:"adjacent_features"`
+	StrategicPassages []MapStrategicPassageRow    `json:"strategic_passages,omitempty"`
+	Physical          *MapPhysicalProvinceContext `json:"physical,omitempty"`
+	Guidance          []string                    `json:"guidance,omitempty"`
 }
 
 type MapNeighborsResult struct {
-	Intent      string                      `json:"intent"`
-	Query       string                      `json:"query"`
-	Year        int                         `json:"year"`
-	Radius      int                         `json:"radius"`
-	Summary     string                      `json:"summary"`
-	Counts      map[string]int              `json:"counts"`
-	ByDepth     map[int][]MapNeighborRow    `json:"by_depth"`
-	ByDirection map[string][]MapNeighborRow `json:"by_direction,omitempty"`
-	Cultures    []MapCount                  `json:"cultures,omitempty"`
-	Religions   []MapCount                  `json:"religions,omitempty"`
-	Terrains    []MapCount                  `json:"terrains,omitempty"`
-	Holders     []MapCount                  `json:"holders,omitempty"`
+	Intent           string                      `json:"intent"`
+	Query            string                      `json:"query"`
+	Year             int                         `json:"year"`
+	Radius           int                         `json:"radius"`
+	ResolvedSubject  MapResolvedSubject          `json:"resolved_subject"`
+	Summary          string                      `json:"summary"`
+	Counts           map[string]int              `json:"counts"`
+	ByDepth          map[int][]MapNeighborRow    `json:"by_depth"`
+	ByDirection      map[string][]MapNeighborRow `json:"by_direction,omitempty"`
+	Cultures         []MapCount                  `json:"cultures,omitempty"`
+	Religions        []MapCount                  `json:"religions,omitempty"`
+	Terrains         []MapCount                  `json:"terrains,omitempty"`
+	Holders          []MapCount                  `json:"holders,omitempty"`
+	AdjacentFeatures MapAdjacencySummary         `json:"adjacent_features"`
+}
+
+type MapFrame struct {
+	MinX           int     `json:"min_x"`
+	MinY           int     `json:"min_y"`
+	MaxX           int     `json:"max_x"`
+	MaxY           int     `json:"max_y"`
+	WidthPixels    int     `json:"width_pixels"`
+	HeightPixels   int     `json:"height_pixels"`
+	DiagonalPixels float64 `json:"diagonal_pixels"`
+}
+
+type MapSpatialRelationResult struct {
+	Intent                   string                   `json:"intent"`
+	From                     MapProvinceRow           `json:"from"`
+	To                       MapProvinceRow           `json:"to"`
+	ResolvedFrom             MapResolvedSubject       `json:"resolved_from"`
+	ResolvedTo               MapResolvedSubject       `json:"resolved_to"`
+	DeltaX                   float64                  `json:"delta_x_pixels"`
+	DeltaY                   float64                  `json:"delta_y_pixels"`
+	DistancePixels           float64                  `json:"distance_pixels"`
+	DistanceMapDiagonalRatio float64                  `json:"distance_map_diagonal_ratio"`
+	BearingDegrees           float64                  `json:"bearing_degrees"`
+	Direction                string                   `json:"direction"`
+	ReverseDirection         string                   `json:"reverse_direction"`
+	Adjacent                 bool                     `json:"adjacent"`
+	ExplicitConnection       bool                     `json:"explicit_connection"`
+	BorderLen                int                      `json:"border_len,omitempty"`
+	AdjacencyKind            string                   `json:"adjacency_kind"`
+	StrategicPassages        []MapStrategicPassageRow `json:"strategic_passages,omitempty"`
+	EdgeWaterKind            string                   `json:"edge_water_kind,omitempty"`
+	MapFrame                 MapFrame                 `json:"map_frame"`
+	FromAdjacentFeatures     MapAdjacencySummary      `json:"from_adjacent_features"`
+	ToAdjacentFeatures       MapAdjacencySummary      `json:"to_adjacent_features"`
+	Summary                  string                   `json:"summary"`
+	Guidance                 []string                 `json:"guidance,omitempty"`
+}
+
+type MapStrategicPassageRow struct {
+	ID               int      `json:"id"`
+	FromProvince     int      `json:"from_province"`
+	ToProvince       int      `json:"to_province"`
+	ThroughProvince  int      `json:"through_province,omitempty"`
+	ConnectionType   string   `json:"connection_type"`
+	PassageKind      string   `json:"passage_kind"`
+	Start            MapPoint `json:"start"`
+	Stop             MapPoint `json:"stop"`
+	DistancePixels   float64  `json:"distance_pixels"`
+	Comment          string   `json:"comment,omitempty"`
+	FromSubterranean bool     `json:"from_subterranean"`
+	ToSubterranean   bool     `json:"to_subterranean"`
+}
+
+type MapStrategicPassagesResult struct {
+	Intent   string                   `json:"intent"`
+	Target   string                   `json:"target"`
+	Kind     string                   `json:"kind,omitempty"`
+	Summary  string                   `json:"summary"`
+	Counts   []MapCount               `json:"counts"`
+	Passages []MapStrategicPassageRow `json:"passages,omitempty"`
+	Guidance []string                 `json:"guidance,omitempty"`
 }
 
 type MapTitleContextResult struct {
@@ -143,7 +230,10 @@ type MapTitleContextResult struct {
 	Visual          MapVisualSummary        `json:"visual"`
 	NeighborTitles  []MapTitleBorder        `json:"neighbor_titles,omitempty"`
 	CoarseGeography MapCoarseGeography      `json:"coarse_geography"`
+	Physical        *MapPhysicalAggregate   `json:"physical,omitempty"`
 	Guidance        []string                `json:"guidance,omitempty"`
+	IntegrityStatus string                  `json:"integrity_status"`
+	IntegrityIssues []MapIntegrityIssue     `json:"integrity_warnings,omitempty"`
 }
 
 type MapTitleRow struct {
@@ -234,13 +324,14 @@ type MapBuildingCandidate struct {
 }
 
 func (db *DB) LLMMapProvinceInfo(ctx context.Context, id string, year int, opts LLMOptions) (MapProvinceInfoResult, error) {
-	pid, err := strconv.Atoi(strings.TrimSpace(id))
-	if err != nil {
-		return MapProvinceInfoResult{}, fmt.Errorf("map_province_info requires numeric province id")
-	}
 	if year <= 0 {
 		year = 1
 	}
+	resolved, err := db.ResolveMapSubject(ctx, id, year)
+	if err != nil {
+		return MapProvinceInfoResult{}, err
+	}
+	pid := resolved.ProvinceID
 	prov, err := db.mapProvinceAt(ctx, pid, yearDateKey(year))
 	if err != nil {
 		return MapProvinceInfoResult{}, err
@@ -252,10 +343,29 @@ func (db *DB) LLMMapProvinceInfo(ctx context.Context, id string, year int, opts 
 	if err != nil {
 		return MapProvinceInfoResult{}, err
 	}
+	passages, err := db.mapStrategicPassagesForProvinces(ctx, map[int]bool{pid: true}, "", opts.normalizedLimit())
+	if err != nil {
+		return MapProvinceInfoResult{}, err
+	}
+	var physical *MapPhysicalProvinceContext
+	if value, physicalErr := db.physicalProvinceContext(ctx, pid, "summary", db.cachedGISSidecarStatus(ctx)); physicalErr == nil {
+		physical = &value
+	}
+	surface, err := db.mapSurfaceProvinceContext(ctx, pid, 4)
+	if err != nil {
+		return MapProvinceInfoResult{}, err
+	}
+	summary := fmt.Sprintf("Province %d is terrain %s, block_kind %s, county %s, holding %s, slot_status %s, culture %s, religion %s, holder %s.", pid, prov.Terrain, prov.BlockKind, prov.County, prov.Building.HoldingType, prov.Building.SlotStatus, prov.Culture, prov.Religion, prov.Holder)
+	if surface.Available {
+		summary += fmt.Sprintf(" Its dominant observed map-surface material is %s.", surface.DominantMaterialID)
+	}
 	return MapProvinceInfoResult{
-		Intent: "map_province_info", Query: id, Year: year, Province: prov, Neighbors: neighbors,
-		Summary:  fmt.Sprintf("Province %d is terrain %s, block_kind %s, county %s, holding %s, slot_status %s, culture %s, religion %s, holder %s.", pid, prov.Terrain, prov.BlockKind, prov.County, prov.Building.HoldingType, prov.Building.SlotStatus, prov.Culture, prov.Religion, prov.Holder),
-		Guidance: []string{"Use map_neighbors for wider regional context before assignment.", "Blocked provinces should not receive generated religion, holder, or building assignments.", "Use map_building_candidates for auditable special-building candidate ranking."},
+		Intent: "map_province_info", Query: id, Year: year, Province: prov, Surface: surface, ResolvedSubject: resolved, Neighbors: neighbors,
+		AdjacentFeatures:  summarizeMapAdjacencies(neighbors),
+		StrategicPassages: passages,
+		Physical:          physical,
+		Summary:           summary,
+		Guidance:          []string{"Neighbor direction and pixel distance are measured from this province centroid; positive Y points south on the source image.", "Water and impassable-mountain boundaries are classified separately in adjacent_features and adjacency_kind.", "Surface-material shares come from indexed terrain blend rasters and are not the same as scripted common/province_terrain categories.", "Use map_spatial_relation for an exact two-province centroid comparison."},
 	}, nil
 }
 
@@ -269,10 +379,11 @@ func (db *DB) LLMMapNeighbors(ctx context.Context, id string, radius int, year i
 	if radius > 3 {
 		radius = 3
 	}
-	start, err := db.targetProvinceIDs(ctx, id)
+	resolved, err := db.ResolveMapSubject(ctx, id, year)
 	if err != nil {
 		return MapNeighborsResult{}, err
 	}
+	start := []int{resolved.ProvinceID}
 	date := yearDateKey(year)
 	seen := map[int]bool{}
 	frontier := map[int]bool{}
@@ -284,6 +395,7 @@ func (db *DB) LLMMapNeighbors(ctx context.Context, id string, radius int, year i
 	byDirection := map[string][]MapNeighborRow{}
 	refCenter, _ := db.averageProvinceCenter(ctx, start)
 	cultures, religions, terrains, holders := map[string]int{}, map[string]int{}, map[string]int{}, map[string]int{}
+	var discovered []MapNeighborRow
 	for depth := 1; depth <= radius; depth++ {
 		next := map[int]bool{}
 		for pid := range frontier {
@@ -297,9 +409,10 @@ func (db *DB) LLMMapNeighbors(ctx context.Context, id string, radius int, year i
 				}
 				seen[n.ProvinceID] = true
 				if c, ok := db.provinceCenter(ctx, n.ProvinceID); ok {
-					n.Direction = coarseDirection(c.X-refCenter.X, c.Y-refCenter.Y)
+					setNeighborSpatial(&n, refCenter, c)
 					byDirection[n.Direction] = append(byDirection[n.Direction], n)
 				}
+				discovered = append(discovered, n)
 				next[n.ProvinceID] = true
 				byDepth[depth] = append(byDepth[depth], n)
 				if n.Culture != "" {
@@ -325,16 +438,181 @@ func (db *DB) LLMMapNeighbors(ctx context.Context, id string, radius int, year i
 		}
 	}
 	return MapNeighborsResult{
-		Intent: "map_neighbors", Query: id, Year: year, Radius: radius,
-		Summary:     fmt.Sprintf("Found %d province(s) within radius %d of %s.", len(seen)-len(start), radius, id),
-		Counts:      map[string]int{"start_provinces": len(start), "seen_provinces": len(seen)},
-		ByDepth:     byDepth,
-		ByDirection: byDirection,
-		Cultures:    topMapCounts(cultures, opts.normalizedLimit()),
-		Religions:   topMapCounts(religions, opts.normalizedLimit()),
-		Terrains:    topMapCounts(terrains, opts.normalizedLimit()),
-		Holders:     topMapCounts(holders, opts.normalizedLimit()),
+		Intent: "map_neighbors", Query: id, Year: year, Radius: radius, ResolvedSubject: resolved,
+		Summary:          fmt.Sprintf("Found %d province(s) within radius %d of %s.", len(seen)-len(start), radius, id),
+		Counts:           map[string]int{"start_provinces": len(start), "seen_provinces": len(seen)},
+		ByDepth:          byDepth,
+		ByDirection:      byDirection,
+		Cultures:         topMapCounts(cultures, opts.normalizedLimit()),
+		Religions:        topMapCounts(religions, opts.normalizedLimit()),
+		Terrains:         topMapCounts(terrains, opts.normalizedLimit()),
+		Holders:          topMapCounts(holders, opts.normalizedLimit()),
+		AdjacentFeatures: summarizeMapAdjacencies(discovered),
 	}, nil
+}
+
+func (db *DB) LLMMapSpatialRelation(ctx context.Context, fromID, toID string, year int, opts LLMOptions) (MapSpatialRelationResult, error) {
+	if year <= 0 {
+		year = 1
+	}
+	resolvedFrom, err := db.ResolveMapSubject(ctx, fromID, year)
+	if err != nil {
+		return MapSpatialRelationResult{}, err
+	}
+	resolvedTo, err := db.ResolveMapSubject(ctx, toID, year)
+	if err != nil {
+		return MapSpatialRelationResult{}, err
+	}
+	fromPID, toPID := resolvedFrom.ProvinceID, resolvedTo.ProvinceID
+	date := yearDateKey(year)
+	from, err := db.mapProvinceAt(ctx, fromPID, date)
+	if err != nil || from.ProvinceID == 0 {
+		if err == nil {
+			err = fmt.Errorf("province %d not found in map cache", fromPID)
+		}
+		return MapSpatialRelationResult{}, err
+	}
+	to, err := db.mapProvinceAt(ctx, toPID, date)
+	if err != nil || to.ProvinceID == 0 {
+		if err == nil {
+			err = fmt.Errorf("province %d not found in map cache", toPID)
+		}
+		return MapSpatialRelationResult{}, err
+	}
+	dx, dy, distance, bearing, direction := spatialMetrics(from.Center, to.Center)
+	frame, err := db.mapFrame(ctx)
+	if err != nil {
+		return MapSpatialRelationResult{}, err
+	}
+	result := MapSpatialRelationResult{
+		Intent: "map_spatial_relation", From: from, To: to, ResolvedFrom: resolvedFrom, ResolvedTo: resolvedTo,
+		DeltaX: dx, DeltaY: dy, DistancePixels: distance, BearingDegrees: bearing,
+		Direction: direction, ReverseDirection: coarseDirection(-dx, -dy),
+		AdjacencyKind: "not_adjacent", MapFrame: frame,
+		Guidance: []string{"Bearing uses compass convention: 0=north, 90=east, 180=south, 270=west.", "Pixel distance is straight-line distance between province centroids, not travel distance.", "Positive delta_y means the target lies south on provinces.png."},
+	}
+	if frame.DiagonalPixels > 0 {
+		result.DistanceMapDiagonalRatio = roundMapMetric(distance / frame.DiagonalPixels)
+	}
+	var blocked int
+	err = db.sql.QueryRowContext(ctx, `SELECT border_len,blocked FROM map_adjacencies WHERE province_id=? AND neighbor_id=?`, fromPID, toPID).Scan(&result.BorderLen, &blocked)
+	if err == nil {
+		result.Adjacent = true
+		result.AdjacencyKind, result.EdgeWaterKind = mapAdjacencyKind(from, to, blocked != 0)
+	} else if err != sql.ErrNoRows {
+		return MapSpatialRelationResult{}, err
+	}
+	result.StrategicPassages, err = db.mapStrategicPassagesBetween(ctx, fromPID, toPID)
+	if err != nil {
+		return MapSpatialRelationResult{}, err
+	}
+	if len(result.StrategicPassages) > 0 {
+		result.ExplicitConnection = true
+		if !result.Adjacent {
+			result.AdjacencyKind = result.StrategicPassages[0].PassageKind
+		}
+	}
+	fromNeighbors, err := db.mapNeighborRows(ctx, fromPID, date, 10000)
+	if err != nil {
+		return MapSpatialRelationResult{}, err
+	}
+	toNeighbors, err := db.mapNeighborRows(ctx, toPID, date, 10000)
+	if err != nil {
+		return MapSpatialRelationResult{}, err
+	}
+	result.FromAdjacentFeatures = summarizeMapAdjacencies(fromNeighbors)
+	result.ToAdjacentFeatures = summarizeMapAdjacencies(toNeighbors)
+	result.Summary = fmt.Sprintf("Province %d is %s of province %d at %.2f pixels; adjacent=%t, explicit_connection=%t, adjacency_kind=%s.", toPID, direction, fromPID, distance, result.Adjacent, result.ExplicitConnection, result.AdjacencyKind)
+	return result, nil
+}
+
+func (db *DB) LLMMapStrategicPassages(ctx context.Context, target, kind string, opts LLMOptions) (MapStrategicPassagesResult, error) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		target = "all"
+	}
+	pids, err := db.mapRenderTargetProvinces(ctx, target)
+	if err != nil {
+		return MapStrategicPassagesResult{}, err
+	}
+	selected := map[int]bool{}
+	for _, pid := range pids {
+		selected[pid] = true
+	}
+	all, err := db.mapStrategicPassagesForProvinces(ctx, selected, strings.TrimSpace(kind), 0)
+	if err != nil {
+		return MapStrategicPassagesResult{}, err
+	}
+	counts := map[string]int{}
+	for _, passage := range all {
+		counts[passage.PassageKind]++
+	}
+	limit := opts.normalizedLimit()
+	passages := all
+	if len(passages) > limit {
+		passages = passages[:limit]
+	}
+	return MapStrategicPassagesResult{
+		Intent: "map_strategic_passages", Target: target, Kind: kind,
+		Summary: fmt.Sprintf("Found %d explicit strategic passage(s) touching %s; returning %d.", len(all), target, len(passages)),
+		Counts:  topMapCounts(counts, 20), Passages: passages,
+		Guidance: []string{"Strategic passages come from adjacencies.csv and are separate from pixel-border neighbors.", "underground_gateway and offmap_gateway should be rendered as portal stubs, not full straight lines.", "Graph diffusion does not traverse strategic passages unless a caller explicitly opts in."},
+	}, nil
+}
+
+func (db *DB) mapStrategicPassagesBetween(ctx context.Context, fromPID, toPID int) ([]MapStrategicPassageRow, error) {
+	rows, err := db.sql.QueryContext(ctx, `SELECT id,from_province,to_province,through_province,connection_type,passage_kind,start_x,start_y,stop_x,stop_y,distance_pixels,comment,from_subterranean,to_subterranean
+		FROM map_strategic_adjacencies WHERE (from_province=? AND to_province=?) OR (from_province=? AND to_province=?) ORDER BY id`, fromPID, toPID, toPID, fromPID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanMapStrategicPassageRows(rows)
+}
+
+func (db *DB) mapStrategicPassagesForProvinces(ctx context.Context, selected map[int]bool, kind string, limit int) ([]MapStrategicPassageRow, error) {
+	query := `SELECT id,from_province,to_province,through_province,connection_type,passage_kind,start_x,start_y,stop_x,stop_y,distance_pixels,comment,from_subterranean,to_subterranean FROM map_strategic_adjacencies`
+	args := []any{}
+	if kind != "" {
+		query += ` WHERE passage_kind=?`
+		args = append(args, kind)
+	}
+	query += ` ORDER BY CASE passage_kind WHEN 'underground_gateway' THEN 0 WHEN 'offmap_gateway' THEN 1 WHEN 'underground_internal' THEN 2 ELSE 3 END,distance_pixels DESC,id`
+	rows, err := db.sql.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	all, err := scanMapStrategicPassageRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]MapStrategicPassageRow, 0, len(all))
+	for _, passage := range all {
+		if selected[passage.FromProvince] || selected[passage.ToProvince] {
+			out = append(out, passage)
+			if limit > 0 && len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+func scanMapStrategicPassageRows(rows *sql.Rows) ([]MapStrategicPassageRow, error) {
+	var out []MapStrategicPassageRow
+	for rows.Next() {
+		var item MapStrategicPassageRow
+		var fromSub, toSub int
+		if err := rows.Scan(&item.ID, &item.FromProvince, &item.ToProvince, &item.ThroughProvince, &item.ConnectionType, &item.PassageKind,
+			&item.Start.X, &item.Start.Y, &item.Stop.X, &item.Stop.Y, &item.DistancePixels, &item.Comment, &fromSub, &toSub); err != nil {
+			return nil, err
+		}
+		item.FromSubterranean = fromSub != 0
+		item.ToSubterranean = toSub != 0
+		out = append(out, item)
+	}
+	return out, rows.Err()
 }
 
 func (db *DB) LLMMapTitleContext(ctx context.Context, id string, year int, opts LLMOptions) (MapTitleContextResult, error) {
@@ -422,6 +700,14 @@ func (db *DB) LLMMapTitleContext(ctx context.Context, id string, year int, opts 
 	if err != nil {
 		return MapTitleContextResult{}, err
 	}
+	integrityIssues, err := db.mapIntegrityIssues(ctx, id, provinceSet)
+	if err != nil {
+		return MapTitleContextResult{}, err
+	}
+	integrityStatus := "ok"
+	if len(integrityIssues) > 0 {
+		integrityStatus = "warning"
+	}
 	title.ProvinceCount = len(provinces)
 	holySiteList := make([]MapHolySiteRow, 0, len(holySites))
 	for _, site := range holySites {
@@ -443,6 +729,12 @@ func (db *DB) LLMMapTitleContext(ctx context.Context, id string, year int, opts 
 			coarse.MajorNeighborDirections[d] = append(coarse.MajorNeighborDirections[d], neighborTitles[i].TitleID)
 		}
 	}
+	var physical *MapPhysicalAggregate
+	if ids, physicalErr := db.physicalProvinceIDs(ctx, provinceSet); physicalErr == nil && len(ids) > 0 {
+		if value, aggregateErr := db.physicalAggregate(ctx, ids); aggregateErr == nil {
+			physical = &value
+		}
+	}
 	return MapTitleContextResult{
 		Intent: "map_title_context", Query: id, Year: year, Title: title,
 		Summary:         fmt.Sprintf("%s covers %d province(s); holder=%s.", id, len(provinces), title.Holder),
@@ -458,7 +750,10 @@ func (db *DB) LLMMapTitleContext(ctx context.Context, id string, year int, opts 
 		Visual:          MapVisualSummary{Center: title.Center, BBox: title.BBox, Points: visualPoints},
 		NeighborTitles:  neighborTitles,
 		CoarseGeography: coarse,
+		Physical:        physical,
 		Guidance:        []string{"Use this title context before generating religion or character assignment patches.", "Use map_building_candidates for special-building placement candidates and review reasons."},
+		IntegrityStatus: integrityStatus,
+		IntegrityIssues: integrityIssues,
 	}, nil
 }
 
@@ -493,6 +788,90 @@ func coarseDirection(dx, dy float64) string {
 	}
 	return "northwest"
 }
+
+func roundMapMetric(v float64) float64 {
+	return math.Round(v*100) / 100
+}
+
+func spatialMetrics(from, to MapPoint) (dx, dy, distance, bearing float64, direction string) {
+	dx = roundMapMetric(to.X - from.X)
+	dy = roundMapMetric(to.Y - from.Y)
+	distance = roundMapMetric(math.Hypot(to.X-from.X, to.Y-from.Y))
+	bearing = math.Atan2(to.X-from.X, -(to.Y-from.Y)) * 180 / math.Pi
+	if bearing < 0 {
+		bearing += 360
+	}
+	bearing = roundMapMetric(bearing)
+	direction = coarseDirection(to.X-from.X, to.Y-from.Y)
+	return
+}
+
+func setNeighborSpatial(n *MapNeighborRow, from, to MapPoint) {
+	n.Center = to
+	n.DeltaX, n.DeltaY, n.DistancePixels, n.BearingDegrees, n.Direction = spatialMetrics(from, to)
+}
+
+func mapAdjacencyKind(from, to MapProvinceRow, blocked bool) (string, string) {
+	if from.BlockKind == "impassable_mountain" || to.BlockKind == "impassable_mountain" {
+		return "impassable_mountain_boundary", ""
+	}
+	if from.BlockKind == "water" || to.BlockKind == "water" {
+		waterKind := to.WaterKind
+		if waterKind == "" {
+			waterKind = from.WaterKind
+		}
+		return "water_boundary", waterKind
+	}
+	if blocked {
+		return "other_blocked_boundary", ""
+	}
+	return "land_border", ""
+}
+
+func summarizeMapAdjacencies(rows []MapNeighborRow) MapAdjacencySummary {
+	s := MapAdjacencySummary{}
+	waterKinds := map[string]int{}
+	for _, n := range rows {
+		switch n.AdjacencyKind {
+		case "water_boundary":
+			s.WaterNeighbors++
+			kind := n.EdgeWaterKind
+			if kind == "" {
+				kind = "water"
+			}
+			waterKinds[kind]++
+			if s.WaterByDirection == nil {
+				s.WaterByDirection = map[string]int{}
+			}
+			s.WaterByDirection[n.Direction]++
+		case "impassable_mountain_boundary":
+			s.ImpassableMountainNeighbors++
+			if s.MountainsByDirection == nil {
+				s.MountainsByDirection = map[string]int{}
+			}
+			s.MountainsByDirection[n.Direction]++
+		case "other_blocked_boundary":
+			s.OtherBlockedNeighbors++
+		default:
+			s.LandNeighbors++
+		}
+	}
+	s.WaterKinds = topMapCounts(waterKinds, 20)
+	return s
+}
+
+func (db *DB) mapFrame(ctx context.Context) (MapFrame, error) {
+	var f MapFrame
+	err := db.sql.QueryRowContext(ctx, `SELECT MIN(min_x),MIN(min_y),MAX(max_x),MAX(max_y) FROM map_provinces WHERE area>0`).Scan(&f.MinX, &f.MinY, &f.MaxX, &f.MaxY)
+	if err != nil {
+		return f, err
+	}
+	f.WidthPixels = f.MaxX - f.MinX + 1
+	f.HeightPixels = f.MaxY - f.MinY + 1
+	f.DiagonalPixels = roundMapMetric(math.Hypot(float64(f.WidthPixels), float64(f.HeightPixels)))
+	return f, nil
+}
+
 func (db *DB) provinceCenter(ctx context.Context, pid int) (MapPoint, bool) {
 	var p MapPoint
 	if db.sql.QueryRowContext(ctx, `SELECT center_x,center_y FROM map_provinces WHERE province_id=?`, pid).Scan(&p.X, &p.Y) != nil {
@@ -641,6 +1020,10 @@ func (db *DB) mapProvinceAt(ctx context.Context, pid int, date int) (MapProvince
 }
 
 func (db *DB) mapNeighborRows(ctx context.Context, pid int, date int, limit int) ([]MapNeighborRow, error) {
+	origin, err := db.mapProvinceAt(ctx, pid, date)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := db.sql.QueryContext(ctx, `SELECT neighbor_id,border_len,blocked FROM map_adjacencies WHERE province_id=? ORDER BY border_len DESC, neighbor_id LIMIT ?`, pid, limit)
 	if err != nil {
 		return nil, err
@@ -654,12 +1037,15 @@ func (db *DB) mapNeighborRows(ctx context.Context, pid int, date int, limit int)
 			return nil, err
 		}
 		n.Blocked = blocked != 0
+		n.FromProvinceID = pid
 		p, err := db.mapProvinceAt(ctx, n.ProvinceID, date)
 		if err != nil {
 			return nil, err
 		}
 		n.County, n.Terrain, n.Culture, n.Religion, n.Holder = p.County, p.Terrain, p.Culture, p.Religion, p.Holder
 		n.BlockKind, n.WaterKind, n.GeographyTags = p.BlockKind, p.WaterKind, p.GeographyTags
+		n.AdjacencyKind, n.EdgeWaterKind = mapAdjacencyKind(origin, p, n.Blocked)
+		setNeighborSpatial(&n, origin.Center, p.Center)
 		out = append(out, n)
 	}
 	return out, rows.Err()
@@ -733,11 +1119,11 @@ func (db *DB) titleProvinceIDs(ctx context.Context, title string) ([]int, error)
 }
 
 func (db *DB) targetProvinceIDs(ctx context.Context, target string) ([]int, error) {
-	target = strings.TrimSpace(target)
-	if pid, err := strconv.Atoi(target); err == nil {
-		return []int{pid}, nil
+	selector, err := parseMapTargetSelector(target, "")
+	if err != nil {
+		return nil, err
 	}
-	pids, err := db.titleProvinceIDs(ctx, target)
+	pids, err := db.mapTargetProvinceIDs(ctx, selector)
 	if err != nil {
 		return nil, err
 	}
@@ -859,9 +1245,9 @@ func (db *DB) localizedName(ctx context.Context, key string) MapLocalizedName {
 	for _, h := range q.Values {
 		lang := strings.ToLower(h.Language)
 		switch {
-		case name.Chinese == "" && (lang == "simp_chinese" || lang == "chinese" || strings.Contains(lang, "zh")):
+		case name.Chinese == "" && (strings.Contains(lang, "simp_chinese") || lang == "chinese" || strings.Contains(lang, "zh")):
 			name.Chinese = h.Value
-		case name.English == "" && lang == "english":
+		case name.English == "" && strings.Contains(lang, "english"):
 			name.English = h.Value
 		}
 	}

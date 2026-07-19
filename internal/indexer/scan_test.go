@@ -224,6 +224,57 @@ rank = 3
 	}
 }
 
+func TestScanFilesRefusesToAdvanceStaleRuleVersion(t *testing.T) {
+	dir := t.TempDir()
+	project := filepath.Join(dir, "project")
+	path := filepath.Join(project, "common", "traits", "test.txt")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("test_trait = {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dir, "ck3-index.toml")
+	if err := os.WriteFile(cfgPath, []byte("database = \"cache/test.sqlite\"\n[[source]]\nname = \"project\"\npath = \"project\"\nrank = 1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Scan(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(filepath.Join(dir, "cache", "test.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.sql.Exec(`UPDATE meta SET value='stale-test-version' WHERE key='index_rule_version'`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+
+	if err := os.WriteFile(path, []byte("test_trait = { prowess = 1 }\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ScanFiles(context.Background(), cfg, []string{"common/traits/test.txt"}); err == nil || !strings.Contains(err.Error(), "full ck3-index scan") {
+		t.Fatalf("expected stale rule version to block incremental scan, got %v", err)
+	}
+	db, err = Open(filepath.Join(dir, "cache", "test.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	version, err := db.metaValue(context.Background(), "index_rule_version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != "stale-test-version" {
+		t.Fatalf("incremental scan advanced stale rule version to %q", version)
+	}
+}
+
 func TestScanSkipsOverriddenObjectsButKeepsLIOSValidation(t *testing.T) {
 	dir := t.TempDir()
 	write := func(path, text string) {
@@ -297,6 +348,88 @@ rank = 3
 	}
 	if !foundLIOS {
 		t.Fatalf("expected lios_partial_override diagnostic, got %+v", rep.Counts)
+	}
+}
+
+func TestScanHonorsModReplacePaths(t *testing.T) {
+	dir := t.TempDir()
+	write := func(path, text string) {
+		full := filepath.Join(dir, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(text), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("mod/godherja.mod", `name="Godherja"
+replace_path="common/culture/cultures"
+replace_path = "history/provinces"
+`)
+	write("mod/common/culture/cultures/godherja.txt", `gallicads = { ethos = ethos_bellicose }`)
+	write("mod/history/provinces/godherja.txt", `1 = { culture = gallicads }`)
+	write("game/common/culture/cultures/vanilla.txt", `armenian = { ethos = ethos_stoic }`)
+	write("game/history/provinces/vanilla.txt", `1 = { culture = armenian }`)
+	write("game/common/traits/vanilla.txt", `vanilla_trait = { }`)
+
+	cfgPath := filepath.Join(dir, "ck3-index.toml")
+	cfgText := `database = "cache/test.sqlite"
+[[source]]
+name = "godherja"
+path = "mod"
+rank = 2
+[[source]]
+name = "game"
+path = "game"
+rank = 3
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgText), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Scan(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(filepath.Join(dir, "cache", "test.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	armenian, err := db.QueryObject(context.Background(), "armenian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(armenian.Definitions) != 0 {
+		t.Fatalf("expected replace_path to hide vanilla culture, got %+v", armenian.Definitions)
+	}
+	var overrideReason, overrideBySource, overrideRule string
+	if err := db.sql.QueryRowContext(context.Background(), `SELECT override_reason,override_by_source,override_rule
+		FROM files WHERE rel_path='common/culture/cultures/vanilla.txt' AND source_name='game'`).Scan(&overrideReason, &overrideBySource, &overrideRule); err != nil {
+		t.Fatal(err)
+	}
+	if overrideReason != "descriptor_replace_path" || overrideBySource != "godherja" || overrideRule != "common/culture/cultures" {
+		t.Fatalf("replace_path provenance missing: reason=%q by=%q rule=%q", overrideReason, overrideBySource, overrideRule)
+	}
+	trait, err := db.QueryObject(context.Background(), "vanilla_trait")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(trait.Definitions) != 1 || trait.Definitions[0].Source != "game" {
+		t.Fatalf("expected unrelated vanilla path to remain active, got %+v", trait.Definitions)
+	}
+	active, err := collectActiveMapFiles(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := active["history/provinces/vanilla.txt"]; ok {
+		t.Fatal("expected map cache collection to honor history/provinces replace_path")
+	}
+	if _, ok := active["history/provinces/godherja.txt"]; !ok {
+		t.Fatal("expected replacing source history to remain active")
 	}
 }
 

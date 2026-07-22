@@ -32,12 +32,24 @@ database = "cache/ck3_index.sqlite"
 name = "project"
 path = "../my-ck3-mod"
 rank = 1
+role = "project"
+private = true
 
 [[source]]
 name = "game"
 path = "../Crusader Kings III/game"
 rank = 2
+role = "game"
+private = false
 ```
+
+`role` 表示来源身份，`rank` 只表示覆盖优先级；配置必须恰好有一个 `project` 来源。`private = true` 的来源不会进入公开可见性结果。
+
+## 证据索引与刷新边界
+
+`ck3-index` 的职责是把 CK3 文本、索引快照和有限运行时日志组织成可追溯证据，而不是替调用方生成或修改 Mod 内容。来源层由 `role`、`private` 和覆盖 `rank` 三项独立描述；扫描将这份策略写进可重建 SQLite 缓存，MCP 再以相同策略过滤公开结果。
+
+读取工具只消费已发布的索引代次。`ck3_refresh status` 可在未建索引时安全调用，`files` 只对明确列出的工程相对路径做事务性增量更新；任何会改变全局解析语义、暴露低优先级文件或依赖完整地图重建的情况都会返回可恢复的完整扫描要求。`full` 会先在旁路 SQLite 缓存完成新代次，再用一次事务发布到当前缓存；扫描异常或取消只丢弃旁路结果，旧的 ready generation 会继续可读，绝不静默退化。
 
 第一次建立索引：
 
@@ -86,7 +98,7 @@ rank = 2
 标准模式提供日常使用的核心工具；只有兼容旧客户端时才设置 `CK3_INDEX_MCP_PROFILE=expert` 启用旧名称。详细参数见 [MCP 工具参考](docs/MCP_TOOL_REFERENCE.md)。
 
 <!-- BEGIN GENERATED MCP TOOLS -->
-## MCP 工具（标准模式：29；专家模式：57）
+## MCP 工具（标准模式：30；专家模式：58）
 
 标准模式只公开下列规范工具。专家模式还会公开已弃用的兼容名称；在兼容期内，所有旧名称仍然可以调用。
 
@@ -103,6 +115,7 @@ rank = 2
 | `ck3_preflight` | 对已索引目标、拟议完整文件或当前脏文件执行只读门禁。使用 operation 选择目标、补丁或脏文件模式。 |
 | `ck3_impact` | 编辑前分析拟议的新增或更新、删除与重命名操作。返回只读依赖风险与未解析引用风险。 |
 | `ck3_diagnostics` | 无需重新扫描即可检查已缓存的工程诊断。默认返回摘要；explain 可按诊断代码和可选来源字段筛选。 |
+| `ck3_refresh` | 在 Mod 源文件变动后刷新已配置工程层的索引。status 只报告就绪状态；files 只增量更新显式给出的相对路径；full 通过旁路扫描和事务发布完整重建，不会悄悄降级。 |
 | `ck3_script_reference` | 查询一项本地引擎或脚本规则事实。通过 kind 选择作用域、数据类型、值形状、define、on_action、迭代器、示例或修正值。 |
 | `ck3_health` | 检查数据库、结构、索引与 MCP 注册是否可信。返回隐藏路径后的简短健康报告。 |
 | `ck3_package` | 严格验证模型生成的 CK3 文本与二进制文件，统一生成双描述文件，并在受限临时区创建可直接手动安装的 ZIP；不会安装或修改真实 Mod 目录。 |
@@ -131,7 +144,7 @@ rank = 2
 
 ### 兼容模式
 
-只有仍需发现旧版专用工具名的客户端才应设置 `CK3_INDEX_MCP_PROFILE=expert`。新提示词与 `next_queries` 一律使用规范工具名。
+只有仍需发现旧版专用工具名的客户端才应设置 `CK3_INDEX_MCP_PROFILE=expert`。新提示词与 `next_actions` 一律使用规范工具名。
 <!-- END GENERATED MCP TOOLS -->
 
 ## 许可证与发布

@@ -40,7 +40,7 @@ func (db *DB) bindGUIPreviewTextures(ctx context.Context, preview *GUIPreviewRes
 			WHERE f.overridden=0 AND r.resource_path=?`
 		args := []any{path}
 		if !allowProject {
-			query += ` AND r.source_rank>1`
+			query += ` AND EXISTS (SELECT 1 FROM source_layers sl WHERE lower(sl.name)=lower(r.source_name) AND sl.private=0)`
 		}
 		query += ` ORDER BY r.source_rank ASC LIMIT 1`
 		ref := GUITextureRef{Path: path}

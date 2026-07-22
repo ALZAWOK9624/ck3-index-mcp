@@ -260,7 +260,7 @@ func walHealthDegraded(databaseMB, walMB float64) bool {
 
 func (db *DB) tableCounts(ctx context.Context) (map[string]int, error) {
 	out := map[string]int{}
-	for _, table := range []string{"files", "objects", "refs", "localization", "resources", "schema_fields", "object_fields", "diagnostics", "engine_datatypes", "engine_scope_rules", "search_fts"} {
+	for _, table := range []string{"source_layers", "files", "objects", "refs", "localization", "resources", "schema_fields", "object_fields", "diagnostics", "engine_datatypes", "engine_scope_rules", "search_fts"} {
 		if !db.tableExists(ctx, table) {
 			out[table] = 0
 			continue

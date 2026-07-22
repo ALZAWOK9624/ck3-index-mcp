@@ -77,8 +77,8 @@ func refreshRefsResolvedScoped(ctx context.Context, tx *sql.Tx, fileIDs map[int6
 	return nil
 }
 
-func refreshValidatorDiagnosticsScoped(ctx context.Context, tx *sql.Tx, fileIDs map[int64]bool, affected map[string]bool) error {
-	candidateFileIDs, err := validatorCandidateFileIDs(ctx, tx, fileIDs, affected)
+func refreshValidatorDiagnosticsScoped(ctx context.Context, tx *sql.Tx, projectRank int, fileIDs map[int64]bool, affected map[string]bool) error {
+	candidateFileIDs, err := validatorCandidateFileIDs(ctx, tx, projectRank, fileIDs, affected)
 	if err != nil {
 		return err
 	}
@@ -92,7 +92,7 @@ func refreshValidatorDiagnosticsScoped(ctx context.Context, tx *sql.Tx, fileIDs 
 	idWhereRefs, idArgsRefs := fileIDWhere(candidateFileIDs, "r.file_id")
 	rows, err := tx.QueryContext(ctx, `SELECT r.ref_kind,r.ref_name,r.file_id,r.line,r.col,f.path
 		FROM refs r JOIN files f ON f.id=r.file_id
-		WHERE f.source_rank=1 AND `+idWhereRefs, idArgsRefs...)
+		WHERE f.source_rank=? AND `+idWhereRefs, append([]any{projectRank}, idArgsRefs...)...)
 	if err != nil {
 		return err
 	}
@@ -148,7 +148,7 @@ func refreshValidatorDiagnosticsScoped(ctx context.Context, tx *sql.Tx, fileIDs 
 	return rows.Err()
 }
 
-func validatorCandidateFileIDs(ctx context.Context, tx *sql.Tx, seed map[int64]bool, affected map[string]bool) (map[int64]bool, error) {
+func validatorCandidateFileIDs(ctx context.Context, tx *sql.Tx, projectRank int, seed map[int64]bool, affected map[string]bool) (map[int64]bool, error) {
 	out := map[int64]bool{}
 	for id := range seed {
 		out[id] = true
@@ -164,7 +164,7 @@ func validatorCandidateFileIDs(ctx context.Context, tx *sql.Tx, seed map[int64]b
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT r.file_id
 		FROM refs r JOIN files f ON f.id=r.file_id
-		WHERE f.source_rank=1 AND r.ref_name IN (`+ph+`)`, args...)
+		WHERE f.source_rank=? AND r.ref_name IN (`+ph+`)`, append([]any{projectRank}, args...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +183,7 @@ func validatorCandidateFileIDs(ctx context.Context, tx *sql.Tx, seed map[int64]b
 // scan selects its bounded incremental path. A provider can have a small
 // symbol set but a very large consumer set; returning false lets Scan use the
 // proven global finalizer instead of creating an oversized SQL IN clause.
-func scopedValidatorCandidatesFit(ctx context.Context, tx *sql.Tx, seed map[int64]bool, affected map[string]bool, limit int) (bool, error) {
+func scopedValidatorCandidatesFit(ctx context.Context, tx *sql.Tx, projectRank int, seed map[int64]bool, affected map[string]bool, limit int) (bool, error) {
 	if len(seed) > limit {
 		return false, nil
 	}
@@ -203,7 +203,7 @@ func scopedValidatorCandidatesFit(ctx context.Context, tx *sql.Tx, seed map[int6
 	args = append(args, limit+1)
 	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT r.file_id
 		FROM refs r JOIN files f ON f.id=r.file_id
-		WHERE f.source_rank=1 AND r.ref_name IN (`+ph+`) LIMIT ?`, args...)
+		WHERE f.source_rank=? AND r.ref_name IN (`+ph+`) LIMIT ?`, append([]any{projectRank}, args...)...)
 	if err != nil {
 		return false, err
 	}

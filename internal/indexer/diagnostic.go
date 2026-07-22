@@ -13,6 +13,7 @@ type DiagnosticFilter struct {
 	Source     string
 	PathPrefix string
 	Confidence string
+	Page       int
 }
 
 func (db *DB) ExplainDiagnostic(ctx context.Context, code string) ([]Diagnostic, error) {
@@ -20,12 +21,17 @@ func (db *DB) ExplainDiagnostic(ctx context.Context, code string) ([]Diagnostic,
 }
 
 func (db *DB) ExplainDiagnosticFiltered(ctx context.Context, f DiagnosticFilter) ([]Diagnostic, error) {
+	projectSource, err := db.projectSourceName(ctx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := db.sql.QueryContext(ctx, `SELECT d.source,d.severity,d.code,d.message,COALESCE(d.path,''),COALESCE(d.line,0),COALESCE(d.col,0),COALESCE(fi.source_name,d.source_layer,''),d.confidence,d.fingerprint,d.occurrences
 		FROM diagnostics d LEFT JOIN files fi ON fi.id=d.file_id
+		LEFT JOIN source_layers sl ON lower(sl.name)=lower(COALESCE(fi.source_name,d.source_layer,''))
 		WHERE (?='' OR d.code=?) AND (?='' OR fi.source_name=?) AND (?='' OR d.path LIKE ?) AND (?='' OR d.confidence=?)
 		ORDER BY CASE d.severity WHEN 'error' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,
-			CASE WHEN COALESCE(fi.source_name,d.source_layer,'')='project' THEN 0 ELSE 1 END,
-			d.code,d.path,d.line`, f.Code, f.Code, f.Source, f.Source, f.PathPrefix, f.PathPrefix+"%", f.Confidence, f.Confidence)
+			CASE WHEN sl.role=? THEN 0 ELSE 1 END,
+			d.code,d.path,d.line`, f.Code, f.Code, f.Source, f.Source, f.PathPrefix, f.PathPrefix+"%", f.Confidence, f.Confidence, string(SourceRoleProject))
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +54,42 @@ func (db *DB) ExplainDiagnosticFiltered(ctx context.Context, f DiagnosticFilter)
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return aggregateDiagnostics(out), nil
+	return prioritizeProjectDiagnostics(aggregateDiagnostics(out), projectSource), nil
+}
+
+// prioritizeProjectDiagnostics preserves severity ordering while keeping the
+// configured project layer first within a severity class. The source name is
+// resolved from persisted SourceRole metadata, so renamed project sources do
+// not fall behind dependencies merely because they are not named "project".
+func prioritizeProjectDiagnostics(diagnostics []Diagnostic, projectSource string) []Diagnostic {
+	if strings.TrimSpace(projectSource) == "" {
+		return diagnostics
+	}
+	sort.SliceStable(diagnostics, func(i, j int) bool {
+		leftSeverity := diagnosticSeverityOrder(diagnostics[i].Severity)
+		rightSeverity := diagnosticSeverityOrder(diagnostics[j].Severity)
+		if leftSeverity != rightSeverity {
+			return leftSeverity < rightSeverity
+		}
+		leftProject := strings.EqualFold(diagnostics[i].SourceLayer, projectSource)
+		rightProject := strings.EqualFold(diagnostics[j].SourceLayer, projectSource)
+		if leftProject != rightProject {
+			return leftProject
+		}
+		return false
+	})
+	return diagnostics
+}
+
+func diagnosticSeverityOrder(severity string) int {
+	switch severity {
+	case "error":
+		return 0
+	case "warning":
+		return 1
+	default:
+		return 2
+	}
 }
 
 func diagnosticConfidence(code, severity string) string {

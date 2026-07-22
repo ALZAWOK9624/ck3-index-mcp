@@ -23,6 +23,7 @@ func buildCanonicalTools() []ToolDefinition {
 				"source":      stringProperty("Optional indexed source name."),
 				"path_prefix": stringProperty("Optional source-root-relative path prefix."),
 				"limit":       limitProperty(),
+				"page":        pageProperty(),
 				"visibility":  visibilityProperty(),
 			}, "query"),
 			OutputSchema: output, Annotations: annotations, Handler: handleSearch,
@@ -60,7 +61,8 @@ func buildCanonicalTools() []ToolDefinition {
 			Title:       "Inspect CK3 Workspace",
 			Description: "Inspect indexed workspace structure before choosing a specific object. The overview includes object/ref hotspots, override causes, event relations, dynamic refs, and true unresolved refs. on_action_evidence is a bounded read-only reconciliation of live engine, the generated CK3 1.19 snapshot, and adjacent vanilla-comment root contracts.",
 			InputSchema: objectSchema(map[string]any{
-				"operation":  stringProperty("Workspace view.", "overview", "object_types", "on_action_evidence"),
+				"operation":  stringProperty("Workspace view.", "overview", "object_types", "on_action_evidence", "capabilities"),
+				"domain":     stringProperty("Optional capability domain filter for operation=capabilities. Empty and all return every domain.", "all", "semantic", "diagnostics", "map", "gui", "script_reference", "editing", "workspace", "dependencies", "packaging"),
 				"limit":      limitProperty(),
 				"visibility": visibilityProperty(),
 			}),
@@ -138,10 +140,18 @@ func buildCanonicalTools() []ToolDefinition {
 				"path_prefix": stringProperty("Optional source-root-relative path prefix."),
 				"confidence":  stringProperty("Optional confidence filter."),
 				"limit":       limitProperty(),
+				"page":        pageProperty(),
 				"visibility":  visibilityProperty(),
 			}),
 			OutputSchema: output, Annotations: annotations, Handler: handleDiagnostics,
 			CompatibilityProperties: legacyPrivacyProperties,
+		},
+		{
+			Name:         "ck3_refresh",
+			Title:        "Refresh CK3 Index",
+			Description:  "Refresh the configured project source after source files change. status reports index readiness without mutation; files incrementally updates explicitly named source-root-relative project files; full rebuilds in a staged cache and atomically publishes only after it is ready, never silently substituting for files.",
+			InputSchema:  refreshInputSchema(),
+			OutputSchema: output, Annotations: artifactAnnotations(), Handler: handleRefresh,
 		},
 		{
 			Name:        "ck3_script_reference",
@@ -197,6 +207,259 @@ func buildCanonicalTools() []ToolDefinition {
 	}
 	definitions = append(definitions, buildMigrationTools(output)...)
 	definitions = append(definitions, buildCanonicalMapTools(annotations, output)...)
+	definitions = addResponseBudgetProperty(definitions)
+	return standardizeCanonicalToolDescriptions(definitions)
+}
+
+func refreshInputSchema() map[string]any {
+	operation := stringProperty("Refresh operation. status is the default and does not change the index; files incrementally refreshes named project files; full stages and atomically publishes an explicit full scan.", "status", "files", "full")
+	operation["default"] = "status"
+	return objectSchema(map[string]any{
+		"operation": operation,
+		"paths": map[string]any{
+			"type":        "array",
+			"minItems":    1,
+			"maxItems":    64,
+			"description": "Source-root-relative project paths for operation=files. Absolute paths and parent traversal are rejected.",
+			"items":       map[string]any{"type": "string", "minLength": 1, "maxLength": 1024},
+		},
+	})
+}
+
+type catalogToolBoundary struct {
+	When     string
+	DoNotUse string
+	Input    string
+	Returns  string
+	Unlike   string
+}
+
+func standardizeCanonicalToolDescriptions(definitions []ToolDefinition) []ToolDefinition {
+	boundaries := map[string]catalogToolBoundary{
+		"ck3_search": {
+			When:     "the exact CK3 identifier, key, path, or object type is unknown",
+			DoNotUse: "an exact typed identifier is already known; use ck3_inspect instead",
+			Input:    "a text query with optional evidence kind, source, and path prefix",
+			Returns:  "ranked indexed evidence and candidate identifiers",
+			Unlike:   "ck3_inspect, it discovers candidates instead of resolving one exact subject",
+		},
+		"ck3_inspect": {
+			When:     "an exact existing identifier, key, or indexed resource is known",
+			DoNotUse: "the content is an unsaved proposal; use ck3_review instead",
+			Input:    "one exact id plus an optional inspection operation",
+			Returns:  "resolved definitions, references, localization, resources, or comparison evidence",
+			Unlike:   "ck3_search, it is precise rather than candidate discovery",
+		},
+		"ck3_review": {
+			When:     "diagnosing complete proposed CK3 files or the current project files",
+			DoNotUse: "only a single indexed identifier needs inspection; use ck3_inspect instead",
+			Input:    "complete proposed file contents when available, or no files for current dirty files",
+			Returns:  "exploratory parser, scope, reference, localization, and resource findings",
+			Unlike:   "ck3_preflight, it diagnoses rather than acting as a final pass/fail gate",
+		},
+		"ck3_workspace": {
+			When:     "the question concerns workspace-wide structure, indexed object types, supported capabilities, or on_action evidence",
+			DoNotUse: "an exact object or dependency graph is already the target; use ck3_inspect or ck3_dependencies instead",
+			Input:    "a workspace operation and, for capabilities, an optional domain filter",
+			Returns:  "bounded workspace facts, capability availability, or on_action reconciliation evidence",
+			Unlike:   "ck3_search, it summarizes index-wide facts rather than finding one id",
+		},
+		"ck3_dependencies": {
+			When:     "the semantic neighborhood or event topology around one known id is needed",
+			DoNotUse: "the id itself is still unknown; use ck3_search first",
+			Input:    "one event, on_action, or object id with traversal options",
+			Returns:  "bounded callers, callees, paths, cycles, and unresolved dependency evidence",
+			Unlike:   "ck3_impact, it describes existing graph relations rather than a proposed change risk",
+		},
+		"ck3_prepare_edit": {
+			When:     "creating or modifying CK3 content and relevant examples, rules, or conventions are needed first",
+			DoNotUse: "completed files need validation; use ck3_review or ck3_preflight instead",
+			Input:    "an object id, type, or type-qualified term and an optional evidence operation",
+			Returns:  "examples, schema rules, engine evidence, and project conventions",
+			Unlike:   "ck3_review, it prepares authoring and does not validate completed content",
+		},
+		"ck3_preflight": {
+			When:     "a final pass/fail gate is needed before accepting, applying, packaging, or publishing a change",
+			DoNotUse: "the task is exploratory diagnosis; use ck3_review or ck3_inspect first",
+			Input:    "a subject id, complete proposed files, or the explicit dirty-project operation",
+			Returns:  "a bounded release-oriented validation result and blocking findings",
+			Unlike:   "ck3_review, it is the final gate rather than a broad diagnostic pass",
+		},
+		"ck3_impact": {
+			When:     "deleting, renaming, replacing, or substantially changing an existing object",
+			DoNotUse: "only syntax or proposed-file validation is needed; use ck3_review instead",
+			Input:    "complete proposed upsert, delete, or rename file operations",
+			Returns:  "dependency, compatibility, and unresolved-reference risks before editing",
+			Unlike:   "ck3_preflight, it models change impact rather than general acceptance",
+		},
+		"ck3_diagnostics": {
+			When:     "reading diagnostics already produced by the current index generation",
+			DoNotUse: "project source files changed since the last scan; use ck3_refresh first",
+			Input:    "an optional diagnostic operation, code, source, path prefix, and confidence filter",
+			Returns:  "cached diagnostic summaries or explained findings",
+			Unlike:   "ck3_review, it does not parse new proposed content",
+		},
+		"ck3_refresh": {
+			When:     "configured project source files changed and the index must reflect them",
+			DoNotUse: "editing source content itself; refresh never writes Mod source files",
+			Input:    "status, files with source-root-relative project paths, or an explicit full request",
+			Returns:  "index readiness, generation, incremental change counts, diagnostics delta, and full-scan requirements",
+			Unlike:   "ck3_diagnostics, it updates index evidence instead of only reading cached findings",
+		},
+		"ck3_script_reference": {
+			When:     "a local CK3 engine or script-rule fact needs authoritative indexed evidence",
+			DoNotUse: "the question is about a project object definition or dependency; use ck3_inspect or ck3_dependencies instead",
+			Input:    "a reference family and one engine or script key",
+			Returns:  "scope, datatype, shape, define, on_action, iterator, example, or modifier evidence",
+			Unlike:   "ck3_prepare_edit, it retrieves one reference fact rather than combined authoring context",
+		},
+		"ck3_health": {
+			When:     "checking whether the MCP registration and index database are trustworthy",
+			DoNotUse: "the task is to diagnose CK3 source logic; use ck3_diagnostics or ck3_review instead",
+			Input:    "no arguments",
+			Returns:  "a path-redacted database, schema, and registration health report",
+			Unlike:   "ck3_refresh, it observes health and does not update the index",
+		},
+		"ck3_package": {
+			When:     "a validated set of Mod files must be packaged into a portable installation artifact",
+			DoNotUse: "the goal is to modify a live Mod directory or merely inspect source; use review tools instead",
+			Input:    "package metadata and complete text or binary file contents",
+			Returns:  "validated descriptors and a temporary portable ZIP artifact",
+			Unlike:   "ck3_preflight, it creates a controlled artifact after validation rather than only reporting a gate",
+		},
+		"ck3_gui": {
+			When:     "inspecting indexed GUI structure, dependencies, or a bounded static preview",
+			DoNotUse: "the task requires executing arbitrary Jomini UI code or a live game UI session",
+			Input:    "a GUI operation with an optional indexed path, symbol, and bounded preview samples",
+			Returns:  "GUI structure, cross-file resolution, or static preview artifacts",
+			Unlike:   "ck3_inspect, it understands GUI syntax and visual layout-specific relationships",
+		},
+		"map_migration_snapshot": {
+			When:     "an upstream map update needs a durable old-upstream/project migration baseline",
+			DoNotUse: "only current map evidence is needed; use the read-only map tools instead",
+			Input:    "configured project and old-upstream source names",
+			Returns:  "a content-addressed migration snapshot in the controlled artifact area",
+			Unlike:   "map_province_mapping, it persists a baseline rather than calculating one raster comparison",
+		},
+		"map_province_migration": {
+			When:     "a previously captured map migration snapshot must be replayed against a configured new upstream",
+			DoNotUse: "the mapping is still being investigated; use map_province_mapping first",
+			Input:    "a snapshot id, configured target, and explicit controls or conflict resolutions",
+			Returns:  "a conservative local test fork and migration validation evidence",
+			Unlike:   "map_migration_snapshot, it performs the controlled replay rather than capturing the baseline",
+		},
+		"map_asset_audit": {
+			When:     "checking active map raster, province-definition, or river-topology integrity",
+			DoNotUse: "the task is to compare a specific province's political context; use map_province_info instead",
+			Input:    "an optional asset-audit operation",
+			Returns:  "read-only asset coverage, encoding, palette, and topology findings",
+			Unlike:   "map_physical_context, it audits source assets rather than describing a selected geography",
+		},
+		"map_province_mapping": {
+			When:     "two configured province-map versions must be compared for migration evidence",
+			DoNotUse: "only one active map or one province needs inspection; use map_province_info instead",
+			Input:    "configured source and target maps plus optional control points and mapping thresholds",
+			Returns:  "auditable overlap shares and province split, merge, renumber, or unmapped groups",
+			Unlike:   "map_province_migration, it only calculates comparison evidence and writes no converter output",
+		},
+		"map_province_info": {
+			When:     "one province or title's exact map, title, terrain, and neighbor context is needed",
+			DoNotUse: "a multi-hop topology question is needed; use map_neighbors instead",
+			Input:    "one province or landed-title selector and an optional history year",
+			Returns:  "read-only geometry, titles, terrain, textures, and direct boundary context",
+			Unlike:   "map_physical_context, it begins with one exact administrative subject",
+		},
+		"map_physical_context": {
+			When:     "terrain, elevation, hydrology, oceanography, materials, or physical barriers must be analyzed",
+			DoNotUse: "only title holders or culture/faith history is needed; use map_title_context instead",
+			Input:    "a target selector family, one or more targets, and a physical-context operation",
+			Returns:  "separated observed, derived, and inferred physical-geography evidence",
+			Unlike:   "map_province_info, it supports regional and physical analysis beyond one province record",
+		},
+		"map_neighbors": {
+			When:     "a bounded geographic neighborhood around a province or title is needed",
+			DoNotUse: "only a pairwise spatial comparison is needed; use map_spatial_relation instead",
+			Input:    "one map subject, a bounded radius, and an optional year",
+			Returns:  "neighbor groups, directions, distances, and boundary classifications",
+			Unlike:   "map_strategic_passages, it traverses general adjacency rather than explicit special links",
+		},
+		"map_spatial_relation": {
+			When:     "the exact spatial relation between two selected map subjects is needed",
+			DoNotUse: "a route or a full neighborhood is needed; use map_route or map_neighbors instead",
+			Input:    "two province or title selectors and an optional year",
+			Returns:  "centroid delta, bearing, distance, direct-border, and barrier evidence",
+			Unlike:   "map_neighbors, it compares one pair instead of traversing a neighborhood",
+		},
+		"map_strategic_passages": {
+			When:     "explicit straits, crossings, gateways, or other special passages are relevant",
+			DoNotUse: "ordinary pixel-border adjacency is sufficient; use map_neighbors instead",
+			Input:    "an optional target and special-passage kind filter",
+			Returns:  "read-only explicit passage evidence separated from ordinary neighbors",
+			Unlike:   "map_neighbors, it only covers authored or classified special links",
+		},
+		"map_title_context": {
+			When:     "one landed title's province coverage, holder, culture, faith, and neighbors are needed",
+			DoNotUse: "the question is purely physical terrain or water; use map_physical_context instead",
+			Input:    "one landed-title id and an optional history year",
+			Returns:  "read-only historical, administrative, and visual title context",
+			Unlike:   "map_province_info, it is title-centered rather than province-centered",
+		},
+		"map_assignment_plan": {
+			When:     "review-only religion or placeholder-character assignment recommendations are needed",
+			DoNotUse: "a live source edit should be performed; this tool never applies a patch",
+			Input:    "a province or title target, assignment mode, and optional year",
+			Returns:  "auditable recommendations and private patch previews when allowed",
+			Unlike:   "ck3_package, it plans assignments and produces no installation artifact",
+		},
+		"map_building_candidates": {
+			When:     "ranking special-building candidates for one province or landed title",
+			DoNotUse: "a general physical map report is enough; use map_physical_context instead",
+			Input:    "a province or title target and optional history year",
+			Returns:  "ranked terrain, holding, water, culture, and border evidence",
+			Unlike:   "map_assignment_plan, it ranks building suitability rather than assignment recommendations",
+		},
+		"map_recipe_catalog": {
+			When:     "choosing supported map metric or render recipes before constructing a request",
+			DoNotUse: "a concrete metric is already specified; use map_build_metric instead",
+			Input:    "no required arguments",
+			Returns:  "supported levels, transforms, layers, palettes, and guidance",
+			Unlike:   "map_build_metric, it lists capabilities without calculating values",
+		},
+		"map_build_metric": {
+			When:     "an auditable indexed or source-noted map metric must be calculated before rendering",
+			DoNotUse: "only an existing recipe list is needed; use map_recipe_catalog instead",
+			Input:    "a bounded metric specification, values, transforms, and output limits",
+			Returns:  "metric values, quantiles, outliers, provenance, and warnings",
+			Unlike:   "map_render, it calculates data rather than rendering an atlas image",
+		},
+		"map_route": {
+			When:     "a deterministic legal land, sea, or mixed route between two map subjects is needed",
+			DoNotUse: "only direct spatial relation is needed; use map_spatial_relation instead",
+			Input:    "origin, destination, route mode, and bounded routing options",
+			Returns:  "route points, legs, corridor context, diagnostics, and distance caveats",
+			Unlike:   "map_neighbors, it solves one constrained path rather than listing local adjacency",
+		},
+		"map_render": {
+			When:     "a read-only CK3 map visualization is needed from indexed map data",
+			DoNotUse: "only raw metric data is needed; use map_build_metric instead",
+			Input:    "a bounded render specification, layers, styling, and optional route context",
+			Returns:  "structured render metadata and an in-memory PNG artifact",
+			Unlike:   "map_build_metric, it renders a visualization instead of calculating the underlying metric alone",
+		},
+	}
+	for i := range definitions {
+		boundary, ok := boundaries[definitions[i].Name]
+		if !ok {
+			boundary = catalogToolBoundary{
+				When:     "the documented capability is the narrowest source of evidence or computation for the task",
+				DoNotUse: "a more specific canonical tool applies",
+				Input:    "the documented JSON schema",
+				Returns:  "the documented bounded result",
+				Unlike:   "unrelated canonical tools, it serves one atomic capability",
+			}
+		}
+		definitions[i].Description = "Use when " + boundary.When + ". Do not use " + boundary.DoNotUse + ". Input: " + boundary.Input + ". Returns: " + boundary.Returns + ". Unlike " + boundary.Unlike + ". " + definitions[i].Description
+	}
 	return definitions
 }
 

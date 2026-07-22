@@ -40,6 +40,30 @@ type ScanStats struct {
 	TimingsMillis map[string]int64     `json:"timings_ms,omitempty"`
 	BySource      map[string]int       `json:"by_source"`
 	WALCheckpoint *WALCheckpointResult `json:"wal_checkpoint,omitempty"`
+	// Incremental refresh metadata is populated only by ScanFiles. Keeping it
+	// on ScanStats preserves the established CLI return type while exposing the
+	// agent-facing facts required to decide the next safe action.
+	ChangedFiles            int                  `json:"changed_files,omitempty"`
+	RemovedFiles            int                  `json:"removed_files,omitempty"`
+	MissingFiles            []string             `json:"missing_files,omitempty"`
+	PathOutcomes            []RefreshPathOutcome `json:"path_outcomes,omitempty"`
+	ChangedSymbols          []string             `json:"changed_symbols,omitempty"`
+	ChangedSymbolsTruncated bool                 `json:"changed_symbols_truncated,omitempty"`
+	DiagnosticDelta         *DiagnosticDelta     `json:"diagnostic_delta,omitempty"`
+}
+
+type DiagnosticDelta struct {
+	Added     int `json:"added"`
+	Resolved  int `json:"resolved"`
+	Remaining int `json:"remaining"`
+}
+
+// RefreshPathOutcome makes deletion, a never-indexed missing path, a no-op,
+// and a reparsed path unambiguous without asking an MCP client to infer state
+// from aggregate counters.
+type RefreshPathOutcome struct {
+	Path   string `json:"path"`
+	Status string `json:"status"`
 }
 
 type scanWriter struct {
@@ -84,12 +108,23 @@ const (
 )
 
 func Scan(ctx context.Context, cfg Config) (ScanStats, error) {
-	return scanWithMode(ctx, cfg, cfg.ForceClean)
+	normalized, err := NormalizeConfig(cfg)
+	if err != nil {
+		return ScanStats{}, err
+	}
+	return scanWithMode(ctx, normalized, normalized.ForceClean)
 }
 
-func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, error) {
+func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanStats, resultErr error) {
 	start := time.Now()
 	if err := validateSources(cfg.Sources); err != nil {
+		return ScanStats{}, err
+	}
+	if err := validateSourceRoots(cfg.Sources); err != nil {
+		return ScanStats{}, err
+	}
+	project, err := ProjectSource(cfg)
+	if err != nil {
 		return ScanStats{}, err
 	}
 	if err := ConfigureEngineRules(cfg.EngineLogs); err != nil {
@@ -104,6 +139,13 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 		return ScanStats{}, err
 	}
 	defer db.Close()
+	defer func() {
+		if resultErr != nil {
+			db.recordScanFailure(context.Background(), resultErr)
+			return
+		}
+		db.clearScanFailure(context.Background())
+	}()
 	// This database is a rebuildable cache. Scans do large write batches, so
 	// avoid growing a huge WAL file that can make commit/checkpoint look hung.
 	fmt.Fprintln(os.Stderr, "[scan] preparing sqlite cache")
@@ -145,7 +187,7 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 			forceClean = true
 		}
 	}
-	stats := ScanStats{Database: dbPath, BySource: map[string]int{}, TimingsMillis: map[string]int64{}}
+	stats = ScanStats{Database: dbPath, BySource: map[string]int{}, TimingsMillis: map[string]int64{}}
 
 	existing := map[string]fileRecord{}
 	if !forceClean {
@@ -205,6 +247,9 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 		return ScanStats{}, err
 	}
 	defer tx.Rollback()
+	if err := syncSourceLayers(ctx, tx, cfg.Sources); err != nil {
+		return ScanStats{}, err
+	}
 	ftsCurrent := false
 	if !forceClean && ftsPresentBeforeSchema && db.tableExists(ctx, "search_fts") {
 		ftsCurrent, err = searchFTSCacheMatches(ctx, tx)
@@ -283,6 +328,9 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 				}
 				return nil
 			}
+			if d.Type()&os.ModeSymlink != 0 {
+				return fmt.Errorf("source %q contains symbolic link at %s", src.Name, rel)
+			}
 			kind := classifyRel(rel)
 			if kind == "" {
 				return nil
@@ -339,6 +387,12 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 	}
 	stats.Overridden = overriddenCount
 
+	// The parser workers intentionally run ahead of SQLite writes. Tie their
+	// lifetime to this scan so a failed/cancelled full refresh cannot leave a
+	// producer blocked on jobsCh or workers blocked on resCh after the caller
+	// has already returned.
+	workerCtx, cancelWorkers := context.WithCancel(ctx)
+	defer cancelWorkers()
 	jobsCh := make(chan fileJob, 256)
 	resCh := make(chan fileResult, 256)
 	workers := runtime.GOMAXPROCS(0)
@@ -353,14 +407,18 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			parseFileWorker(jobsCh, resCh)
+			parseFileWorker(workerCtx, jobsCh, resCh)
 		}()
 	}
 	go func() {
+		defer close(jobsCh)
 		for _, j := range jobs {
-			jobsCh <- j
+			select {
+			case jobsCh <- j:
+			case <-workerCtx.Done():
+				return
+			}
 		}
-		close(jobsCh)
 	}()
 	go func() {
 		wg.Wait()
@@ -437,7 +495,17 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 		varStmt:    varStmt,
 	}
 
-	for res := range resCh {
+	for {
+		var res fileResult
+		var open bool
+		select {
+		case <-ctx.Done():
+			return ScanStats{}, ctx.Err()
+		case res, open = <-resCh:
+			if !open {
+				goto parsedFilesComplete
+			}
+		}
 		processed++
 		if processed%progressEvery == 0 {
 			fmt.Fprintf(os.Stderr, "[scan] %d/%d files indexed\n", processed, len(jobs))
@@ -446,6 +514,9 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 		tracked[res.job.path] = true
 		stats.Files++
 		stats.BySource[src.Name]++
+		if res.err != nil {
+			return ScanStats{}, fmt.Errorf("read source file %s: %w", res.job.rel, res.err)
+		}
 		if res.skip {
 			if err := refreshSkippedFileMetadata(ctx, tx, res); err != nil {
 				return ScanStats{}, err
@@ -495,6 +566,8 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 			return ScanStats{}, err
 		}
 	}
+
+parsedFilesComplete:
 	fmt.Fprintf(os.Stderr, "[scan] all %d files indexed, finalizing\n", processed)
 
 	for path, ex := range existing {
@@ -543,7 +616,7 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 		// A tiny provider edit can fan out to many consumers. Keep the scoped
 		// validator below its SQL batch limit; a broad fan-out is still correct,
 		// but is better served by the established global finalizer.
-		fits, err := scopedValidatorCandidatesFit(ctx, tx, newFileIDs, affected, scopedValidatorFileLimit)
+		fits, err := scopedValidatorCandidatesFit(ctx, tx, project.Rank, newFileIDs, affected, scopedValidatorFileLimit)
 		if err != nil {
 			return ScanStats{}, err
 		}
@@ -594,7 +667,7 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 
 		fmt.Fprintln(os.Stderr, "[scan] writing changed validation diagnostics only")
 		stageStart = time.Now()
-		if err := refreshValidatorDiagnosticsScoped(ctx, tx, newFileIDs, affected); err != nil {
+		if err := refreshValidatorDiagnosticsScoped(ctx, tx, project.Rank, newFileIDs, affected); err != nil {
 			return ScanStats{}, err
 		}
 		// Title/duplicate integrity is a graph-level invariant. Keep its proven
@@ -638,7 +711,7 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (ScanStats, 
 		if _, err := tx.ExecContext(ctx, `DELETE FROM diagnostics WHERE source='validator'`); err != nil {
 			return ScanStats{}, err
 		}
-		if err := addValidationDiagnostics(ctx, tx, locKeys, resources, objectNames); err != nil {
+		if err := addValidationDiagnostics(ctx, tx, project.Rank, locKeys, resources, objectNames); err != nil {
 			return ScanStats{}, err
 		}
 		if err := refreshTitleIntegrityDiagnostics(ctx, tx); err != nil {
@@ -1249,6 +1322,7 @@ type fileResult struct {
 	ctxDiags      []ctxDiag
 	savedScopes   []string
 	variables     []string
+	err           error
 }
 
 type ctxDiag struct {
@@ -1259,9 +1333,24 @@ type ctxDiag struct {
 // parseFileWorker reads, hashes, and parses one file off the channel,
 // returning a result that the main goroutine inserts into the database.
 // Keeping parsing parallel but DB writes serial avoids SQLite contention.
-func parseFileWorker(jobs <-chan fileJob, res chan<- fileResult) {
-	for j := range jobs {
-		res <- parseOneFile(j)
+func parseFileWorker(ctx context.Context, jobs <-chan fileJob, res chan<- fileResult) {
+	for {
+		var job fileJob
+		var open bool
+		select {
+		case <-ctx.Done():
+			return
+		case job, open = <-jobs:
+			if !open {
+				return
+			}
+		}
+		result := parseOneFile(job)
+		select {
+		case <-ctx.Done():
+			return
+		case res <- result:
+		}
 	}
 }
 
@@ -1300,13 +1389,13 @@ func parseOneFile(j fileJob) fileResult {
 	// Overridden files are metadata-only on the normal scan path. This keeps
 	// incremental scans fast; deeper override analysis belongs in validation.
 	if j.overridden {
-		info, err := os.Stat(j.path)
+		info, err := sourceRegularFileInfo(j.path)
 		if err != nil {
-			return fileResult{job: j, overridden: true}
+			return fileResult{job: j, overridden: true, err: err}
 		}
 		sum, err := shaFile(j.path)
 		if err != nil {
-			sum = ""
+			return fileResult{job: j, overridden: true, err: err}
 		}
 		if j.prev.ID != 0 && sum != "" && sum == j.prev.SHA && j.prev.Overridden &&
 			j.prev.SourceName == j.src.Name && j.prev.SourceRank == j.src.Rank && j.prev.Kind == j.kind &&
@@ -1317,9 +1406,9 @@ func parseOneFile(j fileJob) fileResult {
 		return fileResult{job: j, info: info, sum: sum, overridden: true}
 	}
 
-	info, err := os.Stat(j.path)
+	info, err := sourceRegularFileInfo(j.path)
 	if err != nil {
-		return fileResult{job: j}
+		return fileResult{job: j, err: err}
 	}
 	// Incremental fast path: text is always hashed for correctness. Large
 	// binary resources may trust nanosecond mtime plus size, avoiding repeated
@@ -1333,7 +1422,7 @@ func parseOneFile(j fileJob) fileResult {
 	}
 	data, err := os.ReadFile(j.path)
 	if err != nil {
-		return fileResult{job: j}
+		return fileResult{job: j, info: info, err: err}
 	}
 	h := sha256.Sum256(data)
 	sum := hex.EncodeToString(h[:])
@@ -1367,14 +1456,21 @@ func parseOneFile(j fileJob) fileResult {
 			}
 		}
 	case "localization":
-		r.locs = parseLocBytes(j.rel, data)
+		r.locs, r.err = parseLocBytes(j.rel, data)
 	case "schema":
-		r.schemaEntries = parseSchemaBytes(j.rel, data)
+		r.schemaEntries, r.err = parseSchemaBytes(j.rel, data)
 	}
 	return r
 }
 
-func parseLocBytes(rel string, data []byte) []locEntry {
+const (
+	localizationScannerInitialBuffer = 1 << 20
+	localizationScannerMaxToken      = 16 << 20
+	schemaScannerInitialBuffer       = 1 << 20
+	schemaScannerMaxToken            = 4 << 20
+)
+
+func parseLocBytes(rel string, data []byte) ([]locEntry, error) {
 	lang := languageFromPath(rel)
 	replace := 0
 	if strings.Contains(filepath.ToSlash(strings.ToLower(rel)), "/replace/") {
@@ -1382,7 +1478,7 @@ func parseLocBytes(rel string, data []byte) []locEntry {
 	}
 	var out []locEntry
 	sc := bufio.NewScanner(strings.NewReader(string(data)))
-	sc.Buffer(make([]byte, 1024*1024), 16*1024*1024)
+	sc.Buffer(make([]byte, localizationScannerInitialBuffer), localizationScannerMaxToken)
 	line := 0
 	for sc.Scan() {
 		line++
@@ -1395,21 +1491,24 @@ func parseLocBytes(rel string, data []byte) []locEntry {
 		val = strings.TrimSuffix(val, `"`)
 		out = append(out, locEntry{key: m[1], lang: lang, val: val, line: line, replace: replace})
 	}
-	return out
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("scan localization %s: %w", rel, err)
+	}
+	return out, nil
 }
 
-func parseSchemaBytes(rel string, data []byte) []schemaEntry {
+func parseSchemaBytes(rel string, data []byte) ([]schemaEntry, error) {
 	typ := objectTypeForPath(strings.ToLower(rel))
 	if typ == "" && strings.Contains(strings.ToLower(rel), "events/") {
 		typ = "event"
 	}
 	if typ == "" {
-		return nil
+		return nil, nil
 	}
 	var out []schemaEntry
 	seen := map[string]bool{}
 	sc := bufio.NewScanner(strings.NewReader(string(data)))
-	sc.Buffer(make([]byte, 1024*1024), 4*1024*1024)
+	sc.Buffer(make([]byte, schemaScannerInitialBuffer), schemaScannerMaxToken)
 	line := 0
 	for sc.Scan() {
 		line++
@@ -1430,7 +1529,10 @@ func parseSchemaBytes(rel string, data []byte) []schemaEntry {
 		seen[key] = true
 		out = append(out, schemaEntry{typ: typ, field: field, line: line, raw: strings.TrimSpace(raw)})
 	}
-	return out
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("scan schema %s: %w", rel, err)
+	}
+	return out, nil
 }
 
 func insertLocEntries(ctx context.Context, tx *sql.Tx, rec fileRecord, entries []locEntry, seen map[string]bool) (int, error) {
@@ -3081,7 +3183,7 @@ func insertDiag(ctx context.Context, tx *sql.Tx, source, severity, code, msg str
 		source, severity, code, msg, fileID, path, line, col)
 }
 
-func addValidationDiagnostics(ctx context.Context, tx *sql.Tx, locSeen, resSeen, objSeen map[string]bool) error {
+func addValidationDiagnostics(ctx context.Context, tx *sql.Tx, projectRank int, locSeen, resSeen, objSeen map[string]bool) error {
 	rows, err := tx.QueryContext(ctx, `SELECT r.ref_kind,r.ref_name,r.file_id,r.line,r.col,f.path,f.source_rank
 		FROM refs r JOIN files f ON f.id=r.file_id`)
 	if err != nil {
@@ -3095,7 +3197,7 @@ func addValidationDiagnostics(ctx context.Context, tx *sql.Tx, locSeen, resSeen,
 		if err := rows.Scan(&kind, &name, &fileID, &line, &col, &path, &sourceRank); err != nil {
 			return err
 		}
-		if sourceRank != 1 {
+		if sourceRank != projectRank {
 			continue
 		}
 		switch kind {

@@ -2,10 +2,10 @@ package indexer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -593,7 +593,9 @@ func TestScanFilesRejectsEngineRuleDrift(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(logs, "on_actions.log"), []byte("on_fixture:\nExpected Scope: none\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ScanFiles(ctx, cfg, []string{"common/decisions/fixture.txt"}); err == nil || !strings.Contains(err.Error(), "changed engine log rules") {
+	_, err := ScanFiles(ctx, cfg, []string{"common/decisions/fixture.txt"})
+	var fullRequired *FullScanRequiredError
+	if !errors.As(err, &fullRequired) || fullRequired.Reason != "engine log rules changed" {
 		t.Fatalf("engine rule drift did not force full scan: %v", err)
 	}
 }

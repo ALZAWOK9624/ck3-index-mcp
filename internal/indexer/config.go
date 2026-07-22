@@ -33,10 +33,190 @@ type Config struct {
 	ForceClean             bool
 }
 
+// SourceRole identifies why a configured source exists. Rank remains solely
+// responsible for CK3 override precedence; callers must not infer a source's
+// identity from its name or rank.
+type SourceRole string
+
+const (
+	SourceRoleProject    SourceRole = "project"
+	SourceRoleDependency SourceRole = "dependency"
+	SourceRoleGame       SourceRole = "game"
+	SourceRoleReference  SourceRole = "reference"
+)
+
 type Source struct {
-	Name string
-	Path string
-	Rank int
+	Name    string
+	Path    string
+	Rank    int
+	Role    SourceRole
+	Private bool
+
+	// privateSet lets TOML retain an explicit private=false for a project
+	// source while old configurations continue to receive safe defaults.
+	privateSet bool
+}
+
+// NormalizeConfig fills compatibility defaults for old source blocks and
+// validates the resulting source model. New callers should use its returned
+// configuration rather than deriving project/game identity from rank or name.
+func NormalizeConfig(cfg Config) (Config, error) {
+	sources, err := normalizeSources(cfg.Sources)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Sources = sources
+	return cfg, nil
+}
+
+func normalizeSources(sources []Source) ([]Source, error) {
+	return normalizeSourcesWithProject(sources, true)
+}
+
+// normalizeSourcesWithProject is used by documentation-only game-source
+// readers as well as full workspace configuration. A game-only fixture can
+// legitimately lack a project source; scanning and refresh still use the
+// strict public normalizeSources entry point above.
+func normalizeSourcesWithProject(sources []Source, requireProject bool) ([]Source, error) {
+	out := append([]Source(nil), sources...)
+	// Old configs encoded identity only indirectly through conventional source
+	// names and ranks. Preserve them once at the config boundary: reserve the
+	// old game slot, then choose the lowest-precedence non-game legacy source as
+	// the project. Runtime code below this boundary only sees explicit roles.
+	hasExplicitProject := false
+	for _, source := range out {
+		if SourceRole(strings.ToLower(strings.TrimSpace(string(source.Role)))) == SourceRoleProject {
+			hasExplicitProject = true
+			break
+		}
+	}
+	legacyProject := -1
+	if !hasExplicitProject {
+		for index, source := range out {
+			if strings.TrimSpace(string(source.Role)) != "" || legacyGameSource(source) {
+				continue
+			}
+			if legacyProject < 0 || source.Rank < out[legacyProject].Rank {
+				legacyProject = index
+			}
+		}
+	}
+	names := map[string]bool{}
+	ranks := map[int]bool{}
+	projects := 0
+	for index := range out {
+		source := &out[index]
+		name := strings.TrimSpace(source.Name)
+		if name == "" {
+			return nil, fmt.Errorf("source %d has no name", index+1)
+		}
+		if strings.TrimSpace(source.Path) == "" {
+			return nil, fmt.Errorf("source %q has no path", name)
+		}
+		if source.Rank <= 0 {
+			return nil, fmt.Errorf("source %q rank must be a positive integer", name)
+		}
+		nameKey := strings.ToLower(name)
+		if names[nameKey] {
+			return nil, fmt.Errorf("duplicate source name %q", name)
+		}
+		if ranks[source.Rank] {
+			return nil, fmt.Errorf("duplicate source rank %d; source precedence must be unambiguous", source.Rank)
+		}
+		names[nameKey] = true
+		ranks[source.Rank] = true
+
+		inputRole := SourceRole(strings.ToLower(strings.TrimSpace(string(source.Role))))
+		role := inputRole
+		if role == "" {
+			// Compatibility migration only: historical configs did not carry a
+			// role. The normalized Source always does, and all operational code
+			// below this boundary uses Role rather than repeating this heuristic.
+			switch {
+			case legacyGameSource(*source):
+				role = SourceRoleGame
+			case index == legacyProject:
+				role = SourceRoleProject
+			default:
+				role = SourceRoleDependency
+			}
+		}
+		switch role {
+		case SourceRoleProject, SourceRoleDependency, SourceRoleGame, SourceRoleReference:
+		default:
+			return nil, fmt.Errorf("source %q has unsupported role %q", name, source.Role)
+		}
+		source.Role = role
+		// A role-less source is a legacy configuration, so retain the former
+		// safe project default. An explicit Source.Role supplied through the Go
+		// API may intentionally set Private=false and must be preserved.
+		if !source.privateSet && inputRole == "" && role == SourceRoleProject {
+			source.Private = true
+		}
+		if role == SourceRoleProject {
+			projects++
+		}
+	}
+	if requireProject && projects != 1 {
+		return nil, fmt.Errorf("configuration requires exactly one project source, found %d", projects)
+	}
+	return out, nil
+}
+
+func legacyGameSource(source Source) bool {
+	switch strings.ToLower(strings.TrimSpace(source.Name)) {
+	case "game", "vanilla", "ck3":
+		return true
+	default:
+		return false
+	}
+}
+
+// ProjectSource returns the one configured writable-project identity. It does
+// not make any filesystem writeability claim: refresh only reads source files.
+func ProjectSource(cfg Config) (Source, error) {
+	normalized, err := NormalizeConfig(cfg)
+	if err != nil {
+		return Source{}, err
+	}
+	for _, source := range normalized.Sources {
+		if source.Role == SourceRoleProject {
+			return source, nil
+		}
+	}
+	return Source{}, fmt.Errorf("configuration has no project source")
+}
+
+// GameSource returns the configured CK3 game installation, if one exists.
+func GameSource(cfg Config) (Source, bool) {
+	sources, err := normalizeSourcesWithProject(cfg.Sources, false)
+	if err != nil {
+		return Source{}, false
+	}
+	for _, source := range sources {
+		if source.Role == SourceRoleGame && strings.TrimSpace(source.Path) != "" {
+			return source, true
+		}
+	}
+	return Source{}, false
+}
+
+// PrivateSourceNames supplies the source-name policy used by public MCP
+// filtering. Patch evidence is handled separately because it is never a
+// configured source.
+func PrivateSourceNames(cfg Config) map[string]bool {
+	normalized, err := NormalizeConfig(cfg)
+	if err != nil {
+		return nil
+	}
+	result := make(map[string]bool, len(normalized.Sources))
+	for _, source := range normalized.Sources {
+		// Keep both true and false entries. Public filtering is fail-closed for
+		// unknown provenance, so omitting an explicitly public source would
+		// accidentally redact it as if it were unknown.
+		result[strings.ToLower(source.Name)] = source.Private
+	}
+	return result
 }
 
 func sourceReplacePaths(src Source) ([]string, error) {
@@ -52,6 +232,9 @@ func sourceReplacePaths(src Source) ([]string, error) {
 		if entry.IsDir() {
 			continue
 		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("source %q descriptor entry must not be a symbolic link", src.Name)
+		}
 		name := strings.ToLower(entry.Name())
 		if name == "descriptor.mod" || strings.HasSuffix(name, ".mod") {
 			descriptors = append(descriptors, filepath.Join(src.Path, entry.Name()))
@@ -61,6 +244,9 @@ func sourceReplacePaths(src Source) ([]string, error) {
 	seen := map[string]bool{}
 	var out []string
 	for _, path := range descriptors {
+		if _, err := sourceRegularFileInfo(path); err != nil {
+			return nil, err
+		}
 		f, err := os.Open(path)
 		if err != nil {
 			return nil, err
@@ -240,6 +426,15 @@ func LoadConfig(path string) (Config, error) {
 				return Config{}, fmt.Errorf("source rank must be a positive integer, got %q", val)
 			}
 			cur.Rank = n
+		case "role":
+			cur.Role = SourceRole(strings.ToLower(val))
+		case "private":
+			private, err := strconv.ParseBool(val)
+			if err != nil {
+				return Config{}, fmt.Errorf("source private must be true or false")
+			}
+			cur.Private = private
+			cur.privateSet = true
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -251,8 +446,17 @@ func LoadConfig(path string) (Config, error) {
 	if len(cfg.Sources) == 0 {
 		return Config{}, fmt.Errorf("no sources configured in %s", path)
 	}
-	if err := validateSources(cfg.Sources); err != nil {
-		return Config{}, err
+	// TOML cannot distinguish an omitted bool from false after decoding. Keep
+	// the file-format default conservative for explicitly declared project
+	// sources while allowing programmatic Config callers to use Private=false.
+	for i := range cfg.Sources {
+		if cfg.Sources[i].Role == SourceRoleProject && !cfg.Sources[i].privateSet {
+			cfg.Sources[i].Private = true
+		}
+	}
+	var normalizeErr error
+	if cfg, normalizeErr = NormalizeConfig(cfg); normalizeErr != nil {
+		return Config{}, normalizeErr
 	}
 	if cfg.ArtifactRoot == "" {
 		cfg.ArtifactRoot = resolveConfigPath(filepath.Dir(absPath), "cache/artifacts")
@@ -293,30 +497,8 @@ func LoadConfig(path string) (Config, error) {
 }
 
 func validateSources(sources []Source) error {
-	names := map[string]bool{}
-	ranks := map[int]bool{}
-	for index, source := range sources {
-		name := strings.TrimSpace(source.Name)
-		if name == "" {
-			return fmt.Errorf("source %d has no name", index+1)
-		}
-		if strings.TrimSpace(source.Path) == "" {
-			return fmt.Errorf("source %q has no path", name)
-		}
-		if source.Rank <= 0 {
-			return fmt.Errorf("source %q rank must be a positive integer", name)
-		}
-		nameKey := strings.ToLower(name)
-		if names[nameKey] {
-			return fmt.Errorf("duplicate source name %q", name)
-		}
-		if ranks[source.Rank] {
-			return fmt.Errorf("duplicate source rank %d; source precedence must be unambiguous", source.Rank)
-		}
-		names[nameKey] = true
-		ranks[source.Rank] = true
-	}
-	return nil
+	_, err := normalizeSources(sources)
+	return err
 }
 
 // ConfiguredDatabasePath is the single authority for resolving the index

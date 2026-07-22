@@ -84,7 +84,7 @@ type provinceDefinitionAudit struct {
 
 // AuditMapAssets performs a bounded, read-only audit of the active map files.
 // operation is summary, provinces, or rivers. The caller is responsible for
-// removing rank=1 sources when public visibility is requested.
+// removing sources marked private when public visibility is requested.
 func AuditMapAssets(ctx context.Context, cfg Config, operation string, limit int) (MapAssetAuditResult, error) {
 	operation = strings.ToLower(strings.TrimSpace(operation))
 	if operation == "" {

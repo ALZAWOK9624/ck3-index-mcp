@@ -31,7 +31,7 @@ func (db *DB) QueryExamples(ctx context.Context, typ, contains string, limit int
 		limit = 12
 	}
 	q := ExampleQuery{Type: typ, Contains: contains}
-	args := []any{typ}
+	args := []any{typ, string(SourceRoleGame), string(SourceRoleProject)}
 	where := "o.object_type=?"
 	sqlLimit := limit
 	if contains != "" {
@@ -40,8 +40,10 @@ func (db *DB) QueryExamples(ctx context.Context, typ, contains string, limit int
 	args = append(args, sqlLimit)
 	rows, err := db.sql.QueryContext(ctx, `SELECT o.object_type,o.name,o.source_name,o.source_rank,o.path,o.line
 		FROM objects o JOIN files f ON f.id=o.file_id
+		LEFT JOIN source_layers sl ON lower(sl.name)=lower(o.source_name)
 		WHERE f.overridden=0 AND `+where+`
-		ORDER BY CASE o.source_name WHEN 'game' THEN 0 WHEN 'godherja' THEN 1 WHEN 'project' THEN 2 ELSE 3 END,
+		ORDER BY CASE sl.role WHEN ? THEN 0 WHEN ? THEN 2 ELSE 1 END,
+			o.source_rank,
 			LENGTH(o.name), o.path, o.line
 		LIMIT ?`, args...)
 	if err != nil {

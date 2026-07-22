@@ -3,14 +3,46 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	"ck3-index/internal/indexer"
 )
 
 func requireMapDatabase(ctx context.Context, runtime *Runtime) error {
-	return runtime.DB.RequireMapDatabase(ctx)
+	if err := runtime.DB.RequireMapDatabase(ctx); err != nil {
+		return newToolError(ErrorMapDatabaseUnavailable, "index_state", "the current index has no published map database", true, nil,
+			map[string]any{"guidance": "Run a full ck3-index scan that includes map inputs, then retry the map tool."})
+	}
+	return nil
+}
+
+// Map cache tables currently combine active source layers without retaining
+// enough per-cell provenance to prove that an answer excludes private project
+// data. Refuse public cache-derived map requests rather than making a vague
+// "best effort" redaction claim. Source-file map audits/mappings use their
+// separate filtered configuration path below and remain safely public.
+func requireSourceTrackedMapVisibility(visibility string) error {
+	if visibility != "public" {
+		return nil
+	}
+	return newToolError(ErrorInvalidArguments, "privacy", "public visibility is not available for map-cache queries until the map cache records source-level provenance", false,
+		map[string]any{"field": "visibility"},
+		map[string]any{"guidance": "Use private visibility, or use map_asset_audit/map_province_mapping for source-filtered map evidence."})
+}
+
+func mapSourcesForVisibility(runtime *Runtime, allowPrivate bool) (indexer.Config, error) {
+	cfg, err := indexer.NormalizeConfig(runtime.Config)
+	if err != nil || allowPrivate {
+		return cfg, err
+	}
+	filtered := make([]indexer.Source, 0, len(cfg.Sources))
+	for _, source := range cfg.Sources {
+		if !source.Private {
+			filtered = append(filtered, source)
+		}
+	}
+	cfg.Sources = filtered
+	return cfg, nil
 }
 
 func handleMapAssetAudit(ctx context.Context, runtime *Runtime, definition *ToolDefinition, raw json.RawMessage) (toolOutput, error) {
@@ -22,16 +54,10 @@ func handleMapAssetAudit(ctx context.Context, runtime *Runtime, definition *Tool
 	if err != nil {
 		return toolOutput{}, err
 	}
-	cfg := runtime.Config
-	if !opts.AllowProject {
-		cfg.Sources = append([]indexer.Source(nil), cfg.Sources...)
-		filtered := cfg.Sources[:0]
-		for _, source := range cfg.Sources {
-			if source.Rank != 1 {
-				filtered = append(filtered, source)
-			}
-		}
-		cfg.Sources = filtered
+	opts = configureRuntimeOptions(runtime, opts)
+	cfg, err := mapSourcesForVisibility(runtime, opts.AllowProject)
+	if err != nil {
+		return toolOutput{}, err
 	}
 	value, err := indexer.AuditMapAssets(ctx, cfg, args.Operation, opts.Limit)
 	return toolOutput{Value: value, Visibility: visibility}, err
@@ -46,16 +72,10 @@ func handleMapProvinceMapping(ctx context.Context, runtime *Runtime, definition 
 	if err != nil {
 		return toolOutput{}, err
 	}
-	cfg := runtime.Config
-	if !opts.AllowProject {
-		cfg.Sources = append([]indexer.Source(nil), cfg.Sources...)
-		filtered := cfg.Sources[:0]
-		for _, source := range cfg.Sources {
-			if source.Rank != 1 {
-				filtered = append(filtered, source)
-			}
-		}
-		cfg.Sources = filtered
+	opts = configureRuntimeOptions(runtime, opts)
+	cfg, err := mapSourcesForVisibility(runtime, opts.AllowProject)
+	if err != nil {
+		return toolOutput{}, err
 	}
 	value, err := indexer.MapProvinceMapping(ctx, cfg, args.MapProvinceMappingSpec)
 	if err == nil {
@@ -82,6 +102,10 @@ func handleMapProvinceInfo(ctx context.Context, runtime *Runtime, definition *To
 	if err != nil {
 		return toolOutput{}, err
 	}
+	opts = configureRuntimeOptions(runtime, opts)
+	if err := requireSourceTrackedMapVisibility(visibility); err != nil {
+		return toolOutput{}, err
+	}
 	value, err := runtime.DB.LLMMapProvinceInfo(ctx, args.ID, args.Year, opts)
 	return toolOutput{Value: value, Visibility: visibility}, err
 }
@@ -93,6 +117,10 @@ func handleMapPhysicalContext(ctx context.Context, runtime *Runtime, definition 
 	}
 	opts, visibility, err := args.options(0)
 	if err != nil {
+		return toolOutput{}, err
+	}
+	opts = configureRuntimeOptions(runtime, opts)
+	if err := requireSourceTrackedMapVisibility(visibility); err != nil {
 		return toolOutput{}, err
 	}
 	if err := requireMapDatabase(ctx, runtime); err != nil {
@@ -111,6 +139,10 @@ func handleMapNeighbors(ctx context.Context, runtime *Runtime, definition *ToolD
 	if err != nil {
 		return toolOutput{}, err
 	}
+	opts = configureRuntimeOptions(runtime, opts)
+	if err := requireSourceTrackedMapVisibility(visibility); err != nil {
+		return toolOutput{}, err
+	}
 	value, err := runtime.DB.LLMMapNeighbors(ctx, args.ID, args.Radius, args.Year, opts)
 	return toolOutput{Value: value, Visibility: visibility}, err
 }
@@ -124,6 +156,10 @@ func handleMapSpatialRelation(ctx context.Context, runtime *Runtime, definition 
 	if err != nil {
 		return toolOutput{}, err
 	}
+	opts = configureRuntimeOptions(runtime, opts)
+	if err := requireSourceTrackedMapVisibility(visibility); err != nil {
+		return toolOutput{}, err
+	}
 	value, err := runtime.DB.LLMMapSpatialRelation(ctx, args.From, args.To, args.Year, opts)
 	return toolOutput{Value: value, Visibility: visibility}, err
 }
@@ -135,6 +171,10 @@ func handleMapStrategicPassages(ctx context.Context, runtime *Runtime, definitio
 	}
 	opts, visibility, err := args.options(0)
 	if err != nil {
+		return toolOutput{}, err
+	}
+	opts = configureRuntimeOptions(runtime, opts)
+	if err := requireSourceTrackedMapVisibility(visibility); err != nil {
 		return toolOutput{}, err
 	}
 	if err := requireMapDatabase(ctx, runtime); err != nil {
@@ -151,6 +191,10 @@ func handleMapTitleContext(ctx context.Context, runtime *Runtime, definition *To
 	}
 	opts, visibility, err := args.options(0)
 	if err != nil {
+		return toolOutput{}, err
+	}
+	opts = configureRuntimeOptions(runtime, opts)
+	if err := requireSourceTrackedMapVisibility(visibility); err != nil {
 		return toolOutput{}, err
 	}
 	if err := requireMapDatabase(ctx, runtime); err != nil {
@@ -173,6 +217,10 @@ func handleMapAssignmentPlan(ctx context.Context, runtime *Runtime, definition *
 	if err != nil {
 		return toolOutput{}, err
 	}
+	opts = configureRuntimeOptions(runtime, opts)
+	if err := requireSourceTrackedMapVisibility(visibility); err != nil {
+		return toolOutput{}, err
+	}
 	if err := requireMapDatabase(ctx, runtime); err != nil {
 		return toolOutput{}, err
 	}
@@ -191,6 +239,10 @@ func handleMapBuildingCandidates(ctx context.Context, runtime *Runtime, definiti
 	}
 	opts, visibility, err := args.options(0)
 	if err != nil {
+		return toolOutput{}, err
+	}
+	opts = configureRuntimeOptions(runtime, opts)
+	if err := requireSourceTrackedMapVisibility(visibility); err != nil {
 		return toolOutput{}, err
 	}
 	if err := requireMapDatabase(ctx, runtime); err != nil {
@@ -227,6 +279,10 @@ func handleMapBuildMetric(ctx context.Context, runtime *Runtime, definition *Too
 	if err != nil {
 		return toolOutput{}, err
 	}
+	opts = configureRuntimeOptions(runtime, opts)
+	if err := requireSourceTrackedMapVisibility(visibility); err != nil {
+		return toolOutput{}, err
+	}
 	if err := requireMapDatabase(ctx, runtime); err != nil {
 		return toolOutput{}, err
 	}
@@ -243,6 +299,10 @@ func handleMapRoute(ctx context.Context, runtime *Runtime, definition *ToolDefin
 	if err != nil {
 		return toolOutput{}, err
 	}
+	opts = configureRuntimeOptions(runtime, opts)
+	if err := requireSourceTrackedMapVisibility(visibility); err != nil {
+		return toolOutput{}, err
+	}
 	value, err := runtime.DB.LLMMapRoute(ctx, args.MapRouteSpec, opts)
 	return toolOutput{Value: value, Visibility: visibility}, err
 }
@@ -253,10 +313,14 @@ func handleMapRender(ctx context.Context, runtime *Runtime, definition *ToolDefi
 		return toolOutput{}, err
 	}
 	if strings.TrimSpace(args.FontPath) != "" {
-		return toolOutput{}, fmt.Errorf("map_render does not accept argument field %q; configure CK3_INDEX_MAP_FONT on the server", "font_path")
+		return toolOutput{}, invalidArgument("font_path", "map_render does not accept argument field \"font_path\"; configure CK3_INDEX_MAP_FONT on the server")
 	}
 	opts, visibility, err := args.options(0)
 	if err != nil {
+		return toolOutput{}, err
+	}
+	opts = configureRuntimeOptions(runtime, opts)
+	if err := requireSourceTrackedMapVisibility(visibility); err != nil {
 		return toolOutput{}, err
 	}
 	value, err := runtime.DB.LLMMapRender(ctx, args.MapRenderSpec, opts)
@@ -270,13 +334,13 @@ func normalizedTargetAlias(target, legacyID string) (string, error) {
 	target = strings.TrimSpace(target)
 	legacyID = strings.TrimSpace(legacyID)
 	if target != "" && legacyID != "" && target != legacyID {
-		return "", fmt.Errorf("argument fields %q and deprecated alias %q conflict", "target", "id")
+		return "", invalidArgument("target", "argument fields \"target\" and deprecated alias \"id\" conflict")
 	}
 	if target == "" {
 		target = legacyID
 	}
 	if target == "" {
-		return "", fmt.Errorf("missing required argument field %q", "target")
+		return "", missingArgument("target")
 	}
 	return target, nil
 }

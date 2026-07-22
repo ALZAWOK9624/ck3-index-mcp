@@ -1,0 +1,234 @@
+{
+  "schema_version": 1,
+  "suite_id": "ck3-index-agent-tool-selection-v1",
+  "cases": [
+    {
+      "id": "audit_on_action_scope_evidence",
+      "task": "CK3 1.19 更新后，核对 on_action `on_character_death` 的 live engine 规则、生成快照和原版相邻注释证据是否一致。",
+      "why_this_path": "这是跨引擎日志、1.19 快照和 vanilla 注释的专用审计，不应把它拆成泛搜索或手工文件读取。",
+      "expected_path": [
+        {
+          "tool": "ck3_workspace",
+          "arguments": {
+            "operation": "on_action_evidence"
+          },
+          "reason": "请求有界的三来源 on_action 证据审计。"
+        }
+      ]
+    },
+    {
+      "id": "diagnose_cached_scope_mismatch",
+      "task": "索引已经报出 `scope_mismatch`，需要先读该诊断代码的缓存证据和置信度，而不是重新扫描整个 Mod。",
+      "why_this_path": "已知诊断代码时应使用缓存诊断解释视图；完整扫描不会更精确。",
+      "expected_path": [
+        {
+          "tool": "ck3_diagnostics",
+          "arguments": {
+            "operation": "explain",
+            "code": "scope_mismatch"
+          },
+          "reason": "按已知代码读取诊断证据。"
+        }
+      ]
+    },
+    {
+      "id": "discover_unknown_event_then_inspect",
+      "task": "只知道 Mod 里有一条名为 `k10_river_flood` 的事件链；先找出实际事件标识符，再查看该事件定义和覆盖来源。",
+      "why_this_path": "标识符未知时先语义搜索；得到精确 id 后再做单对象定义检查，避免把搜索结果误当完整定义。",
+      "expected_path": [
+        {
+          "tool": "ck3_search",
+          "arguments": {
+            "query": "k10_river_flood",
+            "kind": "object"
+          },
+          "reason": "发现精确事件 id。"
+        },
+        {
+          "tool": "ck3_inspect",
+          "arguments": {
+            "id": "event:k10_river_flood.100",
+            "operation": "definition"
+          },
+          "reason": "读取定义、覆盖和字段证据。"
+        }
+      ]
+    },
+    {
+      "id": "impact_scripted_effect_rename",
+      "task": "准备把 `k10_apply_river_blessing` 重命名为 `k10_apply_river_favor`；在改文件前评估现有调用和未解析引用风险。",
+      "why_this_path": "重命名是依赖图变更，应使用 patch impact，而不是只做语法预检。",
+      "expected_path": [
+        {
+          "tool": "ck3_impact",
+          "arguments": {
+            "files": [
+              {
+                "path": "common/scripted_effects/k10_river_effects.txt",
+                "op": "rename",
+                "from": "k10_apply_river_blessing",
+                "to": "k10_apply_river_favor"
+              }
+            ]
+          },
+          "reason": "在写入前追踪重命名影响。"
+        }
+      ]
+    },
+    {
+      "id": "inspect_exact_definition",
+      "task": "已经知道传统 id 是 `k10_river_keepers`，只想确认它当前的有效定义、字段和来源优先级。",
+      "why_this_path": "精确 id 不需要搜索；定义视图同时返回对象和覆盖证据。",
+      "expected_path": [
+        {
+          "tool": "ck3_inspect",
+          "arguments": {
+            "id": "tradition:k10_river_keepers",
+            "operation": "definition"
+          },
+          "reason": "直接检查精确对象的有效定义。"
+        }
+      ]
+    },
+    {
+      "id": "inspect_gui_preview",
+      "task": "修改 `gui/k10_river_window.gui` 后，需要检查 `k10_river_window` 的结构和一个受限的双格式预览，而不是执行游戏 UI。",
+      "why_this_path": "GUI 预览器会解析已索引模板和依赖，并保持 Jomini 执行边界。",
+      "expected_path": [
+        {
+          "tool": "ck3_gui",
+          "arguments": {
+            "operation": "preview",
+            "path": "gui/k10_river_window.gui",
+            "symbol": "k10_river_window",
+            "format": "both",
+            "html_mode": "inspector",
+            "language": "simp_chinese"
+          },
+          "reason": "获取有界 PNG 和离线 HTML 检查结果。"
+        }
+      ]
+    },
+    {
+      "id": "inspect_map_province",
+      "task": "需要为省份 123 选择特殊建筑，先确认该省精确几何、地形、资源与直接边界。",
+      "why_this_path": "单省精确地图上下文应使用 map_province_info；不要从纹理文件名猜测。",
+      "expected_path": [
+        {
+          "tool": "map_province_info",
+          "arguments": {
+            "id": "123",
+            "year": 1066
+          },
+          "reason": "读取指定历史年的省份地图上下文。"
+        }
+      ]
+    },
+    {
+      "id": "lookup_unfamiliar_iterator",
+      "task": "在事件效果中遇到不熟悉的 `any_spouse` 迭代器，需要确认它的作用域规则和转移，而不是从本地化文本猜语义。",
+      "why_this_path": "单个 engine/script 规则应使用 script_reference 的 iterator 家族。",
+      "expected_path": [
+        {
+          "tool": "ck3_script_reference",
+          "arguments": {
+            "kind": "iterator",
+            "id": "any_spouse"
+          },
+          "reason": "查询已索引的迭代器规则。"
+        }
+      ]
+    },
+    {
+      "id": "preflight_complete_event_patch",
+      "task": "已写完一个新的完整事件文件，提交前需要检查语法、作用域、引用和本地化门槛。",
+      "why_this_path": "完整提议文件的最终接受门槛是 patch preflight；普通 search 或 inspect 不能验证未写入内容。",
+      "expected_path": [
+        {
+          "tool": "ck3_preflight",
+          "arguments": {
+            "operation": "patch",
+            "files": [
+              {
+                "path": "events/k10_river_events.txt",
+                "content": "namespace = k10_river\n\nk10_river.100 = {\n\ttype = character_event\n\ttitle = k10_river.100.t\n\tdesc = k10_river.100.desc\n\toption = {\n\t\tname = k10_river.100.a\n\t}\n}\n"
+              }
+            ]
+          },
+          "reason": "对完整候选文件执行只读最终预检。"
+        }
+      ]
+    },
+    {
+      "id": "prepare_culture_tradition",
+      "task": "准备新增文化传统 `k10_river_keepers`；先获得 culture tradition 的规则，再查看同类实装示例，随后才开始写文件。",
+      "why_this_path": "生成前需要规则加实例两类证据；这比直接 review 一个尚不存在的文件更合适。",
+      "expected_path": [
+        {
+          "tool": "ck3_prepare_edit",
+          "arguments": {
+            "id": "tradition",
+            "operation": "rules"
+          },
+          "reason": "读取传统对象的规则和形状证据。"
+        },
+        {
+          "tool": "ck3_prepare_edit",
+          "arguments": {
+            "id": "tradition:k10_river_keepers",
+            "operation": "examples"
+          },
+          "reason": "读取同类对象的实装例子。"
+        }
+      ]
+    },
+    {
+      "id": "refresh_changed_project_file",
+      "task": "刚保存了 `common/decisions/k10_river_decisions.txt`，需要让已就绪索引更新该单一工程文件并报告诊断变化。",
+      "why_this_path": "少量已知工程文件应走事务性 files 刷新；不得请求 MCP full 或静默扩大扫描。",
+      "expected_path": [
+        {
+          "tool": "ck3_refresh",
+          "arguments": {
+            "operation": "files",
+            "paths": [
+              "common/decisions/k10_river_decisions.txt"
+            ]
+          },
+          "reason": "只刷新显式变动的工程层文件。"
+        }
+      ]
+    },
+    {
+      "id": "refresh_full_after_engine_rule_update",
+      "task": "CK3 1.19 的引擎规则日志已更新，现有索引状态要求完整重建；需要保留旧 generation 直到新规则和全部来源都扫描完成。",
+      "why_this_path": "引擎规则漂移不能用单文件 files 刷新修复；full 会先在旁路缓存完成扫描，再原子发布新的完整 generation。",
+      "expected_path": [
+        {
+          "tool": "ck3_refresh",
+          "arguments": {
+            "operation": "full"
+          },
+          "reason": "明确请求可取消且原子发布的完整重建。"
+        }
+      ]
+    },
+    {
+      "id": "trace_event_callers",
+      "task": "已知事件 `k10_river_flood.100`，需要找它由哪些事件和 on_action 触发、是否有循环以及最短调用路径。",
+      "why_this_path": "事件调用拓扑是 dependencies 的 event_chain 视图；单纯 references 不能给出根、环和路径结论。",
+      "expected_path": [
+        {
+          "tool": "ck3_dependencies",
+          "arguments": {
+            "id": "event:k10_river_flood.100",
+            "operation": "event_chain",
+            "direction": "callers",
+            "include_on_actions": true
+          },
+          "reason": "返回调用者、on_action 根和拓扑结论。"
+        }
+      ]
+    }
+  ]
+}

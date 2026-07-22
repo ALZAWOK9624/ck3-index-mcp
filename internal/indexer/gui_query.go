@@ -435,7 +435,7 @@ func (db *DB) activeGUIFile(ctx context.Context, relPath string, allowProject bo
 		WHERE overridden=0 AND lower(rel_path)=lower(?) AND lower(rel_path) LIKE 'gui/%.gui'`
 	args := []any{relPath}
 	if !allowProject {
-		query += ` AND source_rank>1`
+		query += ` AND EXISTS (SELECT 1 FROM source_layers sl WHERE lower(sl.name)=lower(files.source_name) AND sl.private=0)`
 	}
 	query += ` ORDER BY source_rank ASC LIMIT 1`
 	var file activeGUIFile
@@ -458,7 +458,7 @@ func (db *DB) activeGUIFiles(ctx context.Context, prefix string, allowProject bo
 		args = append(args, escapeLike(prefix)+"%")
 	}
 	if !allowProject {
-		query += ` AND source_rank>1`
+		query += ` AND EXISTS (SELECT 1 FROM source_layers sl WHERE lower(sl.name)=lower(files.source_name) AND sl.private=0)`
 	}
 	query += ` ORDER BY source_rank DESC,lower(rel_path),rel_path,source_name`
 	rows, err := db.sql.QueryContext(ctx, query, args...)

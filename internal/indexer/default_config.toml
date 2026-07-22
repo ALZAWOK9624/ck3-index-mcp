@@ -16,8 +16,12 @@ gis_timeout_seconds = 900
 name = "mod"
 path = "../my-ck3-mod"
 rank = 1
+role = "project"
+private = true
 
 [[source]]
 name = "game"
 path = "../Crusader Kings III/game"
 rank = 2
+role = "game"
+private = false

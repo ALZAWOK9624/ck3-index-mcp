@@ -21,6 +21,20 @@ func boundedMCPResultLimit(limit int) int {
 	return limit
 }
 
+// requirePrivateEvidenceVisibility is a conservative boundary for operations
+// that either read the configured project tree directly or derive answers from
+// it without source-level provenance on every intermediate value.  Do not
+// weaken this to a presentation-time redaction: callers could otherwise use
+// totals, diagnostics, or comparison fallbacks as an oracle for private data.
+func requirePrivateEvidenceVisibility(visibility, operation string) error {
+	if visibility != "public" {
+		return nil
+	}
+	return newToolError(ErrorInvalidArguments, "privacy", "public visibility is not available for this operation because it requires private workspace evidence", false,
+		map[string]any{"field": "visibility", "operation": operation},
+		map[string]any{"guidance": "Use private visibility in an authorized session, or choose an operation with source-filtered public evidence."})
+}
+
 // eventChainHTMLToolResult preserves the ordinary event-chain result while
 // adding a standalone, already-redacted HTML representation for clients that
 // can display an interactive graph. The document is generated only from the
@@ -40,7 +54,8 @@ func handleSearch(ctx context.Context, runtime *Runtime, definition *ToolDefinit
 	if err != nil {
 		return toolOutput{}, err
 	}
-	value, err := runtime.DB.LLMSearch(ctx, indexer.SearchOptions{Query: args.Query, Kind: args.Kind, Source: args.Source, PathPrefix: args.PathPrefix, LLMOptions: opts})
+	opts = configureRuntimeOptions(runtime, opts)
+	value, err := runtime.DB.LLMSearch(ctx, indexer.SearchOptions{Query: args.Query, Kind: args.Kind, Source: args.Source, PathPrefix: args.PathPrefix, Page: args.Page, LLMOptions: opts})
 	return toolOutput{Value: value, Visibility: visibility}, err
 }
 
@@ -53,12 +68,13 @@ func handleInspect(ctx context.Context, runtime *Runtime, definition *ToolDefini
 	if err != nil {
 		return toolOutput{}, err
 	}
+	opts = configureRuntimeOptions(runtime, opts)
 	operation := args.Operation
 	if operation == "" {
 		operation = "aggregate"
 	}
 	if operation != "compare" && (strings.TrimSpace(args.Source) != "" || strings.TrimSpace(args.Base) != "") {
-		return toolOutput{}, fmt.Errorf("argument fields %q and %q are only valid with operation=compare", "source", "base")
+		return toolOutput{}, invalidArgument("operation", "source and base are only valid with operation=compare")
 	}
 	var value any
 	switch operation {
@@ -77,13 +93,8 @@ func handleInspect(ctx context.Context, runtime *Runtime, definition *ToolDefini
 	case "diagnose":
 		value, err = runtime.DB.LLMDiagnoseKey(ctx, args.ID, opts)
 	case "compare":
-		if !opts.AllowProject {
-			if strings.TrimSpace(args.Source) == "" {
-				return toolOutput{}, fmt.Errorf("operation=compare with public visibility requires an explicit non-project %q", "source")
-			}
-			if !publicObjectCompareSource(runtime.Config, args.Source) || (strings.TrimSpace(args.Base) != "" && !publicObjectCompareSource(runtime.Config, args.Base)) {
-				return toolOutput{}, fmt.Errorf("operation=compare with public visibility may only use configured non-project source layers")
-			}
+		if err := requirePrivateEvidenceVisibility(visibility, "compare"); err != nil {
+			return toolOutput{}, err
 		}
 		value, err = indexer.CompareObjectAgainstBase(ctx, runtime.Config, args.ID, indexer.ObjectCompareOptions{
 			Source: args.Source,
@@ -91,20 +102,9 @@ func handleInspect(ctx context.Context, runtime *Runtime, definition *ToolDefini
 			Limit:  boundedMCPResultLimit(args.Limit),
 		})
 	default:
-		return toolOutput{}, fmt.Errorf("argument field %q received %q; expected one of [aggregate definition references localization resource context diagnose compare]", "operation", operation)
+		return toolOutput{}, unknownOperation(operation)
 	}
 	return toolOutput{Value: value, Visibility: visibility}, err
-}
-
-func publicObjectCompareSource(cfg indexer.Config, name string) bool {
-	name = strings.TrimSpace(name)
-	for _, source := range cfg.Sources {
-		if !strings.EqualFold(source.Name, name) {
-			continue
-		}
-		return source.Rank > 1 && !strings.EqualFold(source.Name, "project")
-	}
-	return false
 }
 
 func handleReview(ctx context.Context, runtime *Runtime, definition *ToolDefinition, raw json.RawMessage) (toolOutput, error) {
@@ -116,6 +116,10 @@ func handleReview(ctx context.Context, runtime *Runtime, definition *ToolDefinit
 	if err != nil {
 		return toolOutput{}, err
 	}
+	if err := requirePrivateEvidenceVisibility(visibility, "review"); err != nil {
+		return toolOutput{}, err
+	}
+	opts = configureRuntimeOptions(runtime, opts)
 	value, err := runtime.DB.LLMReview(ctx, runtime.Config, args.Files, opts)
 	return toolOutput{Value: value, Visibility: visibility}, err
 }
@@ -129,6 +133,7 @@ func handleWorkspace(ctx context.Context, runtime *Runtime, definition *ToolDefi
 	if err != nil {
 		return toolOutput{}, err
 	}
+	opts = configureRuntimeOptions(runtime, opts)
 	operation := args.Operation
 	if operation == "" {
 		operation = "overview"
@@ -140,9 +145,14 @@ func handleWorkspace(ctx context.Context, runtime *Runtime, definition *ToolDefi
 	case "object_types":
 		value, err = runtime.DB.LLMQueryObjectTypes(ctx, opts)
 	case "on_action_evidence":
+		if err := requirePrivateEvidenceVisibility(visibility, "on_action_evidence"); err != nil {
+			return toolOutput{}, err
+		}
 		value, err = runtime.DB.AuditOnActionEvidence(ctx, runtime.Config, boundedMCPResultLimit(args.Limit))
+	case "capabilities":
+		value, err = workspaceCapabilities(ctx, runtime, args.Domain)
 	default:
-		return toolOutput{}, fmt.Errorf("argument field %q received %q; expected one of [overview object_types on_action_evidence]", "operation", operation)
+		return toolOutput{}, unknownOperation(operation)
 	}
 	return toolOutput{Value: value, Visibility: visibility}, err
 }
@@ -156,6 +166,7 @@ func handleDependencies(ctx context.Context, runtime *Runtime, definition *ToolD
 	if err != nil {
 		return toolOutput{}, err
 	}
+	opts = configureRuntimeOptions(runtime, opts)
 	operation := args.Operation
 	if operation == "" {
 		operation = "neighborhood"
@@ -165,13 +176,13 @@ func handleDependencies(ctx context.Context, runtime *Runtime, definition *ToolD
 		format = "json"
 	}
 	if format != "json" && format != "html" {
-		return toolOutput{}, fmt.Errorf("argument field %q received %q; expected one of [json html]", "format", args.Format)
+		return toolOutput{}, invalidArgument("format", "format must be json or html")
 	}
 	var value any
 	switch operation {
 	case "neighborhood":
 		if format != "json" {
-			return toolOutput{}, fmt.Errorf("argument field %q value %q requires operation=event_chain", "format", format)
+			return toolOutput{}, invalidArgument("format", "format=html requires operation=event_chain")
 		}
 		value, err = runtime.DB.LLMDependencyGraph(ctx, args.ID, opts)
 	case "event_chain":
@@ -199,7 +210,7 @@ func handleDependencies(ctx context.Context, runtime *Runtime, definition *ToolD
 		}
 		value = eventChainHTMLToolResult{LLMResult: chain, Format: "html", HTML: preview}
 	default:
-		return toolOutput{}, fmt.Errorf("argument field %q received %q; expected one of [neighborhood event_chain]", "operation", operation)
+		return toolOutput{}, unknownOperation(operation)
 	}
 	return toolOutput{Value: value, Visibility: visibility}, err
 }
@@ -213,6 +224,7 @@ func handlePrepareEdit(ctx context.Context, runtime *Runtime, definition *ToolDe
 	if err != nil {
 		return toolOutput{}, err
 	}
+	opts = configureRuntimeOptions(runtime, opts)
 	operation := args.Operation
 	if operation == "" {
 		operation = "context"
@@ -229,7 +241,7 @@ func handlePrepareEdit(ctx context.Context, runtime *Runtime, definition *ToolDe
 	case "patterns":
 		value, err = runtime.DB.LLMQueryPatterns(ctx, args.ID, opts)
 	default:
-		return toolOutput{}, fmt.Errorf("argument field %q received %q; expected one of [context examples rules patterns]", "operation", operation)
+		return toolOutput{}, unknownOperation(operation)
 	}
 	return toolOutput{Value: value, Visibility: visibility}, err
 }
@@ -243,25 +255,30 @@ func handlePreflight(ctx context.Context, runtime *Runtime, definition *ToolDefi
 	if err != nil {
 		return toolOutput{}, err
 	}
+	if err := requirePrivateEvidenceVisibility(visibility, "preflight"); err != nil {
+		return toolOutput{}, err
+	}
+	opts = configureRuntimeOptions(runtime, opts)
 	var value any
 	switch args.Operation {
 	case "subject":
 		if strings.TrimSpace(args.ID) == "" {
-			return toolOutput{}, fmt.Errorf("operation=subject requires argument field %q", "id")
+			return toolOutput{}, missingArgument("id")
 		}
 		value, err = runtime.DB.LLMPreflight(ctx, args.ID, opts)
 	case "patch":
 		if len(args.Files) == 0 {
-			return toolOutput{}, fmt.Errorf("operation=patch requires non-empty argument field %q", "files")
+			return toolOutput{}, missingArgument("files")
 		}
 		value, err = runtime.DB.LLMPreflightPatch(ctx, args.Files, opts)
 	case "dirty":
 		if runtime.Config.ConfigPath == "" {
-			return toolOutput{}, fmt.Errorf("operation=dirty requires server configuration")
+			return toolOutput{}, newToolError(ErrorSourceNotFound, "configuration", "operation=dirty requires a configured project source", false, nil,
+				map[string]any{"guidance": "Start MCP with a ck3-index configuration that declares one project source."})
 		}
 		value, err = runtime.DB.LLMPreflightDirty(ctx, runtime.Config, opts)
 	default:
-		return toolOutput{}, fmt.Errorf("argument field %q received %q; expected one of [subject patch dirty]", "operation", args.Operation)
+		return toolOutput{}, unknownOperation(args.Operation)
 	}
 	return toolOutput{Value: value, Visibility: visibility}, err
 }
@@ -272,12 +289,16 @@ func handleImpact(ctx context.Context, runtime *Runtime, definition *ToolDefinit
 		return toolOutput{}, err
 	}
 	if len(args.Files) == 0 {
-		return toolOutput{}, fmt.Errorf("argument field %q must contain at least one patch file", "files")
+		return toolOutput{}, missingArgument("files")
 	}
 	opts, visibility, err := args.options(0)
 	if err != nil {
 		return toolOutput{}, err
 	}
+	if err := requirePrivateEvidenceVisibility(visibility, "impact"); err != nil {
+		return toolOutput{}, err
+	}
+	opts = configureRuntimeOptions(runtime, opts)
 	value, err := runtime.DB.LLMImpactPatch(ctx, args.Files, opts)
 	return toolOutput{Value: value, Visibility: visibility}, err
 }
@@ -291,6 +312,7 @@ func handleDiagnostics(ctx context.Context, runtime *Runtime, definition *ToolDe
 	if err != nil {
 		return toolOutput{}, err
 	}
+	opts = configureRuntimeOptions(runtime, opts)
 	operation := args.Operation
 	if operation == "" {
 		operation = "summary"
@@ -298,14 +320,17 @@ func handleDiagnostics(ctx context.Context, runtime *Runtime, definition *ToolDe
 	var value any
 	switch operation {
 	case "summary":
+		if args.Page > 0 {
+			return toolOutput{}, invalidArgument("page", "page is only valid with operation=explain")
+		}
 		value, err = runtime.DB.LLMValidate(ctx, opts)
 	case "explain":
 		if strings.TrimSpace(args.Code) == "" {
-			return toolOutput{}, fmt.Errorf("operation=explain requires argument field %q", "code")
+			return toolOutput{}, missingArgument("code")
 		}
-		value, err = runtime.DB.LLMExplainDiagnosticFiltered(ctx, indexer.DiagnosticFilter{Code: args.Code, Source: args.Source, PathPrefix: args.PathPrefix, Confidence: args.Confidence}, opts)
+		value, err = runtime.DB.LLMExplainDiagnosticFiltered(ctx, indexer.DiagnosticFilter{Code: args.Code, Source: args.Source, PathPrefix: args.PathPrefix, Confidence: args.Confidence, Page: args.Page}, opts)
 	default:
-		return toolOutput{}, fmt.Errorf("argument field %q received %q; expected one of [summary explain]", "operation", operation)
+		return toolOutput{}, unknownOperation(operation)
 	}
 	return toolOutput{Value: value, Visibility: visibility}, err
 }
@@ -319,6 +344,7 @@ func handleScriptReference(ctx context.Context, runtime *Runtime, definition *To
 	if err != nil {
 		return toolOutput{}, err
 	}
+	opts = configureRuntimeOptions(runtime, opts)
 	liveIndexReady := false
 	if state, stateErr := runtime.DB.IndexState(ctx); stateErr == nil {
 		liveIndexReady = state.Ready()
@@ -388,14 +414,22 @@ func handleScriptReference(ctx context.Context, runtime *Runtime, definition *To
 					// validator-facing inferred scope.
 					result["snapshot_contract"] = snapshot
 				}
-				documentation, documentationErr := runtime.DB.LookupOnActionDocumentationContract(ctx, runtime.Config, args.ID, opts.Limit)
-				if documentationErr != nil {
-					err = documentationErr
+				game, gameConfigured := indexer.GameSource(runtime.Config)
+				if !opts.AllowProject && (!gameConfigured || game.Private) {
+					result["documentation_contract"] = map[string]any{
+						"status":   "unavailable",
+						"guidance": []string{"Public visibility excludes the configured documentation source."},
+					}
 				} else {
-					// Keep vanilla comments in a distinct review-only envelope. The
-					// top-level result remains the engine-first / 1.19-snapshot rule
-					// lookup used by existing clients.
-					result["documentation_contract"] = documentation
+					documentation, documentationErr := runtime.DB.LookupOnActionDocumentationContract(ctx, runtime.Config, args.ID, opts.Limit)
+					if documentationErr != nil {
+						err = documentationErr
+					} else {
+						// Keep vanilla comments in a distinct review-only envelope. The
+						// top-level result remains the engine-first / 1.19-snapshot rule
+						// lookup used by existing clients.
+						result["documentation_contract"] = documentation
+					}
 				}
 			}
 		}
@@ -406,7 +440,7 @@ func handleScriptReference(ctx context.Context, runtime *Runtime, definition *To
 	case "modifier":
 		value, err = lookupModifierTool(args.ID)
 	default:
-		return toolOutput{}, fmt.Errorf("argument field %q received %q; expected one of [scope datatype shape define on_action iterator example modifier]", "kind", args.Kind)
+		return toolOutput{}, invalidArgument("kind", "kind must be one of the documented script reference families")
 	}
 	return toolOutput{Value: value, Visibility: visibility}, err
 }
@@ -436,6 +470,7 @@ func handleGUI(ctx context.Context, runtime *Runtime, definition *ToolDefinition
 	if err != nil {
 		return toolOutput{}, err
 	}
+	opts = configureRuntimeOptions(runtime, opts)
 	value, err := runtime.DB.QueryGUI(ctx, indexer.GUIQueryOptions{
 		Operation: args.Operation, Path: args.Path, PathPrefix: args.PathPrefix, Symbol: args.Symbol,
 		AllowProject: opts.AllowProject, Limit: opts.Limit, Width: args.Width, Height: args.Height, Format: args.Format, HTMLMode: args.HTMLMode, Language: args.Language, Samples: args.Samples, ModelSamples: args.ModelSamples, RuntimeFacts: args.RuntimeFacts, ActionEffects: args.ActionEffects,

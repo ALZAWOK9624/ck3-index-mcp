@@ -11,6 +11,10 @@ import (
 )
 
 func encodeToolResult(value any, visibility string) (map[string]any, error) {
+	return encodeToolResultWithBudget(value, visibility, defaultToolResponseBytes)
+}
+
+func encodeToolResultWithBudget(value any, visibility string, responseBudget int) (map[string]any, error) {
 	value = redactToolValue(value, visibility)
 	if rendered, ok := value.(indexer.GUIQueryResult); ok && rendered.Preview != nil && len(rendered.Preview.PNG) > 0 {
 		pngData := rendered.Preview.PNG
@@ -19,7 +23,7 @@ func encodeToolResult(value any, visibility string) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{
+		result := map[string]any{
 			"content": []map[string]any{
 				{"type": "text", "text": string(data)},
 				{
@@ -28,7 +32,8 @@ func encodeToolResult(value any, visibility string) (map[string]any, error) {
 				},
 			},
 			"structuredContent": structured,
-		}, nil
+		}
+		return enforceResponseBudget(result, responseBudget)
 	}
 	if rendered, ok := value.(indexer.MapRenderResult); ok {
 		pngData := rendered.PNG
@@ -37,7 +42,7 @@ func encodeToolResult(value any, visibility string) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{
+		result := map[string]any{
 			"content": []map[string]any{
 				{"type": "text", "text": string(data)},
 				{
@@ -50,16 +55,32 @@ func encodeToolResult(value any, visibility string) (map[string]any, error) {
 				},
 			},
 			"structuredContent": structured,
-		}, nil
+		}
+		return enforceResponseBudget(result, responseBudget)
 	}
 	data, structured, err := encodeStructuredValue(value)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{
+	result := map[string]any{
 		"content":           []map[string]any{{"type": "text", "text": string(data)}},
 		"structuredContent": structured,
-	}, nil
+	}
+	return enforceResponseBudget(result, responseBudget)
+}
+
+func enforceResponseBudget(result map[string]any, responseBudget int) (map[string]any, error) {
+	if responseBudget <= 0 {
+		responseBudget = defaultToolResponseBytes
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("encode MCP tool result: %w", err)
+	}
+	if len(data) > responseBudget {
+		return nil, &responseTooLargeError{Actual: len(data), Limit: responseBudget}
+	}
+	return result, nil
 }
 
 func encodeStructuredValue(value any) ([]byte, map[string]any, error) {
@@ -68,7 +89,7 @@ func encodeStructuredValue(value any) ([]byte, map[string]any, error) {
 		return nil, nil, fmt.Errorf("encode tool result: %w", err)
 	}
 	structured := structuredObject(data)
-	canonicalizeNextQueries(structured)
+	canonicalizeNextActions(structured)
 	data, err = json.Marshal(structured)
 	if err != nil {
 		return nil, nil, fmt.Errorf("encode canonical tool result: %w", err)
@@ -76,11 +97,16 @@ func encodeStructuredValue(value any) ([]byte, map[string]any, error) {
 	return data, structured, nil
 }
 
-func canonicalizeNextQueries(structured map[string]any) {
+// canonicalizeNextActions translates legacy next_queries hints into structured,
+// bounded action suggestions. They are advisory only: MCP never executes them
+// automatically, and duplicates are removed to avoid client-side loops.
+func canonicalizeNextActions(structured map[string]any) {
 	items, ok := structured["next_queries"].([]any)
 	if !ok {
 		return
 	}
+	actions := make([]map[string]any, 0, len(items))
+	seen := map[string]bool{}
 	for _, item := range items {
 		query, ok := item.(map[string]any)
 		if !ok {
@@ -107,13 +133,14 @@ func canonicalizeNextQueries(structured map[string]any) {
 		} else if _, ok := findCanonicalTool(tool); ok {
 			knownTool = true
 		}
+		definition, definitionFound := findCanonicalTool(tool)
 		id, _ := query["id"].(string)
 		mappedID := id == ""
 		if id != "" {
 			if tool == "ck3_diagnostics" && arguments["operation"] == "explain" {
 				arguments["code"] = id
 				mappedID = true
-			} else if definition, ok := findCanonicalTool(tool); ok {
+			} else if definitionFound {
 				properties, _ := definition.InputSchema["properties"].(map[string]any)
 				if _, acceptsID := properties["id"]; acceptsID {
 					arguments["id"] = id
@@ -127,24 +154,63 @@ func canonicalizeNextQueries(structured map[string]any) {
 				}
 			}
 		}
-		if len(arguments) > 0 {
-			query["arguments"] = arguments
-		}
 		if historyYear, exists := arguments["history_year"]; exists {
 			if _, hasYear := arguments["year"]; !hasYear {
 				arguments["year"] = historyYear
 			}
 			delete(arguments, "history_year")
-			query["arguments"] = arguments
 		}
-		if knownTool && mappedID {
-			delete(query, "id")
+		if !knownTool || !definitionFound || !mappedID {
+			continue
 		}
+		data, err := json.Marshal(arguments)
+		if err != nil {
+			continue
+		}
+		// Actions are an API contract, not a loose hint. A retained legacy
+		// next_queries producer may only emit a next_actions item when its final
+		// canonical argument object passes the actual registered tool schema.
+		if err := validateArguments(data, definition.InputSchema, definition.CompatibilityProperties); err != nil {
+			continue
+		}
+		key := tool + "\x00" + string(data)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		action := map[string]any{
+			"tool":       tool,
+			"arguments":  arguments,
+			"reason":     query["reason"],
+			"priority":   "normal",
+			"confidence": "medium",
+		}
+		for _, name := range []string{"condition", "expected_result", "stop_if"} {
+			if value, exists := query[name]; exists {
+				action[name] = value
+			}
+		}
+		actions = append(actions, action)
+	}
+	delete(structured, "next_queries")
+	if len(actions) > 0 {
+		structured["next_actions"] = actions
 	}
 }
 
-func encodeToolError(message string) map[string]any {
-	payload := map[string]any{"error": message}
+func encodeToolError(err error, runtime *Runtime) map[string]any {
+	typed := toolErrorFrom(err)
+	message := sanitizeToolError(typed, runtime)
+	field, _ := typed.Details["field"].(string)
+	payload := map[string]any{
+		"code":      typed.Code,
+		"category":  typed.Category,
+		"message":   message,
+		"retryable": typed.Retryable,
+		"field":     field,
+		"details":   typed.Details,
+		"recovery":  typed.Recovery,
+	}
 	data, _ := json.Marshal(payload)
 	return map[string]any{
 		"content":           []map[string]any{{"type": "text", "text": message}},
@@ -154,13 +220,13 @@ func encodeToolError(message string) map[string]any {
 }
 
 func encodeInternalToolError(code, message string) map[string]any {
-	payload := map[string]any{"error": message, "code": code}
-	data, _ := json.Marshal(payload)
-	return map[string]any{
-		"content":           []map[string]any{{"type": "text", "text": message}},
-		"structuredContent": structuredObject(data),
-		"isError":           true,
+	category := "index_state"
+	retryable := true
+	if code == ErrorInternal {
+		category = "internal"
+		retryable = false
 	}
+	return encodeToolError(newToolError(code, category, message, retryable, nil, nil), nil)
 }
 
 func structuredObject(data []byte) map[string]any {

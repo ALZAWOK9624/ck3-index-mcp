@@ -260,6 +260,12 @@ func TestGUIPreviewLocalizationHonorsPublicProjectBoundary(t *testing.T) {
 	if err := db.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
+	if err := syncSourceLayers(ctx, db.sql, []Source{
+		{Name: "base", Path: "base", Rank: 2, Role: SourceRoleDependency, Private: false},
+		{Name: "project", Path: "project", Rank: 1, Role: SourceRoleProject, Private: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	guiPath := writeGUIQueryFixture(t, root, "base/panel.gui", `types Demo { type public_panel = text_single { text = PRIVATE_LABEL } }`)
 	locPath := filepath.Join(root, "project/private_l_english.yml")
 	for _, row := range []struct {

@@ -83,6 +83,7 @@ func (db *DB) reset(ctx context.Context) error {
 	drops := []string{
 		`PRAGMA journal_mode=WAL`,
 		`DROP TABLE IF EXISTS meta`,
+		`DROP TABLE IF EXISTS source_layers`,
 		`DROP TABLE IF EXISTS files`,
 		`DROP TABLE IF EXISTS nodes`,
 		`DROP TABLE IF EXISTS objects`,
@@ -198,6 +199,12 @@ func (db *DB) ensureSchemaNoIndexes(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS meta (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS source_layers (
+			name TEXT PRIMARY KEY,
+			rank INTEGER NOT NULL,
+			role TEXT NOT NULL,
+			private INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE TABLE IF NOT EXISTS files (
 			id INTEGER PRIMARY KEY,

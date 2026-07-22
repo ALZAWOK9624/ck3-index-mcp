@@ -140,10 +140,9 @@ Set `CK3_INDEX_MCP_PROFILE=expert` only when an existing client still discovers 
 | `duplicate_title_id` | warning | Same-source active landed-title id is defined more than once; all locations are reported |
 | `duplicate_barony_province` | warning | One active province is assigned to multiple baronies |
 | `invalid_title_hierarchy` | warning | Landed-title parent rank or barony province assignment is invalid |
-| `scope_never_saved` | warning | `scope:name` block opener without `save_scope_as` |
 | `on_action_direct_override` | warning | Direct effect/trigger block in a vanilla on_action |
-| `missing_trigger_else` | warning | `trigger_if` chain without `trigger_else` terminator |
-| `event_no_option` | warning | Event definition without an option block |
+| `missing_trigger_else` | warning | `trigger_if` / `trigger_else_if` chain without a terminal `trigger_else` |
+| `event_no_option` | warning | Visible numeric event definition without an option block |
 | `nested_iterator` | warning | Iterator inside another iterator, likely expensive or suspicious |
 | `gui_layout_misuse` | warning | `parentanchor` inside `hbox`/`vbox`; usually use `expand={}` instead |
 | `gui_crash_risk` | error | Known crash pattern in GUI |

@@ -145,7 +145,7 @@ func strictDiagnostic(d Diagnostic) bool {
 		return true
 	}
 	switch d.Code {
-	case "scope_mismatch", "trigger_in_effect", "duplicate_object", "scope_never_saved",
+	case "scope_mismatch", "trigger_in_effect", "duplicate_object",
 		"on_action_direct_override", "event_no_option", "gui_layout_misuse", "missing_event_loc",
 		"lios_partial_override":
 		return true

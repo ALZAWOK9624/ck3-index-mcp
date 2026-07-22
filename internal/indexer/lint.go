@@ -28,54 +28,42 @@ func checkScriptLint(nodes []*script.Node, relPath string, sourceName string) []
 	out = append(out, checkGUISafety(nodes, relPath)...)
 	out = append(out, checkIteratorDepth(nodes, relPath)...)
 	out = append(out, checkEventHasOption(nodes, relPath)...)
-	out = append(out, checkSavedScopes(nodes, relPath)...)
 	return out
 }
 
-// M19: trigger_if / trigger_else_if chains must end with trigger_else.
-// Single trigger_if without else is valid; only multi-block chains require it.
+// M19: trigger_if / trigger_else_if chains should end with trigger_else.
+// Independent trigger_if blocks are valid. A chain exists only when a
+// trigger_else_if immediately follows a trigger_if (or another trigger_else_if).
 func checkTriggerElseTerminator(nodes []*script.Node, relPath string) []ctxDiag {
 	var out []ctxDiag
 	var walk func(ns []*script.Node)
 	walk = func(ns []*script.Node) {
-		// Count trigger_if / trigger_else_if / trigger_else in this block.
-		ifCount := 0
-		hasElse := false
-		for _, sib := range ns {
-			if sib.Key == "trigger_if" || sib.Key == "trigger_else_if" {
-				ifCount++
+		for index := 0; index < len(ns); index++ {
+			first := ns[index]
+			if first.Key != "trigger_if" || first.Kind != "block" || index+1 >= len(ns) ||
+				ns[index+1].Key != "trigger_else_if" || ns[index+1].Kind != "block" {
+				continue
 			}
-			if sib.Key == "trigger_else" {
-				hasElse = true
+			end := index + 1
+			for end+1 < len(ns) && ns[end+1].Key == "trigger_else_if" && ns[end+1].Kind == "block" {
+				end++
 			}
-		}
-		if ifCount >= 2 && !hasElse {
-			for _, sib := range ns {
-				if sib.Key == "trigger_if" || sib.Key == "trigger_else_if" {
-					out = append(out, ctxDiag{
-						severity: "warning",
-						code:     "missing_trigger_else",
-						msg:      fmt.Sprintf("%q chain of %d blocks should end with trigger_else (required by CK3)", sib.Key, ifCount),
-						line:     sib.Line, col: sib.Col,
-					})
-				}
+			if end+1 >= len(ns) || ns[end+1].Key != "trigger_else" || ns[end+1].Kind != "block" {
+				out = append(out, ctxDiag{
+					severity: "warning",
+					code:     "missing_trigger_else",
+					msg:      fmt.Sprintf("trigger_if/trigger_else_if chain of %d blocks should end with trigger_else", end-index+1),
+					line:     first.Line, col: first.Col,
+				})
 			}
+			index = end
 		}
 		for _, n := range ns {
 			walk(n.Children)
 		}
 	}
 	walk(nodes)
-
-	seen := map[int]bool{}
-	filtered := out[:0]
-	for _, d := range out {
-		if !seen[d.line] {
-			seen[d.line] = true
-			filtered = append(filtered, d)
-		}
-	}
-	return filtered
+	return out
 }
 
 // M9: On_action files. Only flag effect/trigger blocks directly inside
@@ -256,24 +244,19 @@ func checkScriptEffectRecursion(nodes []*script.Node, relPath string, ownName st
 	return out
 }
 
-// M17: Events should have at least one option block.
+// M17: Visible numeric event definitions should have at least one option
+// block. Event files also contain helper scripted triggers/effects, and hidden
+// events legitimately use immediate effects without presenting a choice.
 func checkEventHasOption(nodes []*script.Node, relPath string) []ctxDiag {
-	if !strings.Contains(relPath, "events/") {
+	if !isEventPath(relPath) {
 		return nil
 	}
 	var out []ctxDiag
 	for _, n := range nodes {
-		if n.Kind != "block" || n.Key == "" {
+		if !isNumericEventID(n) || hasDirectYesChild(n, "hidden") {
 			continue
 		}
-		hasOption := false
-		for _, c := range n.Children {
-			if c.Key == "option" {
-				hasOption = true
-				break
-			}
-		}
-		if !hasOption && (strings.Contains(n.Key, "event") || strings.Contains(n.Key, ".")) {
+		if !hasDirectChild(n, "option") {
 			out = append(out, ctxDiag{
 				severity: "warning",
 				code:     "event_no_option",
@@ -283,6 +266,45 @@ func checkEventHasOption(nodes []*script.Node, relPath string) []ctxDiag {
 		}
 	}
 	return out
+}
+
+func isNumericEventID(n *script.Node) bool {
+	if n == nil || n.Kind != "block" || n.Operator != "=" {
+		return false
+	}
+	parts := strings.Split(n.Key, ".")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return false
+	}
+	for _, r := range parts[0] {
+		if !(r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	for _, r := range parts[1] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func hasDirectChild(n *script.Node, key string) bool {
+	for _, child := range n.Children {
+		if child.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDirectYesChild(n *script.Node, key string) bool {
+	for _, child := range n.Children {
+		if child.Key == key && strings.EqualFold(strings.TrimSpace(child.Value), "yes") {
+			return true
+		}
+	}
+	return false
 }
 
 // --- helpers ---
@@ -328,100 +350,6 @@ var iteratorKeys = map[string]bool{
 
 func isIteratorKey(key string) bool {
 	return iteratorKeys[strings.ToLower(key)]
-}
-
-// --- M3: saved scope consistency ---
-
-// savedScopeSetters are effect keys that create a named saved scope.
-var savedScopeSetters = map[string]bool{
-	"save_scope_as":           true,
-	"save_temporary_scope_as": true,
-}
-
-// checkSavedScopes warns when scope:name references a name that was never
-// saved via save_scope_as or save_temporary_scope_as in the same file.
-// Only checks inside effect blocks to avoid false positives from scope
-// target declarations and pre-saved scopes.
-func checkSavedScopes(nodes []*script.Node, relPath string) []ctxDiag {
-	builtin := map[string]bool{
-		"actor": true, "recipient": true, "root": true, "prev": true, "this": true,
-		// CK3 engine-provided scopes (set by game context, not save_scope_as):
-		"activity": true, "host": true, "target": true, "owner": true,
-		"scheme": true, "story": true, "war": true, "faction": true,
-		"title": true, "character": true, "province": true, "county": true,
-		"faith": true, "culture": true, "dynasty": true, "house": true,
-		"army": true, "attacker": true, "defender": true,
-		"location": true, "holder": true, "controller": true, "liege": true,
-		"father": true, "mother": true, "spouse": true, "lover": true,
-		"killer": true, "employer": true, "guardian": true, "ward": true,
-		"concubine": true, "consort": true, "friend": true, "rival": true,
-		"child": true, "sibling": true, "parent": true,
-		"heir": true, "primary_heir": true, "primary_spouse": true,
-		"court_owner": true, "courtier": true, "guest": true, "prisoner": true,
-		"commander": true, "knight": true, "councillor": true,
-		"religious_head": true, "physician": true,
-		"artifact": true, "legend": true, "secret": true,
-		"task_contract": true, "inspiration": true, "accolade": true,
-		"travel": true, "travel_plan": true, "domicile": true,
-		"struggle": true, "situation": true, "confederation": true,
-		"diplomacy": true, "martial": true, "stewardship": true, "intrigue": true, "learning": true,
-		"newly_created_artifact": true, "newly_created_character": true,
-		"stop_host_scope": true, "visiting_liege": true,
-		"court": true, "pool": true, "capital": true, "realm": true,
-		"beneficiary": true, "designated_heir": true,
-		"event_target": true, "saved_scope": true,
-		"inspiration_owner": true, "headless_heir": true, "visitor": true,
-		"new_memory": true, "versus_contestant": true, "new_title": true,
-		"faction_leader": true, "raider": true, "previous_holder": true,
-		"target_character": true, "councillor_liege": true, "secret_owner": true,
-		"colony": true, "first": true, "second": true, "third": true,
-		"courtier_spy": true, "sc_defender": true, "sc_attacker": true,
-		"homage_vassal": true, "cultural_festival_scope": true,
-	}
-	saved := map[string]bool{}
-	walkNodes(nodes, func(n *script.Node) {
-		if savedScopeSetters[n.Key] && n.Value != "" {
-			saved[n.Value] = true
-		}
-		if n.Key == "save_scope_as" && n.Kind == "block" {
-			for _, c := range n.Children {
-				if c.Key == "name" && c.Value != "" {
-					saved[c.Value] = true
-				}
-			}
-		}
-	})
-	if len(saved) == 0 {
-		return nil
-	}
-
-	var out []ctxDiag
-	var walkEffect func(ns []*script.Node, inEffect bool)
-	walkEffect = func(ns []*script.Node, inEffect bool) {
-		for _, n := range ns {
-			// Only check inside effect-like blocks.
-			eff := inEffect || n.Key == "effect" || n.Key == "immediate" ||
-				n.Key == "option" || n.Key == "after" || n.Key == "hidden_effect"
-			if eff && n.Kind == "block" && strings.HasPrefix(n.Key, "scope:") {
-				name := n.Key[6:]
-				// Scope chains like scope:scheme.task_contract are engine paths.
-				if len(name) <= 1 || strings.Contains(name, ".") || builtin[name] {
-					continue
-				}
-				if !saved[name] {
-					out = append(out, ctxDiag{
-						severity: "warning",
-						code:     "scope_never_saved",
-						msg:      fmt.Sprintf("scope:%s used as block opener but save_scope_as not found in this file", name),
-						line:     n.Line, col: n.Col,
-					})
-				}
-			}
-			walkEffect(n.Children, eff)
-		}
-	}
-	walkEffect(nodes, false)
-	return out
 }
 
 // --- M4: variable existence ---
@@ -545,7 +473,15 @@ func walkNodes(nodes []*script.Node, fn func(*script.Node)) {
 	}
 }
 
-// --- Cross-file data collection (for M3+M4 health checks) ---
+// --- Cross-file data collection ---
+
+// savedScopeSetters are retained for index data collection. They are not a
+// proof that a scope reference is invalid when no local setter is found:
+// CK3 scopes can be provided by event context, callers, and switch branches.
+var savedScopeSetters = map[string]bool{
+	"save_scope_as":           true,
+	"save_temporary_scope_as": true,
+}
 
 // collectSavedScopes extracts all unique saved scope names from an AST.
 func collectSavedScopes(nodes []*script.Node) []string {

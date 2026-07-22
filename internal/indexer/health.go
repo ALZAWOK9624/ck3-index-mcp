@@ -18,10 +18,8 @@ func (db *DB) runHealthChecks(ctx context.Context) error {
 	if err := db.checkLIOSSafety(ctx); err != nil {
 		return err
 	}
-	// M3+M4 cross-file checks are correct but slow without
-	// covering indexes on the refs+saved_scopes join.
+	// M4 cross-file checks are slow without covering indexes on the refs join.
 	// They will be re-enabled once the index strategy is refined.
-	// if err := db.checkSavedScopeCrossFile(ctx); err != nil { ... }
 	// if err := db.checkVariableCrossFile(ctx); err != nil { ... }
 	return nil
 }
@@ -175,42 +173,6 @@ func (db *DB) checkLocalizationEncoding(ctx context.Context) error {
 				path); err != nil {
 				return err
 			}
-		}
-	}
-	return rows.Err()
-}
-
-// M3: saved scope cross-file consistency.
-func (db *DB) checkSavedScopeCrossFile(ctx context.Context) error {
-	builtins := "'actor','recipient','root','prev','this'"
-	rows, err := db.sql.QueryContext(ctx, `
-		SELECT r.ref_name, r.file_id, r.line, r.col, COALESCE(f.path,'')
-		FROM refs r
-		JOIN files f ON f.id=r.file_id
-		WHERE r.ref_kind='scope' AND f.overridden=0
-		AND r.ref_name NOT IN (`+builtins+`)
-		AND NOT EXISTS (
-			SELECT 1 FROM saved_scopes ss
-			JOIN files f2 ON f2.id=ss.file_id AND f2.overridden=0
-			WHERE ss.scope_name=r.ref_name
-		)
-		ORDER BY r.ref_name`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	var refName, path string
-	var fileID int64
-	var line, col int
-	for rows.Next() {
-		if err := rows.Scan(&refName, &fileID, &line, &col, &path); err != nil {
-			return err
-		}
-		msg := fmt.Sprintf("scope:%s referenced but never saved via save_scope_as in any active file", refName)
-		if _, err := db.sql.ExecContext(ctx,
-			`INSERT INTO diagnostics(source,severity,code,message,path,line,col) VALUES(?,?,?,?,?,?,?)`,
-			"health", "warning", "scope_never_saved", msg, path, line, col); err != nil {
-			return err
 		}
 	}
 	return rows.Err()

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Retire the unprovable `scope_never_saved` heuristic and narrow structural event and trigger-chain linting to evidence-backed CK3 forms.
+
 ## 0.4.0 - Public release (2026-07-19)
 
 - Adopt GPL-3.0-or-later for ck3-index and prepare the first public release. External research checkouts, caches, game data, and local configuration are excluded from distribution.

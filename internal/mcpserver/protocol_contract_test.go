@@ -462,7 +462,7 @@ live_on_action_fixture = { }
 	}
 }
 
-func TestOnActionReferenceKeepsTigerStaticContractDuringFinalizing(t *testing.T) {
+func TestOnActionReferenceKeepsEngineSnapshotContractDuringFinalizing(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "test.sqlite")
 	game := t.TempDir()
@@ -501,15 +501,18 @@ on_army_monthly = { }
 		t.Fatalf("static on_action reference was blocked while finalizing: %+v", result)
 	}
 	structured := result["structuredContent"].(map[string]any)
-	if structured["found"] != true || structured["rule_source"] != "tiger_fallback" || structured["confidence"] != "medium" {
-		t.Fatalf("finalizing lookup did not use Tiger fallback: %+v", structured)
+	if structured["found"] != true || structured["rule_source"] != "engine_1_19_snapshot" || structured["confidence"] != "high" {
+		t.Fatalf("finalizing lookup did not use the CK3 1.19 snapshot: %+v", structured)
 	}
 	if _, leaked := structured["rules"]; leaked {
 		t.Fatalf("unpublished engine rule leaked into static fallback: %+v", structured)
 	}
-	tiger := structured["tiger_contract"].(map[string]any)
-	if tiger["definition"] != "on_army_monthly" || tiger["rule_source"] != "tiger_static" || tiger["diagnostic_effect"] != "none" || tiger["root"].(map[string]any)["static_type"] != "character" {
-		t.Fatalf("Tiger static evidence was not kept separate: %+v", tiger)
+	snapshot := structured["snapshot_contract"].(map[string]any)
+	if _, legacy := structured["tiger_contract"]; legacy {
+		t.Fatalf("on_action response still exposed the retired tiger_contract key: %+v", structured)
+	}
+	if snapshot["definition"] != "on_army_monthly" || snapshot["rule_source"] != "engine_1_19_snapshot" || snapshot["diagnostic_effect"] != "none" || snapshot["root"].(map[string]any)["static_type"] != "none" {
+		t.Fatalf("CK3 1.19 snapshot evidence was not kept separate: %+v", snapshot)
 	}
 	documentation := structured["documentation_contract"].(map[string]any)
 	if documentation["engine_evidence_available"] != false || documentation["status"] != "documented" {

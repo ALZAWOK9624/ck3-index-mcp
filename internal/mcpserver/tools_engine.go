@@ -34,15 +34,15 @@ func lookupShapeTool(key string) (any, error) {
 		return map[string]any{
 			"found":    false,
 			"key":      key,
-			"guidance": []string{"No value-shape rule was found; confirm syntax from query_examples or game script before generating this key."},
+			"guidance": []string{"No current engine documentation was found; confirm syntax from query_examples or game script before generating this key."},
 		}, nil
 	}
 	return map[string]any{
-		"found":    true,
-		"key":      key,
-		"shape":    sd.Shape,
-		"desc":     sd.Desc,
-		"guidance": []string{"Shape describes the value form; it does not by itself prove the surrounding trigger/effect context is legal."},
+		"found":         true,
+		"key":           sd.Key,
+		"evidence_kind": sd.EvidenceKind,
+		"documentation": sd.Documentation,
+		"guidance":      []string{"These are direct CK3 1.19 documentation excerpts. They do not assert an exhaustive value grammar; use scope evidence and a concrete example before generating complex syntax."},
 	}, nil
 }
 
@@ -87,7 +87,13 @@ func lookupModifierTool(key string) (any, error) {
 		"found":     true,
 		"key":       key,
 		"use_areas": ml.UseAreas,
-		"guidance":  []string{"Use only in modifier blocks that apply to one of these scope/use areas."},
+		"source":    ml.Source,
+		"guidance": func() []string {
+			if len(ml.UseAreas) == 0 {
+				return []string{"Current vanilla format sources confirm this modifier name, but modifiers.log did not publish a use-area contract; inspect vanilla context before choosing a modifier block."}
+			}
+			return []string{"Use only in modifier blocks that apply to one of these scope/use areas."}
+		}(),
 	}, nil
 }
 

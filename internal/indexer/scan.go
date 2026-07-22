@@ -72,7 +72,7 @@ type fileRecord struct {
 	OverrideRule     string
 }
 
-const indexRuleVersion = "2026-07-19-v0.2.26-live-on-action-lint"
+const indexRuleVersion = "2026-07-22-v0.2.31-ck3-1.19-static-audit"
 
 // Keep ordinary full scans well below SQLite's variable limit when they take
 // the scoped resolver/validator path. Larger edits remain correct by falling
@@ -999,9 +999,9 @@ func refreshRefsResolvedGo(ctx context.Context, tx *sql.Tx, objectNames map[stri
 		case "iterator":
 			_, res = iteratorScopeIn[name]
 		case "scope_transition":
-			_, res = scopeTransitionsIn[name]
+			_, res = engineScopeTransitionsIn[name]
 		case "define":
-			_, res = tigerDefines[name]
+			_, res = engineDefines[name]
 		case "flag", "global_var", "variable", "character_flag":
 			res = true
 		default:
@@ -2660,13 +2660,13 @@ func extractRefs(rec fileRecord, nodes []*script.Node, objs []objectRow) []refRo
 			k := n.Key
 			if _, ok := iteratorScopeIn[k]; ok {
 				out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: "iterator", Name: k, Raw: k, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
-			} else if _, ok := scopeTransitionsIn[k]; ok {
+			} else if _, ok := engineScopeTransitionsIn[k]; ok {
 				out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: "scope_transition", Name: k, Raw: k, FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
 			}
 		}
 		// Track Jomini substitutions separately from engine defines. Scripted
 		// variables use @name and are defined in loaded script; engine defines
-		// use the @NAMESPACE|KEY form and remain validated by tiger data.
+		// use the @NAMESPACE|KEY form and remain validated by the current engine snapshot.
 		if value := strings.TrimSpace(n.Value); strings.HasPrefix(value, "@") && len(value) > 2 && !isArithmeticExpression(value) {
 			kind := ""
 			switch {

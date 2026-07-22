@@ -509,7 +509,7 @@ func (db *DB) LLMQueryResource(ctx context.Context, id string, opts LLMOptions) 
 	}
 	r := LLMResult{Query: id, Intent: "query_resource", Counts: map[string]int{"resources": len(res.Resources), "references": len(res.References), "known_sounds": soundCount}}
 	if soundKnown {
-		r.Evidence = append(r.Evidence, LLMEvidence{Kind: "sound_event", Name: strings.Trim(id, `"`), Detail: "known from compiled CK3/Tiger sound logs"})
+		r.Evidence = append(r.Evidence, LLMEvidence{Kind: "sound_event", Name: strings.Trim(id, `"`), Detail: "known from compiled CK3 sound-event evidence"})
 	}
 	for i, h := range res.Resources {
 		if i >= limit {
@@ -525,7 +525,7 @@ func (db *DB) LLMQueryResource(ctx context.Context, id string, opts LLMOptions) 
 	}
 	if soundKnown && len(res.Resources) == 0 {
 		r.Summary = fmt.Sprintf("%q is a known indexed sound event; %d reference(s) may mention it.", id, len(res.References))
-		r.Guidance = []string{"Sound events are validated from compiled game/Tiger log seeds, not from filesystem resource files."}
+		r.Guidance = []string{"Sound events are validated from compiled CK3 sound-event evidence, not from filesystem resource files."}
 	} else if len(res.Resources) == 0 {
 		r.Summary = fmt.Sprintf("No indexed resource matched %q; %d reference(s) may still mention it.", id, len(res.References))
 		r.Guidance = []string{"Missing indexed resources should be fixed by adding the file or using an existing vanilla/Godherja path."}
@@ -1108,7 +1108,7 @@ func (db *DB) LLMDiagnoseKey(ctx context.Context, id string, opts LLMOptions) (L
 		"If every count is zero, the id is probably safe for a new generated object but still needs a prefix.",
 	}
 	if r.Counts["known_sounds"] > 0 {
-		r.Guidance = []string{"This id is a known sound event from compiled game/Tiger logs; it is not expected to appear as a filesystem resource."}
+		r.Guidance = []string{"This id is a known sound event from compiled CK3 sound-event evidence; it is not expected to appear as a filesystem resource."}
 	}
 	r.NextQueries = []LLMNextQuery{
 		{Tool: "inspect_object", ID: id, Reason: "get object-centered context if this is a script object"},

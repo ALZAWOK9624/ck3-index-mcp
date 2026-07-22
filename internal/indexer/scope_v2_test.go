@@ -59,6 +59,34 @@ func TestScopeV2TracksDottedChainsAndIgnoresUnknownWidgetRoots(t *testing.T) {
 	}
 }
 
+func TestScopeV2TreatsTypedCourtPositionTargetAsCharacter(t *testing.T) {
+	file := script.Parse(`test_decision = {
+		effect = {
+			court_position:court_scholar_court_position ?= {
+				remove_character_flag = civil_research
+			}
+		}
+	}`)
+	if got := checkScopeTracker(file.Nodes, "common/decisions/test.txt"); len(got) != 0 {
+		t.Fatalf("expected court_position target to resolve to its character output scope, got %+v", got)
+	}
+}
+
+func TestScopeV2KeepsFlagSwitchBranchesInParentScope(t *testing.T) {
+	file := script.Parse(`test_decision = {
+		effect = {
+			switch = {
+				flag:council_seat = {
+					ordered_courtier = { save_scope_as = selected_courtier }
+				}
+			}
+		}
+	}`)
+	if got := checkScopeTracker(file.Nodes, "common/decisions/test.txt"); len(got) != 0 {
+		t.Fatalf("expected a flag switch label to preserve the parent character scope, got %+v", got)
+	}
+}
+
 func TestScopeV2TracksHistoryHolderAndRegimentIterator(t *testing.T) {
 	file := script.Parse(`k_test = {
 		1.1.1 = {

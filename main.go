@@ -831,10 +831,10 @@ func run(ctx context.Context, args []string) error {
 			return printJSON(map[string]any{"found": false, "key": args[0]})
 		}
 		return printJSON(map[string]any{
-			"found": true,
-			"key":   args[0],
-			"shape": sd.Shape,
-			"desc":  sd.Desc,
+			"found":         true,
+			"key":           sd.Key,
+			"evidence_kind": sd.EvidenceKind,
+			"documentation": sd.Documentation,
 		})
 	case "lookup-define":
 		if len(args) < 1 {
@@ -862,16 +862,16 @@ func run(ctx context.Context, args []string) error {
 			}
 			if len(live) > 0 {
 				result := map[string]any{"found": true, "key": args[0], "rules": live, "confidence": "high", "rule_source": "engine_logs"}
-				if tiger, found := indexer.ResolveTigerOnActionContract(args[0]); found {
-					result["tiger_contract"] = tiger
+				if snapshot, found := indexer.ResolveOnActionSnapshotContract(args[0]); found {
+					result["snapshot_contract"] = snapshot
 				}
 				return printJSON(result)
 			}
 		}
 		found := indexer.IsOnAction(args[0])
-		result := map[string]any{"found": found, "key": args[0], "confidence": "medium", "rule_source": "tiger_fallback"}
-		if tiger, staticFound := indexer.ResolveTigerOnActionContract(args[0]); staticFound {
-			result["tiger_contract"] = tiger
+		result := map[string]any{"found": found, "key": args[0], "confidence": "medium", "rule_source": "engine_1_19_snapshot"}
+		if snapshot, staticFound := indexer.ResolveOnActionSnapshotContract(args[0]); staticFound {
+			result["snapshot_contract"] = snapshot
 		}
 		return printJSON(result)
 	case "lookup-iterator":
@@ -1314,9 +1314,9 @@ func printHelp() {
   gui-resolve <paths...>   recursively expand GUI templates, inheritance, custom children, and block overrides; supports --summary
   examples <type[:term]>   show vanilla-first examples for an object type
 	  rules <type>             show self-owned schema fields learned from local .info files
-	  rules audit              report live on_actions.log drift against generated Tiger names (read-only)
+	  rules audit              report live on_actions.log drift against the generated CK3 1.19 snapshot (read-only)
 	  rules contracts          audit adjacent vanilla on_action comment contracts against live root evidence (read-only)
-	  rules evidence           reconcile engine, Tiger, and vanilla-comment on_action evidence (read-only)
+	  rules evidence           reconcile engine, the CK3 1.19 snapshot, and vanilla-comment on_action evidence (read-only)
 	  override audit           compare unique top-level common/events definitions across configured source layers (read-only)
 	  override compare <id>    compare one typed object against its upstream layer, including field drift (read-only)
   patterns <type>          show empirical field shapes learned from indexed scripts
@@ -1330,7 +1330,7 @@ func printHelp() {
   search <query>           semantic exact/prefix/FTS discovery before raw text search
   lookup-scope <key>       check local scope rule for a trigger/effect key
   lookup-datatype <key>    query engine logs/data_types signatures and return types
-  lookup-shape <key>       check local value-shape rule for a trigger/effect key
+  lookup-shape <key>       show CK3 1.19 documented trigger/effect usage (not an exhaustive value grammar)
   lookup-define <key>      check if @define name exists in local define rules
   lookup-on-action <key>   check if on_action name is known in local rules
   lookup-iterator <key>    check if iterator/scope name is known in local rules

@@ -162,41 +162,49 @@
 | `health.go` | `variable_never_set`（跨文件） | global_var 引用跨所有生效文件校验 |
 | `health.go` | `duplicate_character` | 同名历史角色跨文件重复 |
 
-## 八、ck3-tiger 数据全量提取
+## 八、CK3 1.19 规则快照生成
 
-| 数据表 | 条目 | 生成文件 | MCP 工具 |
+规则快照仅从同一 CK3 版本的当前引擎日志和游戏目录再生；旧兼容数据不再是任何生成器的输入或运行时回退。
+
+| 规则数据 | 当前权威来源 | 生成文件 | 生成器 |
 |---|---|---|---|
-| `triggers.rs` + `effects.rs` (scope) | 1,315 + 848 | `scope_data.gen.go` (4,901 行) | `lookup_scope` |
-| `triggers.rs` + `effects.rs` (shape) | 2,150 | `shape_data.gen.go` (2,190 行) | `lookup_shape` |
-| `iterators.rs` | 1,324 | 同上 | scope tracker 内部 |
-| `targets.rs` | 222 | `scope_transitions.gen.go` | scope transition 内部 |
-| `defines.rs` | 1,903 | `defines_data.gen.go` | `lookup_define` |
-| `on_action.rs` | 200 | `on_action_data.gen.go` | `lookup_on_action` |
-| `modifs.rs` | 634 | `tiger_modifs.gen.go` | `lookup_modifier`（升级） |
-| `sounds.rs` | 923 | `tiger_extra.gen.go` | `IsSound` |
-| `localization.rs` | 426 | 同上 | `IsLocMacro` |
+| trigger/effect scope、迭代器输入/输出 | `event_scopes.log`、`triggers.log`、`effects.log` | `scope_data.gen.go` | `extract_engine_scopes.py` |
+| scope 转换 | `event_targets.log` | `scope_transitions.gen.go` | `extract_engine_scopes.py` |
+| on_action 成员、根 scope 与已证明的绑定 | `on_actions.log` + `common/on_action/` 当前原版注释 | `on_action_data.gen.go` | `extract_engine_on_actions.py` |
+| defines | `common/defines/` 当前原版文件 | `engine_defines.gen.go` | `extract_engine_defines.py` |
+| sound events | `sound/GUIDs.txt` + 当前原版文本中的 `event:/` 引用 | `engine_sounds.gen.go` | `extract_engine_sounds.py` |
+| trigger/effect 结构文档 | `triggers.log`、`effects.log` | `engine_shapes.gen.go` | `extract_engine_shapes.py` |
+| modifiers | `modifiers.log` + `common/modifier_definition_formats/` | `modifiers_data.gen.go` | `extract_modifiers.py` |
+| effect 示例 | `effects.log` | `effect_examples.gen.go` | `extract_effect_examples.py` |
+| trigger 示例 | `triggers.log` | `trigger_examples.gen.go` | `extract_trigger_examples.py` |
 
-**提取工具：** `tools/extract_all_scopes.py`、`tools/extract_shapes.py`、`tools/extract_defines.py`、`tools/extract_on_actions.py`、`tools/extract_targets.py`、`tools/extract_tiger_modifs.py`、`tools/extract_tiger_extra.py`
+从仓库根目录执行（PowerShell，`$logs` 与 `$game` 必须来自同一 CK3 版本）：
 
-## 九、Game Log 数据提取
+```powershell
+$logs = '<当前 CK3 日志目录>'
+$game = '<当前 CK3 game 目录>'
 
-| 数据 | 条目 | MCP 工具 |
-|---|---|---|
-| `effects.log` descriptions | 1,886 | `lookup_example` |
-| `triggers.log` descriptions | 1,768 | `lookup_example` |
-| `modifiers.log` tags | 2,210 | `lookup_modifier` |
+python tools/extract_engine_scopes.py --logs $logs --scope-output internal/indexer/scope_data.gen.go --targets-output internal/indexer/scope_transitions.gen.go
+python tools/extract_engine_on_actions.py --logs $logs --game $game --output internal/indexer/on_action_data.gen.go
+python tools/extract_engine_defines.py --game $game --output internal/indexer/engine_defines.gen.go
+python tools/extract_engine_sounds.py --game $game --output internal/indexer/engine_sounds.gen.go
+python tools/extract_engine_shapes.py --logs $logs --output internal/indexer/engine_shapes.gen.go
+python tools/extract_modifiers.py --logs $logs --game $game --output internal/indexer/modifiers_data.gen.go
+python tools/extract_effect_examples.py --logs $logs --output internal/indexer/effect_examples.gen.go
+python tools/extract_trigger_examples.py --logs $logs --output internal/indexer/trigger_examples.gen.go
+gofmt -w internal/indexer/scope_data.gen.go internal/indexer/scope_transitions.gen.go internal/indexer/on_action_data.gen.go internal/indexer/engine_defines.gen.go internal/indexer/engine_sounds.gen.go internal/indexer/engine_shapes.gen.go internal/indexer/modifiers_data.gen.go internal/indexer/effect_examples.gen.go internal/indexer/trigger_examples.gen.go
+```
 
-## 十、不信任数据过滤
+## 九、证据边界
 
-全量游戏安装（18,664 文件 / 520MB）、Godherja（7,399 文件）、游戏源码（14,704 文件）三重 grep 验证：
+- `engine_shapes.gen.go` 只记录当前日志明确给出的描述与示例；它不把文档猜成完整的 `boolean`、`block` 或其他值语法。
+- modifier 表同时保留日志中的精确 tag 与当前 `modifier_definition_formats` 的实际名称；`$TOKEN$` 模板不会自动把 use area 赋给具体名称。空 `use_areas` 表示原版已证明名称存在，但日志没有直接证明其使用区域。
+- `on_action_data.gen.go` 以引擎日志的成员和根 scope 为准，原版相邻注释仅补充能直接证明的命名或列表绑定。
+- 每次再生后必须运行完整扫描和诊断统计；生成表的版本变更不能用增量扫描代替。
 
-| 数据表 | 确认率 | 不可信 | 处理 |
-|---|---|---|---|
-| trigger/effect scope+shape | 85% (1,833/2,150) | 317 | `deprecated_data.gen.go`，参考不拦截 |
-| modifier kinds | 97% | 14 | 不标记 |
-| defines | 99% | 18 | 不标记 |
-| on_actions | 99% | 2 | 不标记 |
-| loc_macros | 98% | 6 | 不标记 |
+## 十、再生后验证
+
+完成表再生后，至少运行 `go test ./internal/indexer`、`go test ./internal/mcpserver`、`go vet ./...`、`go run . accuracy`、完整 `go run . scan` 和 `go run . diag_stats`。若诊断数量上升，先审理来源与解析差异，不把未证明的旧规则补回快照。
 
 ## 十一、性能优化
 
@@ -216,7 +224,7 @@ Scan 性能：clean 34s / incremental 12s
 
 查询：`inspect_object` `prepare_edit` `diagnose_key` `query_object` `query_object_types` `find_refs` `query_loc` `query_resource` `query_examples` `query_rules`
 校验：`validate_project` `explain_diagnostic`
-Tiger 数据：`lookup_scope` `lookup_shape` `lookup_define` `lookup_on_action` `lookup_example` `lookup_modifier`
+规则快照：`ck3_script_reference` 的 `scope`、`shape`、`define`、`on_action`、`example`、`modifier` kinds
 
 ## 十三、诊断码汇总
 
@@ -240,25 +248,27 @@ Tiger 数据：`lookup_scope` `lookup_shape` `lookup_define` `lookup_on_action` 
 
 | 文件 | 用途 |
 |---|---|
-| `scope_data.gen.go` | tiger trigger/effect/iterator scope 数据（4,901 行） |
-| `shape_data.gen.go` | tiger trigger/effect 取值形状数据（2,190 行） |
-| `deprecated_data.gen.go` | 不信任 key 列表（327 行） |
-| `tiger_modifs.gen.go` | modifier scope kinds（642 行） |
-| `tiger_extra.gen.go` | sounds + loc macros（1,362 行） |
-| `defines_data.gen.go` | game defines |
-| `on_action_data.gen.go` | game on_actions |
-| `scope_transitions.gen.go` | scope transitions |
+| `scope_data.gen.go` | CK3 1.19 trigger/effect/iterator scope 快照 |
+| `scope_transitions.gen.go` | CK3 1.19 scope transition 快照 |
+| `on_action_data.gen.go` | CK3 1.19 on_action 快照 |
+| `engine_defines.gen.go` | 当前原版 define 名称 |
+| `engine_sounds.gen.go` | 当前原版 sound event 清单 |
+| `engine_shapes.gen.go` | 当前 trigger/effect 文档与示例，不推断值语法 |
+| `modifiers_data.gen.go` | 当前 modifier 名称及文档 use areas |
+| `effect_examples.gen.go` | 当前 effect 用法示例 |
+| `trigger_examples.gen.go` | 当前 trigger 用法示例 |
 | `lint.go` | 结构化 lint 检查（600+ 行） |
 | `health.go` | 跨文件健康检查（250+ 行） |
 | `scope_check.go` | scope 校验 + MCP lookup 函数（200+ 行） |
 | `scope_tracker.go` | 迭代器感知 scope 栈追踪（100+ 行） |
-| `tools/extract_all_scopes.py` | 主提取脚本 |
-| `tools/extract_shapes.py` | shape 提取脚本 |
-| `tools/extract_defines.py` | define 提取脚本 |
-| `tools/extract_on_actions.py` | on_action 提取脚本 |
-| `tools/extract_targets.py` | scope 转换提取脚本 |
-| `tools/extract_tiger_modifs.py` | modifier 提取脚本 |
-| `tools/extract_tiger_extra.py` | sounds/loc 提取脚本 |
+| `tools/extract_engine_scopes.py` | 从当前日志生成 scope、迭代器与 transitions |
+| `tools/extract_engine_on_actions.py` | 从当前日志和原版注释生成 on_action 快照 |
+| `tools/extract_engine_defines.py` | 从当前原版 defines 生成 define 名称 |
+| `tools/extract_engine_sounds.py` | 从 GUID 和当前文本引用生成 sound events |
+| `tools/extract_engine_shapes.py` | 从当前日志生成保守的 trigger/effect 文档 |
+| `tools/extract_modifiers.py` | 从当前日志和格式定义生成 modifier 清单 |
+| `tools/extract_effect_examples.py` | 从当前 `effects.log` 生成 effect 示例 |
+| `tools/extract_trigger_examples.py` | 从当前 `triggers.log` 生成 trigger 示例 |
 | `tools/char_rank.py` | CK3 角色排行工具 |
 | `SKILL.md` | 更新为完整 LLM skill 文档 |
 | `README.md` | 更新为完整说明 |

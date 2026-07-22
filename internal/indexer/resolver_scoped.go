@@ -236,10 +236,10 @@ func (r scopedResolver) resolved(ctx context.Context, kind, name string) (bool, 
 		_, ok := iteratorScopeIn[name]
 		return ok, nil
 	case "scope_transition":
-		_, ok := scopeTransitionsIn[name]
+		_, ok := engineScopeTransitionsIn[name]
 		return ok, nil
 	case "define":
-		_, ok := tigerDefines[name]
+		_, ok := engineDefines[name]
 		return ok, nil
 	case "flag", "global_var", "variable", "character_flag":
 		return true, nil

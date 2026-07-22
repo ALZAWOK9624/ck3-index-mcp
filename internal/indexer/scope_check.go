@@ -7,7 +7,7 @@ import (
 // fileScopeType returns the most likely root scope for CK3 script files
 // that have a well-defined, unambiguous scope.
 // relPath is relative to source root (no leading slash).
-func fileScopeType(relPath string) TigerScope {
+func fileScopeType(relPath string) EngineScope {
 	p := relPath
 	if !strings.HasPrefix(p, "/") {
 		p = "/" + p
@@ -39,15 +39,23 @@ type ScopeLookup struct {
 }
 
 // LookupScope returns the scope requirement for a trigger or effect key.
-// Returns nil if the key is not found in tiger data.
+// A configured engine log is authoritative; the generated CK3 1.19 snapshot
+// is the offline fallback for rule bundles without engine logs.
 func LookupScope(key string) *ScopeLookup {
 	kl := strings.ToLower(key)
-	ts, isTrig := tigerTriggerScopes[kl]
-	es, isEff := tigerEffectScopes[kl]
+	var ts, es EngineScope
+	var isTrig, isEff bool
+	if engineRulesConfigured() {
+		ts, isTrig = engineRuleScope(kl, "trigger")
+		es, isEff = engineRuleScope(kl, "effect")
+	} else {
+		ts, isTrig = engineTriggerScopes[kl]
+		es, isEff = engineEffectScopes[kl]
+	}
 	if !isTrig && !isEff {
 		return nil
 	}
-	var mask TigerScope
+	var mask EngineScope
 	if isTrig {
 		mask = scopeUnion(mask, ts)
 	}
@@ -65,7 +73,7 @@ func LookupScope(key string) *ScopeLookup {
 	}
 }
 
-func scopeMaskDesc(m TigerScope) string {
+func scopeMaskDesc(m EngineScope) string {
 	names := scopeNames(m)
 	if len(names) == 0 {
 		return "unknown"
@@ -73,12 +81,12 @@ func scopeMaskDesc(m TigerScope) string {
 	return strings.Join(names, "|")
 }
 
-func scopeNames(m TigerScope) []string {
+func scopeNames(m EngineScope) []string {
 	if m == ScopeAllScopes {
 		return []string{"any"}
 	}
 	names := make([]string, 0, 2)
-	for _, entry := range tigerScopeNames {
+	for _, entry := range engineScopeNames {
 		if m.Intersects(entry.Scope) {
 			names = append(names, entry.Name)
 		}
@@ -86,27 +94,27 @@ func scopeNames(m TigerScope) []string {
 	return names
 }
 
-// LookupShape returns the value shape for a trigger or effect key (from
-// ck3-tiger data). Nil if the key is not found, or if it is in the
-// untrusted set (not confirmed in game scripts).
-func LookupShape(key string) *ShapeDesc {
-	kl := strings.ToLower(key)
-	if s, ok := tigerShapeData[kl]; ok {
+// LookupShape returns only current CK3 1.19 documentation facts for a
+// trigger/effect key. The engine logs do not expose an exhaustive formal value
+// grammar, so this deliberately does not reuse legacy boolean/block/vbv labels.
+func LookupShape(key string) *ShapeLookup {
+	kl := strings.ToLower(strings.TrimSpace(key))
+	if s, ok := engineShapeData[kl]; ok {
 		return &s
 	}
 	return nil
 }
 
-// IsDefine returns true if the key is a known CK3 @define name.
+// IsDefine returns true if the key is a current CK3 1.19 @define name.
 func IsDefine(key string) bool {
-	_, ok := tigerDefines[key]
+	_, ok := engineDefines[key]
 	return ok
 }
 
 // IsOnAction returns true if the key is a known CK3 on_action name.
 func IsOnAction(key string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(key))
-	_, ok := tigerOnActions[normalized]
+	_, ok := engineOnActions[normalized]
 	return ok || engineOnActionKnown(normalized)
 }
 
@@ -127,32 +135,30 @@ func LookupExample(key string) *struct{ Desc, Example string } {
 type ModifierLookup struct {
 	Found    bool     `json:"found"`
 	UseAreas []string `json:"use_areas"`
+	Source   string   `json:"source,omitempty"`
 }
 
 // LookupModifier checks if a modifier tag is valid and returns its use areas.
+// An empty UseAreas means that current vanilla format sources prove the name,
+// but modifiers.log did not publish an area contract for it.
 func LookupModifier(key string) ModifierLookup {
-	if kinds, ok := tigerModifKinds[key]; ok {
-		return ModifierLookup{Found: true, UseAreas: kinds}
+	key = strings.TrimSpace(key)
+	if info, ok := engineModifier(key); ok {
+		return ModifierLookup{Found: true, UseAreas: info.UseAreas, Source: "engine_log"}
 	}
-	if info, ok := tigerModifiers[key]; ok {
-		return ModifierLookup{Found: true, UseAreas: info.UseAreas}
+	if info, ok := engineModifiers[key]; ok {
+		return ModifierLookup{Found: true, UseAreas: info.UseAreas, Source: info.Source}
 	}
 	return ModifierLookup{Found: false}
 }
 
-// IsSound returns true if the key is a known CK3 sound event name.
+// IsSound returns true if the key is a current CK3 1.19 sound event name.
 func IsSound(key string) bool {
-	_, ok := tigerSounds[key]
+	_, ok := engineSounds[key]
 	return ok
 }
 
-// IsLocMacro returns true if the key is a known CK3 localization macro.
-func IsLocMacro(key string) bool {
-	_, ok := tigerLocMacros[key]
-	return ok
-}
-
-// IteratorLookup describes a CK3 iterator (scope) from ck3-tiger data.
+// IteratorLookup describes a CK3 iterator from the generated CK3 1.19 table.
 type IteratorLookup struct {
 	Key      string `json:"key"`
 	ScopeIn  string `json:"scope_in"`
@@ -160,7 +166,7 @@ type IteratorLookup struct {
 }
 
 // LookupIterator checks whether the given key is a known CK3 iterator
-// (any_child, random_vassal, every_tributary, etc.) from ck3-tiger data.
+// (any_child, random_vassal, every_tributary, etc.) from CK3 1.19 data.
 // Returns nil if the key is not a known iterator.
 func LookupIterator(key string) *IteratorLookup {
 	kl := strings.ToLower(key)
@@ -182,12 +188,4 @@ func LookupIterator(key string) *IteratorLookup {
 		ScopeIn:  descIn,
 		ScopeOut: descOut,
 	}
-}
-
-// IsInGameScripts returns whether this key was found in the full CK3
-// game installation, Godherja, or game source via grep. Engine-level
-// keys (any_tributary, etc.) return false — they live in the binary.
-func IsInGameScripts(key string) bool {
-	kl := strings.ToLower(key)
-	return !tigerUntrustedKeys[kl]
 }

@@ -66,7 +66,7 @@ types Demo {
 	}
 }
 
-func TestGUIPercentSizeCrashRiskUsesBareVectorValues(t *testing.T) {
+func TestGUIPercentSizeIsAllowedButParentanchorStillWarns(t *testing.T) {
 	parsed := script.ParseGUI(`types Demo {
 	type bad = hbox {
 		size = { 100% 40 }
@@ -79,7 +79,7 @@ func TestGUIPercentSizeCrashRiskUsesBareVectorValues(t *testing.T) {
 		crash = crash || diag.code == "gui_crash_risk"
 		layout = layout || diag.code == "gui_layout_misuse"
 	}
-	if !crash || !layout {
-		t.Fatalf("got diagnostics=%+v want crash risk and layout misuse", diags)
+	if crash || !layout {
+		t.Fatalf("got diagnostics=%+v want no crash risk and layout misuse", diags)
 	}
 }

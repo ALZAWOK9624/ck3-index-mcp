@@ -49,20 +49,20 @@ on_duplicate_root_documented_fixture = { }
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != "ok" || !report.EngineEvidenceAvailable || !report.DocumentationEvidenceAvailable || report.TigerSourceVersion != "1.15.0" || report.HookCount < len(tigerOnActions) {
+	if report.Status != "ok" || !report.EngineEvidenceAvailable || !report.DocumentationEvidenceAvailable || report.SnapshotSourceVersion != "1.19.0-engine-log" || report.HookCount < 6 {
 		t.Fatalf("unexpected audit summary: %+v", report)
 	}
 
 	army := onActionEvidenceFinding(t, report.Findings, "on_army_monthly")
-	if army.Status != "match" || army.Engine.Type != "character" || army.Tiger.Root.Type != "character" || army.Documentation.Status != "documented" || len(army.Documentation.Roots) != 1 || army.Documentation.Roots[0].Root.Type != "character" || army.EngineTigerComparison != "match" || army.EngineDocumentationComparison != "match" || army.TigerDocumentationComparison != "match" {
-		t.Fatalf("published matching evidence did not remain layered: %+v", army)
+	if army.Status != "engine_scope_conflicts_snapshot_root" || army.Engine.Type != "character" || army.Snapshot.Root.Type != "none" || army.Documentation.Status != "documented" || len(army.Documentation.Roots) != 1 || army.Documentation.Roots[0].Root.Type != "character" || army.EngineSnapshotComparison != "engine_scope_conflicts_snapshot_root" || army.EngineDocumentationComparison != "match" || army.SnapshotDocumentationComparison != "snapshot_scope_conflicts_documented_root" {
+		t.Fatalf("published engine/snapshot conflict did not remain explicit: %+v", army)
 	}
 	alliance := onActionEvidenceFinding(t, report.Findings, "on_alliance_added")
-	if alliance.Status != "match" || alliance.Engine.Status != "none" || alliance.Tiger.Root.Status != "none" || alliance.Documentation.Roots[0].Root.Status != "none" {
+	if alliance.Status != "match" || alliance.Engine.Status != "none" || alliance.Snapshot.Root.Status != "none" || alliance.Documentation.Roots[0].Root.Status != "none" {
 		t.Fatalf("none root was not preserved through all evidence layers: %+v", alliance)
 	}
 	noneDocumented := onActionEvidenceFinding(t, report.Findings, "on_none_documented_fixture")
-	if noneDocumented.Status != "engine_none_with_documented_root" || noneDocumented.EngineDocumentationComparison != "engine_none_with_documented_root" || noneDocumented.Tiger.Found {
+	if noneDocumented.Status != "engine_none_with_documented_root" || noneDocumented.EngineDocumentationComparison != "engine_none_with_documented_root" || noneDocumented.Snapshot.Found {
 		t.Fatalf("engine none/documented root review was not explicit: %+v", noneDocumented)
 	}
 	conflict := onActionEvidenceFinding(t, report.Findings, "on_conflict_documented_fixture")
@@ -83,6 +83,16 @@ on_duplicate_root_documented_fixture = { }
 	}
 	if strings.Contains(string(encoded), filepath.ToSlash(game)) || strings.Contains(string(encoded), "Root = character") {
 		t.Fatalf("unified evidence audit leaked a physical source root or raw comment prose: %s", encoded)
+	}
+	for _, retired := range []string{`"tiger_source_version"`, `"tiger"`, `"engine_tiger_comparison"`, `"tiger_documentation_comparison"`} {
+		if strings.Contains(string(encoded), retired) {
+			t.Fatalf("on_action evidence audit still exposes retired field %s: %s", retired, encoded)
+		}
+	}
+	for _, expected := range []string{`"snapshot_source_version"`, `"snapshot"`, `"engine_snapshot_comparison"`, `"snapshot_documentation_comparison"`} {
+		if !strings.Contains(string(encoded), expected) {
+			t.Fatalf("on_action evidence audit omitted snapshot field %s: %s", expected, encoded)
+		}
 	}
 }
 
@@ -105,7 +115,7 @@ on_army_monthly = { }
 		t.Fatalf("finalizing engine rows became published evidence: %+v", report)
 	}
 	army := onActionEvidenceFinding(t, report.Findings, "on_army_monthly")
-	if army.Status != "evidence_unavailable" || army.Engine.Status != "unavailable" || army.Engine.Type != "" || army.EngineDocumentationComparison != "evidence_unavailable" || army.TigerDocumentationComparison != "match" {
+	if army.Status != "snapshot_scope_conflicts_documented_root" || army.Engine.Status != "unavailable" || army.Engine.Type != "" || army.EngineDocumentationComparison != "evidence_unavailable" || army.SnapshotDocumentationComparison != "snapshot_scope_conflicts_documented_root" {
 		t.Fatalf("unpublished engine evidence leaked into unified result: %+v", army)
 	}
 
@@ -137,7 +147,7 @@ on_army_monthly = { }
 		t.Fatal(err)
 	}
 	army := onActionEvidenceFinding(t, report.Findings, "on_army_monthly")
-	if !report.EngineEvidenceAvailable || army.Status != "engine_missing_with_static_root" || army.Engine.Status != "not_found" || army.Engine.Confidence != "high" || army.EngineTigerComparison != "engine_missing_with_static_root" || army.EngineDocumentationComparison != "engine_missing_with_documented_root" {
+	if !report.EngineEvidenceAvailable || army.Status != "engine_missing_with_snapshot_root" || army.Engine.Status != "not_found" || army.Engine.Confidence != "high" || army.EngineSnapshotComparison != "engine_missing_with_snapshot_root" || army.EngineDocumentationComparison != "engine_missing_with_documented_root" {
 		t.Fatalf("published engine omission was not reported as structural drift: %+v", army)
 	}
 }
@@ -151,7 +161,7 @@ on_alliance_added = { }
 
 	db := newOnActionEvidenceAuditDB(t, "ready")
 	defer db.Close()
-	// Tiger declares this hook as none. Engine and comments agree with each
+	// The generated snapshot declares this hook as none. Engine and comments agree with each
 	// other, which used to incorrectly collapse the three-way result to match.
 	insertOnActionEvidenceEngineRule(t, db, "on_alliance_added", "character")
 	indexOnActionEvidenceDocumentationSnapshot(t, db, game)
@@ -161,7 +171,7 @@ on_alliance_added = { }
 		t.Fatal(err)
 	}
 	alliance := onActionEvidenceFinding(t, report.Findings, "on_alliance_added")
-	if alliance.EngineDocumentationComparison != "match" || alliance.EngineTigerComparison != "engine_scope_conflicts_static_root" || alliance.TigerDocumentationComparison != "static_scope_conflicts_documented_root" || alliance.Status != "engine_scope_conflicts_static_root" {
+	if alliance.EngineDocumentationComparison != "match" || alliance.EngineSnapshotComparison != "engine_scope_conflicts_snapshot_root" || alliance.SnapshotDocumentationComparison != "snapshot_scope_conflicts_documented_root" || alliance.Status != "engine_scope_conflicts_snapshot_root" {
 		t.Fatalf("three-way evidence disagreement was hidden by a pairwise match: %+v", alliance)
 	}
 }
@@ -188,7 +198,7 @@ on_army_monthly = { }
 		t.Fatal(err)
 	}
 	army := onActionEvidenceFinding(t, report.Findings, "on_army_monthly")
-	if report.Status != "stale" || report.DocumentationEvidenceAvailable || report.DocumentationEvidenceStatus != "stale" || army.Documentation.Status != "stale" || army.Status != "documentation_stale" || army.EngineDocumentationComparison != "evidence_unavailable" {
+	if report.Status != "stale" || report.DocumentationEvidenceAvailable || report.DocumentationEvidenceStatus != "stale" || army.Documentation.Status != "stale" || army.Status != "engine_scope_conflicts_snapshot_root" || army.EngineDocumentationComparison != "evidence_unavailable" {
 		t.Fatalf("changed vanilla comments were mixed with published engine evidence: report=%+v finding=%+v", report, army)
 	}
 }

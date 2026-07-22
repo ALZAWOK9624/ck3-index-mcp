@@ -58,7 +58,7 @@ func buildCanonicalTools() []ToolDefinition {
 		{
 			Name:        "ck3_workspace",
 			Title:       "Inspect CK3 Workspace",
-			Description: "Inspect indexed workspace structure before choosing a specific object. The overview includes object/ref hotspots, override causes, event relations, dynamic refs, and true unresolved refs. on_action_evidence is a bounded read-only reconciliation of live engine, static Tiger, and adjacent vanilla-comment root contracts.",
+			Description: "Inspect indexed workspace structure before choosing a specific object. The overview includes object/ref hotspots, override causes, event relations, dynamic refs, and true unresolved refs. on_action_evidence is a bounded read-only reconciliation of live engine, the generated CK3 1.19 snapshot, and adjacent vanilla-comment root contracts.",
 			InputSchema: objectSchema(map[string]any{
 				"operation":  stringProperty("Workspace view.", "overview", "object_types", "on_action_evidence"),
 				"limit":      limitProperty(),
@@ -146,7 +146,7 @@ func buildCanonicalTools() []ToolDefinition {
 		{
 			Name:        "ck3_script_reference",
 			Title:       "Look Up CK3 Script Reference",
-			Description: "Look up one local engine or script-rule fact. Select scope, datatype, shape, define, on_action, iterator, example, or modifier with kind; on_action responses keep live engine rules authoritative while adding bounded review-only vanilla-comment and structured static-Tiger evidence when available.",
+			Description: "Look up one local engine or script-rule fact. Select scope, datatype, shape, define, on_action, iterator, example, or modifier with kind; on_action responses keep live engine rules authoritative while adding bounded review-only vanilla-comment and structured CK3 1.19 snapshot evidence when available.",
 			InputSchema: objectSchema(map[string]any{
 				"kind":       stringProperty("Reference family.", "scope", "datatype", "shape", "define", "on_action", "iterator", "example", "modifier"),
 				"id":         stringProperty("Engine or script key."),

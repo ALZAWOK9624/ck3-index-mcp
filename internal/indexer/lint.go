@@ -135,25 +135,9 @@ func checkGUISafety(nodes []*script.Node, relPath string) []ctxDiag {
 				k := guiNodeKind(n)
 				switch k {
 				case "hbox", "vbox":
-					// M21: size = { 100% 100% } on hbox/vbox causes crash.
-					for _, c := range n.Children {
-						if c.Key == "size" && c.Kind == "block" {
-							for _, sc := range c.Children {
-								raw := sc.Value
-								if sc.Kind == "bare" {
-									raw = sc.Key
-								}
-								if strings.Contains(raw, "%") {
-									out = append(out, ctxDiag{
-										severity: "error",
-										code:     "gui_crash_risk",
-										msg:      fmt.Sprintf("hbox/vbox with percent size (value=%q) may crash the game; use fixed or expand={}", raw),
-										line:     sc.Line, col: sc.Col,
-									})
-								}
-							}
-						}
-					}
+					// CK3 1.19 vanilla deliberately uses percent-sized hbox/vbox
+					// controls for both window and row layouts. Percentage size alone
+					// is therefore not evidence of a crash.
 					// M22: hbox/vbox should not use parentanchor.
 					for _, c := range n.Children {
 						if c.Key == "parentanchor" {
@@ -611,7 +595,7 @@ func collectVariables(nodes []*script.Node) []string {
 	return out
 }
 
-// --- define reference checking (uses tigerDefines from ck3-tiger) ---
+// --- define reference checking (uses current CK3 engineDefines) ---
 
 func checkDefineRefs(nodes []*script.Node, relPath string) []ctxDiag {
 	var out []ctxDiag
@@ -621,7 +605,7 @@ func checkDefineRefs(nodes []*script.Node, relPath string) []ctxDiag {
 			if !strings.HasPrefix(raw, "@") || len(raw) < 3 || isArithmeticExpression(raw) {
 				continue
 			}
-			if _, ok := tigerDefines[raw]; !ok {
+			if _, ok := engineDefines[raw]; !ok {
 				out = append(out, ctxDiag{
 					severity: "warning",
 					code:     "unknown_define",
@@ -640,7 +624,7 @@ func checkOnActionRefs(nodes []*script.Node, relPath string) []ctxDiag {
 		for _, c := range n.Children {
 			if c.Kind == "bare" && c.Key != "" && n.Key == "on_actions" {
 				// A published on_actions.log is newer and broader than the compact
-				// Tiger fallback. Use the shared lookup so a live engine hook does
+				// Generated CK3 1.19 snapshot. Use the shared lookup so a live engine hook does
 				// not become an avoidable unknown_on_action warning during scans.
 				if !IsOnAction(c.Key) {
 					out = append(out, ctxDiag{

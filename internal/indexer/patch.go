@@ -694,10 +694,10 @@ func (db *DB) resolvePatchRef(ctx context.Context, r refRow, symbols activeSymbo
 		_, ok := iteratorScopeIn[r.Name]
 		return ok, nil
 	case "scope_transition":
-		_, ok := scopeTransitionsIn[r.Name]
+		_, ok := engineScopeTransitionsIn[r.Name]
 		return ok, nil
 	case "define":
-		_, ok := tigerDefines[r.Name]
+		_, ok := engineDefines[r.Name]
 		return ok, nil
 	case "flag", "global_var":
 		return true, nil

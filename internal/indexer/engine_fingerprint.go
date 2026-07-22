@@ -41,6 +41,9 @@ func engineDataFingerprint(logs string) (string, error) {
 			return "", fmt.Errorf("fingerprint engine log %s: %w", spec.name, err)
 		}
 	}
+	if err := writeFile("modifiers.log", filepath.Join(logs, "modifiers.log"), true); err != nil {
+		return "", fmt.Errorf("fingerprint engine modifiers: %w", err)
+	}
 	dataTypes := filepath.Join(logs, "data_types")
 	entries, err := os.ReadDir(dataTypes)
 	if err != nil {

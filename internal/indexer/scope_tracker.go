@@ -8,9 +8,9 @@ import (
 )
 
 type scopeWalkState struct {
-	root     TigerScope
-	current  TigerScope
-	previous TigerScope
+	root     EngineScope
+	current  EngineScope
+	previous EngineScope
 	context  string
 	trace    []string
 }
@@ -49,8 +49,8 @@ func checkScopeTracker(nodes []*script.Node, relPath string) []ctxDiag {
 	return dedupeScopeDiagnostics(out)
 }
 
-func checkScopeNodes(nodes []*script.Node, relPath, objectName string, root TigerScope) []ctxDiag {
-	namedScopes := map[string]TigerScope{}
+func checkScopeNodes(nodes []*script.Node, relPath, objectName string, root EngineScope) []ctxDiag {
+	namedScopes := map[string]EngineScope{}
 	initial := scopeWalkState{
 		root:    root,
 		current: root,
@@ -74,7 +74,7 @@ func checkScopeNodes(nodes []*script.Node, relPath, objectName string, root Tige
 					if !engineScopeConfirms(key, state.context, need) {
 						d.code = "scope_uncertain"
 						d.severity = "info"
-						d.msg += "; Tiger rule was not confirmed by current engine logs"
+						d.msg += "; generated 1.19 snapshot rule was not confirmed by current engine logs"
 					}
 					out = append(out, d)
 				}
@@ -103,7 +103,12 @@ func checkScopeNodes(nodes []*script.Node, relPath, objectName string, root Tige
 					d.code = "scope_uncertain"
 					d.severity = "info"
 					out = append(out, d)
-				} else if inScope, ok := scopeTransitionsIn[key]; state.context != "" && ok && isConcreteScope(inScope) && !state.current.IsZero() && !state.current.Intersects(inScope) {
+				} else if inScope, ok := engineRuleScope(key, "target"); state.context != "" && ok && isConcreteScope(inScope) && !state.current.IsZero() && !state.current.Intersects(inScope) {
+					d := scopeContainerMismatchDiagnostic(relPath, objectName, n, "engine target", key, inScope, state.current, state.trace)
+					d.code = "scope_uncertain"
+					d.severity = "info"
+					out = append(out, d)
+				} else if inScope, ok := engineScopeTransitionsIn[key]; state.context != "" && ok && isConcreteScope(inScope) && !state.current.IsZero() && !state.current.Intersects(inScope) {
 					d := scopeContainerMismatchDiagnostic(relPath, objectName, n, "transition", key, inScope, state.current, state.trace)
 					d.code = "scope_uncertain"
 					d.severity = "info"
@@ -123,22 +128,27 @@ func checkScopeNodes(nodes []*script.Node, relPath, objectName string, root Tige
 	return out
 }
 
-func requiredScopeForContext(key, contextKind string) (TigerScope, bool) {
+func requiredScopeForContext(key, contextKind string) (EngineScope, bool) {
 	if contextKind == "trigger" {
-		scope, ok := tigerTriggerScopes[key]
-		return scope, ok
+		if scope, ok := engineTriggerScopes[key]; ok {
+			return scope, true
+		}
+	} else if scope, ok := engineEffectScopes[key]; ok {
+		return scope, true
 	}
-	scope, ok := tigerEffectScopes[key]
-	return scope, ok
+	// The engine log is authoritative for membership and documented input
+	// scopes, but it does not describe iterator/context transitions. Use it to
+	// cover newly introduced keys only after the richer static table misses.
+	return engineRuleScope(key, contextKind)
 }
 
-func resolveChildScope(key string, state scopeWalkState, named map[string]TigerScope, relPath string) (TigerScope, string, bool) {
+func resolveChildScope(key string, state scopeWalkState, named map[string]EngineScope, relPath string) (EngineScope, string, bool) {
 	if strings.Contains(key, ".") {
 		chainState := state
 		for _, segment := range strings.Split(key, ".") {
 			target, _, ok := resolveChildScope(segment, chainState, named, relPath)
 			if !ok {
-				return TigerScope{}, "chain " + key, true
+				return EngineScope{}, "chain " + key, true
 			}
 			chainState.previous = chainState.current
 			chainState.current = target
@@ -161,22 +171,64 @@ func resolveChildScope(key string, state scopeWalkState, named map[string]TigerS
 		scope := named[strings.TrimPrefix(key, "scope:")]
 		return scope, key, true
 	}
+	if strings.HasPrefix(strings.ToLower(key), "flag:") {
+		// flag:<name> is a literal used by constructs such as switch, not a
+		// scope traversal. The engine log lists it as a value type, but using
+		// that as a child scope would turn the enclosing script into value scope.
+		return EngineScope{}, "", false
+	}
+	if scope, source, ok := typedTargetScope(key, state.current); ok {
+		return scope, source, true
+	}
 	if scope, ok := explicitTypedScope(key); ok {
 		return scope, key, true
 	}
 	if strings.Contains(key, ":") {
-		return TigerScope{}, key, true
+		return EngineScope{}, key, true
 	}
 	if scope, ok := iteratorScopeOut[key]; ok {
 		return scope, "iterator " + key, true
 	}
-	if scope, ok := scopeTransitionsOut[key]; ok {
+	if scope, ok := engineTargetOutputScope(key); ok {
+		return scope, "engine target " + key, true
+	}
+	if scope, ok := engineScopeTransitionsOut[key]; ok {
 		return scope, "transition " + key, true
 	}
 	if looksLikeIterator(key) {
-		return TigerScope{}, "unknown iterator " + key, true
+		return EngineScope{}, "unknown iterator " + key, true
 	}
-	return TigerScope{}, "", false
+	return EngineScope{}, "", false
+}
+
+// typedTargetScope handles targets whose names also happen to be scope type
+// names. For example, court_position:<position_key> selects the character
+// employed in that position; it is not a court_position scope. Prefer a
+// documented target transition whenever the current scope satisfies its input
+// contract, then fall back to an explicit typed scope such as title:<key>.
+func typedTargetScope(key string, current EngineScope) (EngineScope, string, bool) {
+	parts := strings.SplitN(key, ":", 2)
+	if len(parts) != 2 {
+		return EngineScope{}, "", false
+	}
+	target := strings.ToLower(parts[0])
+	if scope, ok := engineScopeTransitionsOut[target]; ok && targetInputAllows(engineScopeTransitionsIn, target, current) {
+		return scope, "transition " + target, true
+	}
+	if scope, ok := engineTargetOutputScope(target); ok && targetInputAllowsEngine(target, current) {
+		return scope, "engine target " + target, true
+	}
+	return EngineScope{}, "", false
+}
+
+func targetInputAllows(inputs map[string]EngineScope, target string, current EngineScope) bool {
+	input, documented := inputs[target]
+	return !documented || current.IsZero() || !isConcreteScope(input) || current.Intersects(input)
+}
+
+func targetInputAllowsEngine(target string, current EngineScope) bool {
+	input, documented := engineRuleScope(target, "target")
+	return !documented || current.IsZero() || !isConcreteScope(input) || current.Intersects(input)
 }
 
 func looksLikeIterator(key string) bool {
@@ -194,7 +246,7 @@ func isScopeStructuralBlock(key string) bool {
 	return false
 }
 
-func isKnownScopeArgumentCollision(key string, current TigerScope, trace []string) bool {
+func isKnownScopeArgumentCollision(key string, current EngineScope, trace []string) bool {
 	if key != "category" || current != ScopeTrait {
 		return false
 	}
@@ -223,22 +275,22 @@ func isScopeContextEntry(relPath, key string) bool {
 	return false
 }
 
-func explicitTypedScope(key string) (TigerScope, bool) {
+func explicitTypedScope(key string) (EngineScope, bool) {
 	parts := strings.SplitN(key, ":", 2)
 	if len(parts) != 2 {
-		return TigerScope{}, false
+		return EngineScope{}, false
 	}
-	scope, ok := tigerScopesByName[parts[0]]
+	scope, ok := engineScopesByName[parts[0]]
 	return scope, ok
 }
 
-func eventRootScope(obj *script.Node) TigerScope {
+func eventRootScope(obj *script.Node) EngineScope {
 	for _, child := range obj.Children {
 		if strings.EqualFold(child.Key, "scope") && child.Value != "" {
-			if scope, ok := tigerScopesByName[strings.ToLower(child.Value)]; ok {
+			if scope, ok := engineScopesByName[strings.ToLower(child.Value)]; ok {
 				return scope
 			}
-			return TigerScope{}
+			return EngineScope{}
 		}
 	}
 	return ScopeCharacter
@@ -249,7 +301,7 @@ func isEventPath(relPath string) bool {
 	return strings.HasPrefix(p, "/events/")
 }
 
-func isConcreteScope(scope TigerScope) bool {
+func isConcreteScope(scope EngineScope) bool {
 	return !scope.IsZero() && scope != ScopeAllScopes && scope != ScopeValue
 }
 
@@ -258,7 +310,7 @@ func appendScopeTrace(trace []string, item string) []string {
 	return append(out, item)
 }
 
-func scopeMismatchDiagnostic(relPath, objectName string, n *script.Node, key string, need, current TigerScope, trace []string) ctxDiag {
+func scopeMismatchDiagnostic(relPath, objectName string, n *script.Node, key string, need, current EngineScope, trace []string) ctxDiag {
 	message := fmt.Sprintf(
 		"scope mismatch in %q: %q expects %s but current scope is %s; trace: %s",
 		objectName, key, scopeMaskDesc(need), scopeMaskDesc(current), strings.Join(trace, " -> "),
@@ -275,7 +327,7 @@ func scopeMismatchDiagnostic(relPath, objectName string, n *script.Node, key str
 	}
 }
 
-func scopeContainerMismatchDiagnostic(relPath, objectName string, n *script.Node, kind, key string, need, current TigerScope, trace []string) ctxDiag {
+func scopeContainerMismatchDiagnostic(relPath, objectName string, n *script.Node, kind, key string, need, current EngineScope, trace []string) ctxDiag {
 	return ctxDiag{
 		severity: "warning",
 		code:     "scope_mismatch",
@@ -321,11 +373,11 @@ func checkMenAtArmsCanRecruitScope(nodes []*script.Node, relPath string) []ctxDi
 	return dedupeScopeDiagnostics(out)
 }
 
-func checkTriggerBlockScope(nodes []*script.Node, relPath, objectName string, rootScope TigerScope) []ctxDiag {
+func checkTriggerBlockScope(nodes []*script.Node, relPath, objectName string, rootScope EngineScope) []ctxDiag {
 	return checkScopeNodes(nodes, relPath, objectName, rootScope)
 }
 
-func menAtArmsCanRecruitScopeMessage(objectName, key string, needScope, currentScope TigerScope) string {
+func menAtArmsCanRecruitScopeMessage(objectName, key string, needScope, currentScope EngineScope) string {
 	base := fmt.Sprintf("men_at_arms_type %q can_recruit scope mismatch: trigger %q expects %s scope but current scope is %s",
 		objectName, key, scopeMaskDesc(needScope), scopeMaskDesc(currentScope))
 	if needScope == ScopeCulture {

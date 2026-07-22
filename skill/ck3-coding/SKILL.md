@@ -21,13 +21,13 @@ The standard profile advertises the canonical tools below. The expert profile al
 | `ck3_search` | Search when the exact CK3 id is unknown. Returns ranked object, localization, resource, reference, diagnostic, datatype, and script-key evidence. |
 | `ck3_inspect` | Inspect one exact CK3 id, key, or resource path after discovery. Definition views include resolution status, override provenance, event fields, and character static/history profiles; reference views include relation, phase, confidence, and unresolved reasons. compare performs a bounded read-only source-versus-upstream object comparison for an exact typed id. |
 | `ck3_review` | Review complete proposed CK3 files, or current dirty project files when none are supplied. Performs read-only parser, scope, reference, localization, and resource checks. |
-| `ck3_workspace` | Inspect indexed workspace structure before choosing a specific object. The overview includes object/ref hotspots, override causes, event relations, dynamic refs, and true unresolved refs. on_action_evidence is a bounded read-only reconciliation of live engine, static Tiger, and adjacent vanilla-comment root contracts. |
+| `ck3_workspace` | Inspect indexed workspace structure before choosing a specific object. The overview includes object/ref hotspots, override causes, event relations, dynamic refs, and true unresolved refs. on_action_evidence is a bounded read-only reconciliation of live engine, the generated CK3 1.19 snapshot, and adjacent vanilla-comment root contracts. |
 | `ck3_dependencies` | Trace semantic dependencies around one CK3 id. Use neighborhood for the bounded general graph or event_chain for caller/callee topology with roots, leaves, cycles, shortest paths, and unresolved calls. event_chain can additionally return a self-contained CSP-contained interactive HTML inspector. |
 | `ck3_prepare_edit` | Load edit evidence before generating CK3 script. Defaults to combined context; operation can request examples, schema rules, or empirical patterns only. |
 | `ck3_preflight` | Run a read-only gate for an indexed subject, proposed complete files, or current dirty files. Select subject, patch, or dirty with operation. |
 | `ck3_impact` | Analyze proposed upsert, delete, and rename operations before editing. Returns read-only dependency and unresolved-reference risks. |
 | `ck3_diagnostics` | Inspect cached project diagnostics without rescanning. Defaults to summary; explain filters one diagnostic code and optional provenance fields. |
-| `ck3_script_reference` | Look up one local engine or script-rule fact. Select scope, datatype, shape, define, on_action, iterator, example, or modifier with kind; on_action responses keep live engine rules authoritative while adding bounded review-only vanilla-comment and structured static-Tiger evidence when available. |
+| `ck3_script_reference` | Look up one local engine or script-rule fact. Select scope, datatype, shape, define, on_action, iterator, example, or modifier with kind; on_action responses keep live engine rules authoritative while adding bounded review-only vanilla-comment and structured CK3 1.19 snapshot evidence when available. |
 | `ck3_health` | Check whether the database, schema, indexes, and MCP registration are trustworthy. Returns a short path-redacted health report. |
 | `ck3_package` | Validate proposed CK3 text and binary files, generate canonical descriptors, and create a portable manual-install ZIP in the configured temporary artifact root. Does not install or modify a live mod directory. |
 | `ck3_gui` | Inspect active CK3 GUI files through the existing index. Summarize the workspace, parse one file, resolve cross-file custom type/template dependencies, or render a bounded diagnostic PNG and/or self-contained HTML preview. HTML supports tree browsing, clipped scrollbox and grid navigation, indexed dynamic-texture samples, and controlled visual behavior simulation. model_samples can instantiate bounded caller-provided datamodel rows from one exact item template; runtime_facts and action_effects never execute arbitrary Jomini code. |
@@ -134,7 +134,7 @@ Set `CK3_INDEX_MCP_PROFILE=expert` only when an existing client still discovers 
 | `missing_object_reference` | warning | Object reference not indexed |
 | `missing_resource` | warning | Gfx/resource path referenced but file not found |
 | `resource_resolution_uncertain` | info | Bare/context-relative resource needs owning-context resolution before it can be called missing |
-| `scope_uncertain` | info | Tiger suspicion not fully confirmed by current engine logs and a concrete trace |
+| `scope_uncertain` | info | A static scope hint is not fully confirmed by current engine logs and a concrete trace |
 | `missing_sound` | warning | `event:/...` sound event referenced but not known from local rule seeds |
 | `duplicate_title_id` | warning | Same-source active landed-title id is defined more than once; all locations are reported |
 | `duplicate_barony_province` | warning | One active province is assigned to multiple baronies |
@@ -206,4 +206,17 @@ ck3-index mcp                           # Start MCP server over stdio
 - Compiled local rule seeds: trigger/effect scopes, iterators, scope transitions, defines, on_actions, examples, modifiers, and sound events. Use `ck3_script_reference` with the matching `kind`, plus `ck3_diagnostics` for `event:/...` sound findings.
 - Do not treat compiled rule seeds as engine authority. Confirm risky edits with local CK3 `.info` files, vanilla examples, active-workspace examples, and indexed project evidence.
 - Local wiki notes: `docs/CK3_EXPERIENCE_NOTES.md` summarizes workflow hints from the local CK3 modding wiki. Treat them as generation guidance, not engine authority.
-- Regenerate rule data with `python tools/extract_all_scopes.py`, `python tools/extract_shapes.py`, `python tools/extract_defines.py`, `python tools/extract_on_actions.py`, and `python tools/extract_targets.py`.
+- Regenerate rule data only from a matching current CK3 log bundle and game tree. `event_scopes.log`, `event_targets.log`, `triggers.log`, `effects.log`, `on_actions.log`, and `modifiers.log` supply engine-log evidence; `common/defines/`, `common/on_action/`, `common/modifier_definition_formats/`, and `sound/GUIDs.txt` supply the matching vanilla-source evidence.
+
+  ```text
+  python tools/extract_engine_scopes.py --logs <logs> --scope-output internal/indexer/scope_data.gen.go --targets-output internal/indexer/scope_transitions.gen.go
+  python tools/extract_engine_on_actions.py --logs <logs> --game <game> --output internal/indexer/on_action_data.gen.go
+  python tools/extract_engine_defines.py --game <game> --output internal/indexer/engine_defines.gen.go
+  python tools/extract_engine_sounds.py --game <game> --output internal/indexer/engine_sounds.gen.go
+  python tools/extract_engine_shapes.py --logs <logs> --output internal/indexer/engine_shapes.gen.go
+  python tools/extract_modifiers.py --logs <logs> --game <game> --output internal/indexer/modifiers_data.gen.go
+  python tools/extract_effect_examples.py --logs <logs> --output internal/indexer/effect_examples.gen.go
+  python tools/extract_trigger_examples.py --logs <logs> --output internal/indexer/trigger_examples.gen.go
+  ```
+
+  `engine_shapes.gen.go` is documentation only: it must not infer an exhaustive CK3 value grammar. Run `gofmt` on every generated Go file, then perform a full scan and compare `diag_stats`; do not restore an unproven compatibility rule merely to suppress a diagnostic.

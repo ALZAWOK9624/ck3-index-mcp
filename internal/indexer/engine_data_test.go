@@ -65,6 +65,46 @@ Expected Scope: none
 	}
 }
 
+func TestEngineLogsSupplementStaticRulesWithScopesTargetsAndModifiers(t *testing.T) {
+	logs := makeEngineLogs(t, "")
+	for path, text := range map[string]string{
+		"triggers.log":      "log_only_trigger - fixture\nSupported Scopes: story\n",
+		"effects.log":       "log_only_effect - fixture\nSupported Scopes: court_position\nSupported Targets: character\n",
+		"event_targets.log": "log_only_target - fixture\nInput Scopes: character\nOutput Scopes: title_and_vassal_change\n",
+		"modifiers.log":     "Tag: log_only_modifier\nExtra info: fixture detail\nUse areas: character， province，以及 county\n",
+	} {
+		if err := os.WriteFile(filepath.Join(logs, path), []byte(text), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func() { _ = ConfigureEngineRules("") }()
+	if err := ConfigureEngineRules(logs); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, ok := engineRuleScope("log_only_trigger", "trigger"); !ok || got != ScopeStoryCycle {
+		t.Fatalf("live story trigger scope = %#v, %v; want ScopeStoryCycle", got, ok)
+	}
+	if got, ok := engineRuleScope("log_only_effect", "effect"); !ok || got != ScopeCourtPosition {
+		t.Fatalf("live court-position effect scope = %#v, %v; want ScopeCourtPosition", got, ok)
+	}
+	if got, ok := engineRuleOutputScope("log_only_effect", "effect"); !ok || got != ScopeCharacter {
+		t.Fatalf("live effect target scope = %#v, %v; want ScopeCharacter", got, ok)
+	}
+	if got, ok := engineTargetOutputScope("log_only_target"); !ok || got != ScopeTitleAndVassalChange {
+		t.Fatalf("live target output = %#v, %v; want ScopeTitleAndVassalChange", got, ok)
+	}
+	if got := LookupScope("log_only_trigger"); got == nil || !got.IsTrigger || len(got.ScopeNames) != 1 || got.ScopeNames[0] != "story_cycle" {
+		t.Fatalf("log-only trigger was not exposed by LookupScope: %+v", got)
+	}
+	if got := LookupScope("has_cultural_parameter"); got != nil {
+		t.Fatalf("static-only scope rule remained visible despite a complete live log bundle: %+v", got)
+	}
+	if got := LookupModifier("log_only_modifier"); !got.Found || len(got.UseAreas) != 3 || got.UseAreas[0] != "character" || got.UseAreas[1] != "province" || got.UseAreas[2] != "county" || got.Source != "engine_log" {
+		t.Fatalf("log-only modifier was not exposed: %+v", got)
+	}
+}
+
 func TestLogicalEngineEvidenceSourceRemovesMachineRoots(t *testing.T) {
 	for input, want := range map[string]string{
 		`C:\private\logs\on_actions.log`:                    "engine_logs/on_actions.log",

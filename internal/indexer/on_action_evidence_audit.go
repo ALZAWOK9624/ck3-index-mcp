@@ -24,7 +24,7 @@ type OnActionEvidenceAudit struct {
 	EngineEvidenceAvailable        bool                   `json:"engine_evidence_available"`
 	DocumentationEvidenceAvailable bool                   `json:"documentation_evidence_available"`
 	DocumentationEvidenceStatus    string                 `json:"documentation_evidence_status"`
-	TigerSourceVersion             string                 `json:"tiger_source_version"`
+	SnapshotSourceVersion          string                 `json:"snapshot_source_version"`
 	HookCount                      int                    `json:"hook_count"`
 	Findings                       []OnActionEvidenceHook `json:"findings,omitempty"`
 	Truncated                      bool                   `json:"truncated,omitempty"`
@@ -35,14 +35,14 @@ type OnActionEvidenceAudit struct {
 // consolidated review result; the comparison fields retain each pairwise
 // relationship so consumers never have to infer precedence from a label.
 type OnActionEvidenceHook struct {
-	Hook                          string                        `json:"hook"`
-	Status                        string                        `json:"status"`
-	Engine                        OnActionEvidenceRoot          `json:"engine"`
-	Tiger                         OnActionEvidenceTiger         `json:"tiger"`
-	Documentation                 OnActionEvidenceDocumentation `json:"documentation"`
-	EngineTigerComparison         string                        `json:"engine_tiger_comparison"`
-	EngineDocumentationComparison string                        `json:"engine_documentation_comparison"`
-	TigerDocumentationComparison  string                        `json:"tiger_documentation_comparison"`
+	Hook                            string                        `json:"hook"`
+	Status                          string                        `json:"status"`
+	Engine                          OnActionEvidenceRoot          `json:"engine"`
+	Snapshot                        OnActionEvidenceSnapshot      `json:"snapshot"`
+	Documentation                   OnActionEvidenceDocumentation `json:"documentation"`
+	EngineSnapshotComparison        string                        `json:"engine_snapshot_comparison"`
+	EngineDocumentationComparison   string                        `json:"engine_documentation_comparison"`
+	SnapshotDocumentationComparison string                        `json:"snapshot_documentation_comparison"`
 }
 
 // OnActionEvidenceRoot is a normalized root-only projection. Type is a
@@ -56,9 +56,9 @@ type OnActionEvidenceRoot struct {
 	Confidence string   `json:"confidence"`
 }
 
-// OnActionEvidenceTiger preserves static alias provenance without exposing
+// OnActionEvidenceSnapshot preserves static alias provenance without exposing
 // the generated seed table as a validator-facing API.
-type OnActionEvidenceTiger struct {
+type OnActionEvidenceSnapshot struct {
 	Found         bool                 `json:"found"`
 	Definition    string               `json:"definition,omitempty"`
 	AliasPath     []string             `json:"alias_path,omitempty"`
@@ -83,7 +83,8 @@ type OnActionEvidenceDocumentationRoot struct {
 }
 
 // AuditOnActionEvidence aggregates published live engine roots, versioned
-// Tiger roots, and parser-recognized adjacent vanilla comment roots by hook.
+// generated CK3 1.19 snapshot roots, and parser-recognized adjacent vanilla
+// comment roots by hook.
 // The output is bounded and review-only: no result is persisted, and no
 // comparison changes diagnostics or inferred effective scopes.
 func (db *DB) AuditOnActionEvidence(ctx context.Context, cfg Config, limit int) (OnActionEvidenceAudit, error) {
@@ -103,9 +104,9 @@ func (db *DB) AuditOnActionEvidence(ctx context.Context, cfg Config, limit int) 
 		Status:                      "ok",
 		IndexStatus:                 state.Status,
 		DocumentationEvidenceStatus: "unavailable",
-		TigerSourceVersion:          tigerOnActionTableVersion,
+		SnapshotSourceVersion:       engineOnActionSnapshotVersion,
 		Guidance: []string{
-			"Live engine evidence is authoritative only after a published ready index; static Tiger and vanilla comments remain review evidence.",
+			"Live engine evidence is authoritative only after a published ready index; the compiled CK3 1.19 snapshot and vanilla comments remain review evidence.",
 			"Expected Scope: none describes the implicit root only. A documented named scope is not an implicit-root conflict by itself.",
 			"This audit is read-only and has no diagnostic, validation, or inferred-scope effect.",
 		},
@@ -215,8 +216,14 @@ func (db *DB) AuditOnActionEvidence(ctx context.Context, cfg Config, limit int) 
 	}
 
 	names := map[string]bool{}
-	for name := range tigerOnActions {
-		names[name] = true
+	// A published 1.19 log is the canonical hook set. The generated snapshot
+	// exists for offline operation only, so it must not flood a bounded audit
+	// with irrelevant entries when a fixture or a future log contains a smaller
+	// explicit live set.
+	if !report.EngineEvidenceAvailable {
+		for name := range engineOnActions {
+			names[name] = true
+		}
 	}
 	for name := range engineRoots {
 		names[name] = true
@@ -237,23 +244,23 @@ func (db *DB) AuditOnActionEvidence(ctx context.Context, cfg Config, limit int) 
 			return report, err
 		}
 		engine := projectOnActionEvidenceEngineRoot(engineRoots[name], report.EngineEvidenceAvailable)
-		tiger := projectOnActionEvidenceTiger(name)
+		snapshot := projectOnActionEvidenceSnapshot(name)
 		docs := projectOnActionEvidenceDocumentation(documentation[name], report.DocumentationEvidenceAvailable)
 		if documentationStale {
 			docs = OnActionEvidenceDocumentation{Status: "stale"}
 		}
-		engineTiger := compareOnActionEvidenceRoots(engine, tiger.Root, "static")
+		engineSnapshot := compareOnActionEvidenceRoots(engine, snapshot.Root, "snapshot")
 		engineDocumentation := compareOnActionEvidenceRoots(engine, onActionEvidenceDocumentationComparableRoot(docs), "documented")
-		tigerDocumentation := compareOnActionStaticDocumentation(tiger.Root, onActionEvidenceDocumentationComparableRoot(docs), docs.Status)
+		snapshotDocumentation := compareOnActionSnapshotDocumentation(snapshot.Root, onActionEvidenceDocumentationComparableRoot(docs), docs.Status)
 		findings = append(findings, OnActionEvidenceHook{
-			Hook:                          name,
-			Status:                        unifiedOnActionEvidenceStatus(engine, docs, engineTiger, engineDocumentation, tigerDocumentation),
-			Engine:                        engine,
-			Tiger:                         tiger,
-			Documentation:                 docs,
-			EngineTigerComparison:         engineTiger,
-			EngineDocumentationComparison: engineDocumentation,
-			TigerDocumentationComparison:  tigerDocumentation,
+			Hook:                            name,
+			Status:                          unifiedOnActionEvidenceStatus(engine, docs, engineSnapshot, engineDocumentation, snapshotDocumentation),
+			Engine:                          engine,
+			Snapshot:                        snapshot,
+			Documentation:                   docs,
+			EngineSnapshotComparison:        engineSnapshot,
+			EngineDocumentationComparison:   engineDocumentation,
+			SnapshotDocumentationComparison: snapshotDocumentation,
 		})
 	}
 	sort.Slice(findings, func(i, j int) bool {
@@ -292,29 +299,29 @@ func projectOnActionEvidenceEngineRoot(scopes []string, available bool) OnAction
 	return OnActionEvidenceRoot{Status: status, Type: types[0], RuleSource: "engine_logs", Confidence: "high"}
 }
 
-func projectOnActionEvidenceTiger(name string) OnActionEvidenceTiger {
-	contract, found := ResolveTigerOnActionContract(name)
+func projectOnActionEvidenceSnapshot(name string) OnActionEvidenceSnapshot {
+	contract, found := ResolveOnActionSnapshotContract(name)
 	if !found {
-		return OnActionEvidenceTiger{
+		return OnActionEvidenceSnapshot{
 			Found:         false,
-			SourceVersion: tigerOnActionTableVersion,
-			Root:          OnActionEvidenceRoot{Status: "not_found", RuleSource: "tiger_static", Confidence: "medium"},
+			SourceVersion: engineOnActionSnapshotVersion,
+			Root:          OnActionEvidenceRoot{Status: "not_found", RuleSource: "engine_1_19_snapshot", Confidence: "high"},
 		}
 	}
 	root := OnActionEvidenceRoot{
 		Type:       contract.Root.StaticType,
-		RuleSource: "tiger_static",
-		Confidence: "medium",
+		RuleSource: "engine_1_19_snapshot",
+		Confidence: "high",
 	}
 	switch contract.Root.ValueKind {
-	case TigerOnActionValueKindScope:
+	case OnActionSnapshotValueKindScope:
 		root.Status = "explicit"
-	case TigerOnActionValueKindNone:
+	case OnActionSnapshotValueKindNone:
 		root.Status = "none"
 	default:
 		root.Status = "unresolved"
 	}
-	return OnActionEvidenceTiger{
+	return OnActionEvidenceSnapshot{
 		Found:         true,
 		Definition:    contract.Definition,
 		AliasPath:     append([]string(nil), contract.AliasPath...),
@@ -413,24 +420,25 @@ func compareOnActionEvidenceRoots(engine, other OnActionEvidenceRoot, otherKind 
 	return "engine_scope_conflicts_" + otherKind + "_root"
 }
 
-func compareOnActionStaticDocumentation(tiger, documented OnActionEvidenceRoot, documentationStatus string) string {
-	if documentationStatus == "ambiguous" || tiger.Status == "ambiguous" {
+func compareOnActionSnapshotDocumentation(snapshot, documented OnActionEvidenceRoot, documentationStatus string) string {
+	if documentationStatus == "ambiguous" || snapshot.Status == "ambiguous" {
 		return "ambiguous"
 	}
-	if !onActionEvidenceComparable(tiger) || !onActionEvidenceComparable(documented) {
+	if !onActionEvidenceComparable(snapshot) || !onActionEvidenceComparable(documented) {
 		return "evidence_unavailable"
 	}
-	if tiger.Status == documented.Status && tiger.Type == documented.Type {
+	if snapshot.Status == documented.Status && snapshot.Type == documented.Type {
 		return "match"
 	}
-	return "static_scope_conflicts_documented_root"
+	return "snapshot_scope_conflicts_documented_root"
 }
 
-func unifiedOnActionEvidenceStatus(engine OnActionEvidenceRoot, documentation OnActionEvidenceDocumentation, engineTiger, engineDocumentation, tigerDocumentation string) string {
+func unifiedOnActionEvidenceStatus(engine OnActionEvidenceRoot, documentation OnActionEvidenceDocumentation, engineSnapshot, engineDocumentation, snapshotDocumentation string) string {
 	// Preserve a known disagreement even when another pair happens to match.
-	// In particular, engine=docs with a conflicting Tiger entry is three-way
+	// In particular, engine=docs with a conflicting generated snapshot entry is
+	// three-way
 	// evidence drift, not a successful all-layer match.
-	for _, comparison := range []string{engineTiger, engineDocumentation, tigerDocumentation} {
+	for _, comparison := range []string{engineSnapshot, engineDocumentation, snapshotDocumentation} {
 		if onActionEvidenceComparisonConflicts(comparison) {
 			return comparison
 		}
@@ -444,7 +452,7 @@ func unifiedOnActionEvidenceStatus(engine OnActionEvidenceRoot, documentation On
 	if !onActionEvidenceComparable(engine) {
 		return "evidence_unavailable"
 	}
-	for _, comparison := range []string{engineTiger, engineDocumentation, tigerDocumentation} {
+	for _, comparison := range []string{engineSnapshot, engineDocumentation, snapshotDocumentation} {
 		if comparison == "match" {
 			return "match"
 		}
@@ -454,9 +462,9 @@ func unifiedOnActionEvidenceStatus(engine OnActionEvidenceRoot, documentation On
 
 func onActionEvidenceComparisonConflicts(comparison string) bool {
 	switch comparison {
-	case "engine_none_with_static_root", "engine_scope_conflicts_static_root", "engine_missing_with_static_root",
+	case "engine_none_with_snapshot_root", "engine_scope_conflicts_snapshot_root", "engine_missing_with_snapshot_root",
 		"engine_none_with_documented_root", "engine_scope_conflicts_documented_root", "engine_missing_with_documented_root",
-		"static_scope_conflicts_documented_root":
+		"snapshot_scope_conflicts_documented_root":
 		return true
 	default:
 		return false
@@ -485,19 +493,19 @@ func normalizedOnActionEvidenceTypes(values []string) []string {
 
 func onActionEvidenceStatusPriority(status string) int {
 	switch status {
-	case "engine_missing_with_static_root":
+	case "engine_missing_with_snapshot_root":
 		return 0
 	case "engine_missing_with_documented_root":
 		return 1
-	case "engine_scope_conflicts_static_root":
+	case "engine_scope_conflicts_snapshot_root":
 		return 2
-	case "engine_none_with_static_root":
+	case "engine_none_with_snapshot_root":
 		return 3
 	case "engine_scope_conflicts_documented_root":
 		return 4
 	case "engine_none_with_documented_root":
 		return 5
-	case "static_scope_conflicts_documented_root":
+	case "snapshot_scope_conflicts_documented_root":
 		return 6
 	case "ambiguous":
 		return 7

@@ -329,8 +329,8 @@ func handleScriptReference(ctx context.Context, runtime *Runtime, definition *To
 		if !liveIndexReady {
 			value, err = lookupScopeTool(args.ID)
 			if result, ok := value.(map[string]any); ok {
-				result["confidence"] = "medium"
-				result["rule_source"] = "tiger_fallback"
+				result["confidence"] = "high"
+				result["rule_source"] = "engine_1_19_snapshot"
 			}
 			break
 		}
@@ -338,12 +338,12 @@ func handleScriptReference(ctx context.Context, runtime *Runtime, definition *To
 		if lookupErr != nil {
 			err = lookupErr
 		} else if len(live) > 0 {
-			value = map[string]any{"found": true, "key": args.ID, "rules": live, "confidence": "high", "rule_source": "engine_logs", "guidance": []string{"Engine log rules take precedence; use Tiger only as fallback and investigate conflicts."}}
+			value = map[string]any{"found": true, "key": args.ID, "rules": live, "confidence": "high", "rule_source": "engine_logs", "guidance": []string{"Live engine log rules take precedence; the generated CK3 1.19 snapshot is used only while live evidence is unavailable."}}
 		} else {
 			value, err = lookupScopeTool(args.ID)
 			if result, ok := value.(map[string]any); ok {
-				result["confidence"] = "medium"
-				result["rule_source"] = "tiger_fallback"
+				result["confidence"] = "high"
+				result["rule_source"] = "engine_1_19_snapshot"
 			}
 		}
 	case "datatype":
@@ -368,32 +368,32 @@ func handleScriptReference(ctx context.Context, runtime *Runtime, definition *To
 			} else {
 				value, err = lookupOnActionTool(args.ID)
 				if result, ok := value.(map[string]any); ok {
-					result["confidence"] = "medium"
-					result["rule_source"] = "tiger_fallback"
+					result["confidence"] = "high"
+					result["rule_source"] = "engine_1_19_snapshot"
 				}
 			}
 		} else {
 			value, err = lookupOnActionTool(args.ID)
 			if result, ok := value.(map[string]any); ok {
-				result["confidence"] = "medium"
-				result["rule_source"] = "tiger_fallback"
-				result["guidance"] = []string{"The live engine-log index is not published; this is a static Tiger fallback only."}
+				result["confidence"] = "high"
+				result["rule_source"] = "engine_1_19_snapshot"
+				result["guidance"] = []string{"The live engine-log index is not published; this result uses the generated CK3 1.19 snapshot."}
 			}
 		}
 		if err == nil {
 			if result, ok := value.(map[string]any); ok {
-				if tiger, found := indexer.ResolveTigerOnActionContract(args.ID); found {
-					// Keep the generated Tiger table as a separate static evidence
+				if snapshot, found := indexer.ResolveOnActionSnapshotContract(args.ID); found {
+					// Keep the generated CK3 1.19 snapshot as a separate contract
 					// layer. It must never overwrite a live engine rule or create a
 					// validator-facing inferred scope.
-					result["tiger_contract"] = tiger
+					result["snapshot_contract"] = snapshot
 				}
 				documentation, documentationErr := runtime.DB.LookupOnActionDocumentationContract(ctx, runtime.Config, args.ID, opts.Limit)
 				if documentationErr != nil {
 					err = documentationErr
 				} else {
 					// Keep vanilla comments in a distinct review-only envelope. The
-					// top-level result remains the engine-first / Tiger-fallback rule
+					// top-level result remains the engine-first / 1.19-snapshot rule
 					// lookup used by existing clients.
 					result["documentation_contract"] = documentation
 				}

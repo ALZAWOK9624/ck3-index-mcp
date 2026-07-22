@@ -133,7 +133,11 @@ def decode_json_stream(raw: str) -> list[dict]:
 def effective_modules(repo: Path) -> list[tuple[str, str, Path]]:
     try:
         completed = subprocess.run(
-            ["go", "list", "-deps", "-json", "."],
+            # The release builder is deliberately usable from an exported
+            # source tree, not only from a Git checkout.  Without this flag
+            # newer Go versions try to stamp VCS state and reject that valid
+            # non-repository layout.
+            ["go", "list", "-buildvcs=false", "-deps", "-json", "."],
             cwd=repo,
             check=True,
             stdout=subprocess.PIPE,

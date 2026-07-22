@@ -27,7 +27,7 @@ var chineseToolTexts = map[string]chineseToolText{
 	},
 	"ck3_workspace": {
 		Title:       "检查 CK3 工作区",
-		Description: "在选择具体对象前检查已索引的工作区结构。返回架构概览、对象类型分布，或 engine、Tiger 与原版相邻注释之间只读的 on_action 证据审计。",
+		Description: "在选择具体对象前检查已索引的工作区结构。返回架构概览、对象类型分布，或 engine、CK3 1.19 快照与原版相邻注释之间只读的 on_action 证据审计。",
 	},
 	"ck3_dependencies": {
 		Title:       "追踪 CK3 依赖",

@@ -158,7 +158,7 @@ func TestAuditOnActionRulesDoesNotTreatMissingOptionalLogAsLiveEvidence(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.LiveEvidenceAvailable || report.LiveCount != 0 || report.EngineOnlyCount != 0 || report.TigerOnlyCount != 0 {
+	if report.LiveEvidenceAvailable || report.LiveCount != 0 || report.EngineOnlyCount != 0 || report.SnapshotOnlyCount != 0 {
 		t.Fatalf("missing optional log became false drift: %+v", report)
 	}
 }

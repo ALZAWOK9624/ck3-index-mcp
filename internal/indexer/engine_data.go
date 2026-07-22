@@ -14,8 +14,16 @@ import (
 
 var engineScopeRegistry = struct {
 	sync.RWMutex
-	rules map[string]map[string][]string
-}{rules: map[string]map[string][]string{}}
+	rules         map[string]map[string][]string
+	ruleOutputs   map[string]map[string][]string
+	targetOutputs map[string][]string
+	modifiers     map[string]ModifierInfo
+}{
+	rules:         map[string]map[string][]string{},
+	ruleOutputs:   map[string]map[string][]string{},
+	targetOutputs: map[string][]string{},
+	modifiers:     map[string]ModifierInfo{},
+}
 
 type engineScopeLogSpec struct {
 	name     string
@@ -28,17 +36,22 @@ var engineScopeLogSpecs = []engineScopeLogSpec{
 	{name: "triggers.log", kind: "trigger"},
 	{name: "event_targets.log", kind: "target"},
 	{name: "event_scopes.log", kind: "scope"},
-	// on_actions.log was missing from the original compact rule layer. It is
-	// optional only for compatibility with older game log bundles; when present
-	// it is a live source of truth and supersedes the generated Tiger name list.
+	// on_actions.log is optional only for compatibility with older log bundles;
+	// when present it is the live source of truth and supersedes the generated
+	// CK3 1.19 snapshot.
 	{name: "on_actions.log", kind: "on_action", optional: true},
 }
 
 func ConfigureEngineRules(logs string) error {
 	rules := map[string]map[string][]string{}
+	ruleOutputs := map[string]map[string][]string{}
+	targetOutputs := map[string][]string{}
 	if strings.TrimSpace(logs) == "" {
 		engineScopeRegistry.Lock()
 		engineScopeRegistry.rules = nil
+		engineScopeRegistry.ruleOutputs = nil
+		engineScopeRegistry.targetOutputs = nil
+		engineScopeRegistry.modifiers = nil
 		engineScopeRegistry.Unlock()
 		return nil
 	}
@@ -65,10 +78,31 @@ func ConfigureEngineRules(logs string) error {
 					m[spec.kind] = splitScopesWithNone(value, spec.kind == "on_action")
 				}
 			}
+			for _, line := range lines[1:] {
+				if value, ok := outputScopeLine(line); ok {
+					m := ruleOutputs[strings.ToLower(name)]
+					if m == nil {
+						m = map[string][]string{}
+						ruleOutputs[strings.ToLower(name)] = m
+					}
+					m[spec.kind] = splitScopes(value)
+					if spec.kind == "target" {
+						targetOutputs[strings.ToLower(name)] = m[spec.kind]
+					}
+					break
+				}
+			}
 		}
+	}
+	modifierData, err := readEngineModifiers(filepath.Join(logs, "modifiers.log"))
+	if err != nil && !os.IsNotExist(err) {
+		return err
 	}
 	engineScopeRegistry.Lock()
 	engineScopeRegistry.rules = rules
+	engineScopeRegistry.ruleOutputs = ruleOutputs
+	engineScopeRegistry.targetOutputs = targetOutputs
+	engineScopeRegistry.modifiers = modifierData
 	engineScopeRegistry.Unlock()
 	return nil
 }
@@ -97,30 +131,105 @@ func engineOnActionKnown(key string) bool {
 	return ok
 }
 
-func engineScopeConfirms(key, kind string, need TigerScope) bool {
-	engineScopeRegistry.RLock()
-	defer engineScopeRegistry.RUnlock()
-	// Backward-compatible configs without engine_logs retain Tiger behavior.
-	// Once engine_logs is configured, a live rule is mandatory for a hard mismatch.
-	if engineScopeRegistry.rules == nil {
+func engineScopeConfirms(key, kind string, need EngineScope) bool {
+	if !engineRulesConfigured() {
+		// Without an engine-log bundle, the generated CK3 1.19 snapshot is the
+		// only available source and retains its documented validation behavior.
 		return true
 	}
-	scopes := engineScopeRegistry.rules[strings.ToLower(key)][kind]
-	if len(scopes) == 0 {
-		return false
-	}
-	var live TigerScope
-	for _, s := range scopes {
-		if v, ok := engineScopeType(s); ok {
-			live = scopeUnion(live, v)
-		}
-	}
-	return isConcreteScope(live) && live.Intersects(need)
+	live, found := engineRuleScope(key, kind)
+	return found && isConcreteScope(live) && live.Intersects(need)
 }
 
-func engineScopeType(name string) (TigerScope, bool) {
+func outputScopeLine(line string) (string, bool) {
+	for _, prefix := range []string{"Output Scopes:", "Supported Targets:"} {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix)), true
+		}
+	}
+	return "", false
+}
+
+func engineRulesConfigured() bool {
+	engineScopeRegistry.RLock()
+	defer engineScopeRegistry.RUnlock()
+	return engineScopeRegistry.rules != nil
+}
+
+// engineRuleScope converts the current engine log's documented input scopes
+// into the internal scope set. It returns false only when no live entry is
+// configured for this key and kind; callers can then use the generated 1.19
+// snapshot for offline operation.
+func engineRuleScope(key, kind string) (EngineScope, bool) {
+	engineScopeRegistry.RLock()
+	defer engineScopeRegistry.RUnlock()
+	if engineScopeRegistry.rules == nil {
+		return EngineScope{}, false
+	}
+	scopes := engineScopeRegistry.rules[strings.ToLower(key)][kind]
+	return engineScopesToMask(scopes)
+}
+
+// engineTargetOutputScope returns the output scope published by
+// event_targets.log. It deliberately leaves targets without an explicit
+// output as unknown rather than inventing a scope transition.
+func engineTargetOutputScope(key string) (EngineScope, bool) {
+	engineScopeRegistry.RLock()
+	defer engineScopeRegistry.RUnlock()
+	if engineScopeRegistry.targetOutputs == nil {
+		return EngineScope{}, false
+	}
+	return engineScopesToMask(engineScopeRegistry.targetOutputs[strings.ToLower(key)])
+}
+
+// engineRuleOutputScope returns the documented child/target scope for a live
+// trigger or effect. Iterator entries in the 1.19 logs use Supported Targets
+// for this field, while event targets use Output Scopes.
+func engineRuleOutputScope(key, kind string) (EngineScope, bool) {
+	engineScopeRegistry.RLock()
+	defer engineScopeRegistry.RUnlock()
+	if engineScopeRegistry.ruleOutputs == nil {
+		return EngineScope{}, false
+	}
+	scopes := engineScopeRegistry.ruleOutputs[strings.ToLower(key)][kind]
+	return engineScopesToMask(scopes)
+}
+
+func engineModifier(key string) (ModifierInfo, bool) {
+	engineScopeRegistry.RLock()
+	defer engineScopeRegistry.RUnlock()
+	if engineScopeRegistry.modifiers == nil {
+		return ModifierInfo{}, false
+	}
+	info, ok := engineScopeRegistry.modifiers[key]
+	return info, ok
+}
+
+func engineScopesToMask(scopes []string) (EngineScope, bool) {
+	var out EngineScope
+	found := false
+	for _, name := range scopes {
+		if scope, ok := engineScopeType(name); ok {
+			out = scopeUnion(out, scope)
+			found = true
+		}
+	}
+	return out, found
+}
+
+func engineScopeType(name string) (EngineScope, bool) {
 	n := strings.ToLower(strings.TrimSpace(name))
-	if v, ok := tigerScopesByName[n]; ok {
+	switch n {
+	case "ghw":
+		n = "great_holy_war"
+	case "story":
+		n = "story_cycle"
+	case "vassal_contract_obligation_level":
+		n = "vassal_obligation_level"
+	case "boolean", "bool", "flag", "none":
+		return ScopeValue, true
+	}
+	if v, ok := engineScopesByName[n]; ok {
 		return v, true
 	}
 	switch n {
@@ -133,7 +242,7 @@ func engineScopeType(name string) (TigerScope, bool) {
 	case "character_scope":
 		return ScopeCharacter, true
 	}
-	return TigerScope{}, false
+	return EngineScope{}, false
 }
 
 type DatatypeInfo struct {
@@ -171,7 +280,54 @@ func rebuildEngineData(ctx context.Context, tx *sql.Tx, logs string) error {
 			return err
 		}
 	}
+
 	return nil
+}
+
+func readEngineModifiers(path string) (map[string]ModifierInfo, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]ModifierInfo{}
+	var tag string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "Tag:"):
+			tag = strings.TrimSpace(strings.TrimPrefix(line, "Tag:"))
+		case tag != "" && strings.HasPrefix(line, "Use areas:"):
+			areas := parseModifierUseAreas(strings.TrimSpace(strings.TrimPrefix(line, "Use areas:")))
+			out[tag] = ModifierInfo{UseAreas: areas, Source: "engine_log"}
+			tag = ""
+		}
+	}
+	return out, nil
+}
+
+// parseModifierUseAreas understands the punctuation used in the current
+// localized modifiers.log, including "character， province，以及 county".
+func parseModifierUseAreas(raw string) []string {
+	raw = strings.ReplaceAll(raw, "，", ",")
+	raw = strings.ReplaceAll(raw, "以及", ",")
+	var out []string
+	for _, area := range strings.Split(raw, ",") {
+		area = strings.TrimSpace(area)
+		if area == "" {
+			continue
+		}
+		duplicate := false
+		for _, existing := range out {
+			if existing == area {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			out = append(out, area)
+		}
+	}
+	return out
 }
 
 func ingestDatatypes(ctx context.Context, tx *sql.Tx, dir string) error {
@@ -258,8 +414,8 @@ func ingestScopeLog(ctx context.Context, tx *sql.Tx, path, kind string, optional
 			switch {
 			case strings.HasPrefix(line, "Supported Scopes:"), strings.HasPrefix(line, "Input Scopes:"), strings.HasPrefix(line, "Expected Scope:"):
 				input, _ = inputScopeLine(line)
-			case strings.HasPrefix(line, "Output Scopes:"):
-				output = strings.TrimSpace(strings.TrimPrefix(line, "Output Scopes:"))
+			case strings.HasPrefix(line, "Output Scopes:"), strings.HasPrefix(line, "Supported Targets:"):
+				output, _ = outputScopeLine(line)
 			default:
 				if strings.TrimSpace(line) != "" && !strings.Contains(line, ": yes") && !strings.Contains(line, ": no") {
 					extra = append(extra, strings.TrimSpace(line))
@@ -366,7 +522,7 @@ func logicalEngineEvidenceSource(sourcePath string) string {
 
 // LookupOnActionEvidence returns the live on_action contract exposed by the
 // game logs. An empty result lets callers deliberately fall back to the
-// generated Tiger list rather than pretending the live rule was found.
+// generated CK3 1.19 snapshot rather than pretending the live rule was found.
 func (db *DB) LookupOnActionEvidence(ctx context.Context, key string) ([]ScopeEvidence, error) {
 	// Engine on_action ids are normalized to lower case at ingestion. Keep this
 	// public lookup consistent with IsOnAction and documentation lookup rather

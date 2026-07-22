@@ -105,7 +105,7 @@ func renderCatalogSection(canonical, legacy []mcpserver.ToolDocumentation) strin
 	writeToolTable(&builder, "Core Tools", filterTools(canonical, false))
 	writeToolTable(&builder, "Map Tools", filterTools(canonical, true))
 	builder.WriteString("### Compatibility\n\n")
-	builder.WriteString("Set `CK3_INDEX_MCP_PROFILE=expert` only when an existing client still discovers legacy specialist names. New prompts and `next_queries` use canonical names.\n")
+	builder.WriteString("Set `CK3_INDEX_MCP_PROFILE=expert` only when an existing client still discovers legacy specialist names. New prompts and `next_actions` use canonical names.\n")
 	return builder.String()
 }
 
@@ -116,7 +116,7 @@ func renderChineseCatalogSection(canonical, legacy []mcpserver.ToolDocumentation
 	writeChineseToolTable(&builder, "核心工具", filterTools(canonical, false))
 	writeChineseToolTable(&builder, "地图工具", filterTools(canonical, true))
 	builder.WriteString("### 兼容模式\n\n")
-	builder.WriteString("只有仍需发现旧版专用工具名的客户端才应设置 `CK3_INDEX_MCP_PROFILE=expert`。新提示词与 `next_queries` 一律使用规范工具名。\n")
+	builder.WriteString("只有仍需发现旧版专用工具名的客户端才应设置 `CK3_INDEX_MCP_PROFILE=expert`。新提示词与 `next_actions` 一律使用规范工具名。\n")
 	return builder.String()
 }
 

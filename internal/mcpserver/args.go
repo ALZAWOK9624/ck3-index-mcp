@@ -3,7 +3,6 @@ package mcpserver
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"strings"
 
@@ -27,19 +26,19 @@ func (a visibilityArgs) normalizedVisibility() (string, error) {
 func (a visibilityArgs) normalizedVisibilityWithDomainMode(allowDomainMode bool) (string, error) {
 	visibility := strings.ToLower(strings.TrimSpace(a.Visibility))
 	if visibility != "" && visibility != "private" && visibility != "public" {
-		return "", fmt.Errorf("argument field %q received %q; expected one of [private public]", "visibility", a.Visibility)
+		return "", invalidArgument("visibility", "visibility must be private or public")
 	}
 	if visibility == "" {
 		privacyMode := strings.ToLower(strings.TrimSpace(a.PrivacyMode))
 		if privacyMode != "" && privacyMode != "private" && privacyMode != "public" && privacyMode != "group" {
-			return "", fmt.Errorf("argument field %q received %q; expected one of [private public group]", "privacy_mode", a.PrivacyMode)
+			return "", invalidArgument("privacy_mode", "privacy_mode must be private, public, or group")
 		}
 		legacyMode := privacyMode
 		if legacyMode == "" {
 			legacyMode = strings.ToLower(strings.TrimSpace(a.Mode))
 			if legacyMode != "" && legacyMode != "private" && legacyMode != "public" && legacyMode != "group" {
 				if !allowDomainMode {
-					return "", fmt.Errorf("argument field %q received %q; expected one of [private public group]", "mode", a.Mode)
+					return "", invalidArgument("mode", "mode must be private, public, or group")
 				}
 				legacyMode = ""
 			}
@@ -80,10 +79,10 @@ func decodeToolArgs(raw json.RawMessage, schema map[string]any, compatibilityPro
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		return fmt.Errorf("invalid tool arguments: %w", err)
+		return invalidArgument("", "arguments do not match the documented input schema")
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return fmt.Errorf("arguments must contain exactly one JSON object")
+		return invalidArgument("", "arguments must contain exactly one JSON object")
 	}
 	return nil
 }
@@ -94,6 +93,7 @@ type ck3SearchArgs struct {
 	Kind       string `json:"kind,omitempty"`
 	Source     string `json:"source,omitempty"`
 	PathPrefix string `json:"path_prefix,omitempty"`
+	Page       int    `json:"page,omitempty"`
 }
 
 type ck3InspectArgs struct {
@@ -112,6 +112,12 @@ type ck3ReviewArgs struct {
 type ck3WorkspaceArgs struct {
 	visibilityArgs
 	Operation string `json:"operation,omitempty"`
+	Domain    string `json:"domain,omitempty"`
+}
+
+type ck3RefreshArgs struct {
+	Operation string   `json:"operation,omitempty"`
+	Paths     []string `json:"paths,omitempty"`
 }
 
 type ck3DependenciesArgs struct {
@@ -149,6 +155,7 @@ type ck3DiagnosticsArgs struct {
 	Source     string `json:"source,omitempty"`
 	PathPrefix string `json:"path_prefix,omitempty"`
 	Confidence string `json:"confidence,omitempty"`
+	Page       int    `json:"page,omitempty"`
 }
 
 type ck3ScriptReferenceArgs struct {

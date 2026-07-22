@@ -3,17 +3,55 @@ package indexer
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 )
 
-func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (ScanStats, error) {
+const maxChangedSymbolsPerRefresh = 128
+
+// NormalizeRefreshPath validates the narrow path surface accepted by an
+// incremental refresh. It is exported for the MCP boundary so unsafe paths are
+// reported as a stable argument error before any database mutation begins.
+func NormalizeRefreshPath(raw string) (string, error) {
+	rel, err := normalizePatchRelPath(raw)
+	if err != nil {
+		return "", err
+	}
+	if classifyVirtualPath(rel) == "" && !isMapContextRel(rel) {
+		return "", fmt.Errorf("path is not an indexed CK3 source-root-relative input")
+	}
+	return rel, nil
+}
+
+// FullScanRequiredError makes an intentionally conservative incremental
+// refusal recoverable without parsing an English error message.
+type FullScanRequiredError struct {
+	Reason string
+	Paths  []string
+}
+
+func (e *FullScanRequiredError) Error() string {
+	if len(e.Paths) == 0 {
+		return "a full scan is required: " + e.Reason
+	}
+	return fmt.Sprintf("a full scan is required for %s: %s", strings.Join(e.Paths, ", "), e.Reason)
+}
+
+func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanStats, resultErr error) {
 	start := time.Now()
+	normalized, err := NormalizeConfig(cfg)
+	if err != nil {
+		return ScanStats{}, err
+	}
+	cfg = normalized
 	if err := validateSources(cfg.Sources); err != nil {
+		return ScanStats{}, err
+	}
+	if err := validateSourceRoots(cfg.Sources); err != nil {
 		return ScanStats{}, err
 	}
 	if err := ConfigureEngineRules(cfg.EngineLogs); err != nil {
@@ -22,7 +60,7 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (ScanStats, e
 	if len(relPaths) == 0 {
 		return ScanStats{}, fmt.Errorf("scan --files requires at least one source-root relative path")
 	}
-	src, err := projectSource(cfg)
+	src, err := ProjectSource(cfg)
 	if err != nil {
 		return ScanStats{}, err
 	}
@@ -35,6 +73,13 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (ScanStats, e
 		return ScanStats{}, err
 	}
 	defer db.Close()
+	defer func() {
+		if resultErr != nil {
+			db.recordScanFailure(context.Background(), resultErr)
+			return
+		}
+		db.clearScanFailure(context.Background())
+	}()
 	if err := db.ensureSchema(ctx); err != nil {
 		return ScanStats{}, err
 	}
@@ -43,7 +88,7 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (ScanStats, e
 		return ScanStats{}, err
 	}
 	if version != indexRuleVersion {
-		return ScanStats{}, fmt.Errorf("incremental scan cannot apply index rule change %q -> %q; run a full ck3-index scan first", version, indexRuleVersion)
+		return ScanStats{}, &FullScanRequiredError{Reason: "the index rule version changed"}
 	}
 	state, err := db.IndexState(ctx)
 	if err != nil {
@@ -61,46 +106,82 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (ScanStats, e
 		return ScanStats{}, err
 	}
 	if cachedEngineFingerprint != engineFingerprint {
-		return ScanStats{}, fmt.Errorf("incremental scan detected changed engine log rules; run a full ck3-index scan before refreshing project files")
+		return ScanStats{}, &FullScanRequiredError{Reason: "engine log rules changed"}
 	}
-	stats := ScanStats{Database: dbPath, BySource: map[string]int{}, TimingsMillis: map[string]int64{}}
+	stats = ScanStats{Database: dbPath, BySource: map[string]int{}, TimingsMillis: map[string]int64{}}
 
 	existing, err := db.fileRecordsByProjectRel(ctx, src.Rank)
 	if err != nil {
 		return ScanStats{}, err
 	}
 	jobs := make([]fileJob, 0, len(relPaths))
+	removed := make([]fileRecord, 0, len(relPaths))
 	mapRefresh := false
 	oldFileIDs := map[int64]bool{}
 	affected := map[string]bool{}
+	requested := map[string]bool{}
+	pathOutcomes := map[string]RefreshPathOutcome{}
 	for _, raw := range relPaths {
-		rel, err := normalizePatchRelPath(raw)
+		rel, err := NormalizeRefreshPath(raw)
 		if err != nil {
 			return ScanStats{}, err
 		}
+		if requested[rel] {
+			continue
+		}
+		requested[rel] = true
 		mapRel := isMapContextRel(rel)
 		if mapRel {
 			mapRefresh = true
 		}
 		kind := classifyVirtualPath(rel)
+		prev := existing[rel]
+		full, _, err := sourceRegularFileAt(src.Path, rel)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				return ScanStats{}, fmt.Errorf("read refresh path %s: %w", rel, err)
+			}
+			if mapRel {
+				return ScanStats{}, &FullScanRequiredError{Reason: "a map input was removed", Paths: []string{rel}}
+			}
+			if prev.ID == 0 {
+				stats.MissingFiles = append(stats.MissingFiles, rel)
+				pathOutcomes[rel] = RefreshPathOutcome{Path: rel, Status: "not_indexed"}
+				continue
+			}
+			lower, lowerErr := db.hasLowerPrecedenceFile(ctx, rel, src.Rank)
+			if lowerErr != nil {
+				return ScanStats{}, lowerErr
+			}
+			if lower {
+				return ScanStats{}, &FullScanRequiredError{Reason: "removal would expose a lower-precedence file that has not been parsed as active", Paths: []string{rel}}
+			}
+			oldFileIDs[prev.ID] = true
+			removed = append(removed, prev)
+			pathOutcomes[rel] = RefreshPathOutcome{Path: rel, Status: "removed"}
+			continue
+		}
 		if kind == "" {
 			if mapRel {
+				pathOutcomes[rel] = RefreshPathOutcome{Path: rel, Status: "map_context_rebuilt"}
 				continue
 			}
 			return ScanStats{}, fmt.Errorf("unsupported scan --files path %q", rel)
 		}
-		full := filepath.Join(src.Path, filepath.FromSlash(rel))
-		if _, err := os.Stat(full); err != nil {
-			return ScanStats{}, fmt.Errorf("scan --files only supports existing current-project files in this version: %s", rel)
-		}
-		prev := existing[rel]
 		if prev.ID != 0 {
 			oldFileIDs[prev.ID] = true
 		}
 		jobs = append(jobs, fileJob{src: src, path: full, rel: rel, kind: kind, prev: prev})
+		pathOutcomes[rel] = RefreshPathOutcome{Path: rel, Status: "refreshed"}
 	}
-	if len(jobs) == 0 && !mapRefresh {
+	sort.Strings(stats.MissingFiles)
+	if len(jobs) == 0 && len(removed) == 0 && !mapRefresh {
+		stats.PathOutcomes = sortedRefreshPathOutcomes(pathOutcomes)
 		return stats, nil
+	}
+	beforeDiagnostics, err := db.diagnosticFingerprintSet(ctx)
+	if err != nil {
+		return ScanStats{}, err
 	}
 	if err := db.collectAffectedForFiles(ctx, oldFileIDs, affected); err != nil {
 		return ScanStats{}, err
@@ -111,6 +192,9 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (ScanStats, e
 		return ScanStats{}, err
 	}
 	defer tx.Rollback()
+	if err := syncSourceLayers(ctx, tx, cfg.Sources); err != nil {
+		return ScanStats{}, err
+	}
 	ftsCurrent, err := searchFTSCacheMatches(ctx, tx)
 	if err != nil {
 		return ScanStats{}, err
@@ -123,14 +207,29 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (ScanStats, e
 	locKeys := map[string]bool{}
 	resources := map[string]bool{}
 	newFileIDs := map[int64]bool{}
+	changedSymbols := map[string]bool{}
+	for _, rec := range removed {
+		if err := collectFileSymbolLabelsTx(ctx, tx, rec.ID, changedSymbols); err != nil {
+			return ScanStats{}, err
+		}
+		if err := deleteFileRecords(ctx, tx, rec.ID); err != nil {
+			return ScanStats{}, err
+		}
+		stats.ChangedFiles++
+		stats.RemovedFiles++
+	}
 	for _, job := range jobs {
 		res := parseOneFile(job)
 		stats.Files++
 		stats.BySource[src.Name]++
+		if res.err != nil {
+			return ScanStats{}, fmt.Errorf("read source file %s: %w", job.rel, res.err)
+		}
 		if res.info == nil {
 			return ScanStats{}, fmt.Errorf("could not read %s", job.rel)
 		}
 		if res.skip {
+			pathOutcomes[job.rel] = RefreshPathOutcome{Path: job.rel, Status: "unchanged"}
 			if err := refreshSkippedFileMetadata(ctx, tx, res); err != nil {
 				return ScanStats{}, err
 			}
@@ -139,14 +238,18 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (ScanStats, e
 			}
 			continue
 		}
+		stats.ChangedFiles++
 		if job.prev.ID != 0 {
+			if err := collectFileSymbolLabelsTx(ctx, tx, job.prev.ID, changedSymbols); err != nil {
+				return ScanStats{}, err
+			}
 			if err := deleteFileRecords(ctx, tx, job.prev.ID); err != nil {
 				return ScanStats{}, err
 			}
 		}
 		// A newly added project file can take over a same-relative-path file
 		// that was previously active in a lower-priority source. That hidden
-		// file is not part of the rank-1 `existing` map above, so record its
+		// file is not part of the project-source `existing` map above, so record its
 		// exported symbols before flipping its override bit. Otherwise refs,
 		// validator diagnostics, and semantic FTS rows can keep treating the
 		// previous winner as active.
@@ -167,10 +270,13 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (ScanStats, e
 		if err := collectAffectedForFileTx(ctx, tx, rec.ID, affected); err != nil {
 			return ScanStats{}, err
 		}
+		if err := collectFileSymbolLabelsTx(ctx, tx, rec.ID, changedSymbols); err != nil {
+			return ScanStats{}, err
+		}
 	}
 	scopedFinalizer := len(newFileIDs) <= scopedFinalizerFileLimit && len(affected) <= scopedFinalizerSymbolLimit
 	if scopedFinalizer {
-		fits, err := scopedValidatorCandidatesFit(ctx, tx, newFileIDs, affected, scopedValidatorFileLimit)
+		fits, err := scopedValidatorCandidatesFit(ctx, tx, src.Rank, newFileIDs, affected, scopedValidatorFileLimit)
 		if err != nil {
 			return ScanStats{}, err
 		}
@@ -184,7 +290,7 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (ScanStats, e
 		stats.TimingsMillis["resolve_refs"] = time.Since(stageStart).Milliseconds()
 		stats.TimingsMillis["resolve_refs_scoped"] = stats.TimingsMillis["resolve_refs"]
 		stageStart = time.Now()
-		if err := refreshValidatorDiagnosticsScoped(ctx, tx, newFileIDs, affected); err != nil {
+		if err := refreshValidatorDiagnosticsScoped(ctx, tx, src.Rank, newFileIDs, affected); err != nil {
 			return ScanStats{}, err
 		}
 		if err := refreshTitleIntegrityDiagnostics(ctx, tx); err != nil {
@@ -217,7 +323,7 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (ScanStats, e
 		if _, err := tx.ExecContext(ctx, `DELETE FROM diagnostics WHERE source='validator'`); err != nil {
 			return ScanStats{}, err
 		}
-		if err := addValidationDiagnostics(ctx, tx, locKeys, resources, objectNames); err != nil {
+		if err := addValidationDiagnostics(ctx, tx, src.Rank, locKeys, resources, objectNames); err != nil {
 			return ScanStats{}, err
 		}
 		if err := refreshTitleIntegrityDiagnostics(ctx, tx); err != nil {
@@ -256,6 +362,13 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (ScanStats, e
 	if err := tx.Commit(); err != nil {
 		return ScanStats{}, err
 	}
+	afterDiagnostics, err := db.diagnosticFingerprintSet(ctx)
+	if err != nil {
+		return ScanStats{}, err
+	}
+	stats.DiagnosticDelta = diffDiagnosticFingerprints(beforeDiagnostics, afterDiagnostics)
+	stats.ChangedSymbols, stats.ChangedSymbolsTruncated = boundedChangedSymbols(changedSymbols, maxChangedSymbolsPerRefresh)
+	stats.PathOutcomes = sortedRefreshPathOutcomes(pathOutcomes)
 	checkpoint, checkpointErr := db.checkpointWALAfterScan(ctx)
 	if checkpointErr != nil {
 		fmt.Fprintf(os.Stderr, "[scan --files] WAL checkpoint deferred: %v\n", checkpointErr)
@@ -267,20 +380,101 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (ScanStats, e
 	return stats, nil
 }
 
-func projectSource(cfg Config) (Source, error) {
-	var best Source
-	for _, src := range cfg.Sources {
-		if src.Rank == 1 {
-			if best.Name != "" {
-				return Source{}, fmt.Errorf("scan --files requires exactly one rank=1 current-project source")
+func (db *DB) hasLowerPrecedenceFile(ctx context.Context, rel string, projectRank int) (bool, error) {
+	var one int
+	err := db.sql.QueryRowContext(ctx, `SELECT 1 FROM files WHERE rel_path=? AND source_rank>? LIMIT 1`, rel, projectRank).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func collectFileSymbolLabelsTx(ctx context.Context, tx *sql.Tx, fileID int64, out map[string]bool) error {
+	queries := []struct {
+		prefix string
+		query  string
+	}{
+		{"", `SELECT object_type || ':' || name FROM objects WHERE file_id=?`},
+		{"localization:", `SELECT key FROM localization WHERE file_id=?`},
+		{"resource:", `SELECT resource_path FROM resources WHERE file_id=?`},
+	}
+	for _, item := range queries {
+		rows, err := tx.QueryContext(ctx, item.query, fileID)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var label string
+			if err := rows.Scan(&label); err != nil {
+				rows.Close()
+				return err
 			}
-			best = src
+			if label != "" {
+				out[item.prefix+label] = true
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return err
 		}
 	}
-	if best.Name == "" || best.Path == "" {
-		return Source{}, fmt.Errorf("scan --files requires a rank=1 current-project source")
+	return nil
+}
+
+func (db *DB) diagnosticFingerprintSet(ctx context.Context) (map[string]bool, error) {
+	rows, err := db.sql.QueryContext(ctx, `SELECT source,severity,code,message,COALESCE(path,''),COALESCE(line,0),COALESCE(col,0),fingerprint FROM diagnostics`)
+	if err != nil {
+		return nil, err
 	}
-	return best, nil
+	defer rows.Close()
+	result := map[string]bool{}
+	for rows.Next() {
+		var d Diagnostic
+		if err := rows.Scan(&d.Source, &d.Severity, &d.Code, &d.Message, &d.Path, &d.Line, &d.Column, &d.Fingerprint); err != nil {
+			return nil, err
+		}
+		fingerprint := d.Fingerprint
+		if fingerprint == "" {
+			fingerprint = diagnosticFingerprint(d)
+		}
+		result[d.Source+"\x00"+fingerprint] = true
+	}
+	return result, rows.Err()
+}
+
+func diffDiagnosticFingerprints(before, after map[string]bool) *DiagnosticDelta {
+	delta := &DiagnosticDelta{Remaining: len(after)}
+	for fingerprint := range after {
+		if !before[fingerprint] {
+			delta.Added++
+		}
+	}
+	for fingerprint := range before {
+		if !after[fingerprint] {
+			delta.Resolved++
+		}
+	}
+	return delta
+}
+
+func boundedChangedSymbols(symbols map[string]bool, limit int) ([]string, bool) {
+	items := make([]string, 0, len(symbols))
+	for symbol := range symbols {
+		items = append(items, symbol)
+	}
+	sort.Strings(items)
+	if limit > 0 && len(items) > limit {
+		return items[:limit], true
+	}
+	return items, false
+}
+
+func sortedRefreshPathOutcomes(outcomes map[string]RefreshPathOutcome) []RefreshPathOutcome {
+	items := make([]RefreshPathOutcome, 0, len(outcomes))
+	for _, outcome := range outcomes {
+		items = append(items, outcome)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Path < items[j].Path })
+	return items
 }
 
 func (db *DB) fileRecordsByProjectRel(ctx context.Context, sourceRank int) (map[string]fileRecord, error) {
@@ -429,9 +623,9 @@ func collectAffectedForFileTx(ctx context.Context, tx *sql.Tx, fileID int64, aff
 }
 
 // collectProjectOverrideVictims finds currently active lower-priority files
-// that a rank-1 scan --files update is about to hide. Their exported symbols
-// must join the incremental invalidation set before UPDATE files marks them
-// overridden; the source-file scan itself only knows its rank-1 predecessor.
+// that a project-source scan --files update is about to hide. Their exported
+// symbols must join the incremental invalidation set before UPDATE files marks
+// them overridden; the source-file scan itself only knows its predecessor.
 func collectProjectOverrideVictims(ctx context.Context, tx *sql.Tx, relPath string, projectRank int, oldFileIDs map[int64]bool, affected map[string]bool) error {
 	rows, err := tx.QueryContext(ctx, `SELECT id FROM files
 		WHERE rel_path=? AND source_rank>? AND overridden=0`, relPath, projectRank)

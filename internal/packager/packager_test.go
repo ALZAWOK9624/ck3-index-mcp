@@ -66,6 +66,10 @@ func TestBuildPortableDeterministicPackage(t *testing.T) {
 	if strings.Contains(first.ArtifactRelPath, root) || filepath.IsAbs(first.ArtifactRelPath) {
 		t.Fatalf("artifact result leaked an absolute path: %q", first.ArtifactRelPath)
 	}
+	record, owned := ownedArtifactRecord(root, first.ArchiveName)
+	if !owned || record.ArtifactID != first.ArtifactID || record.SHA256 != first.SHA256 || record.Size != first.Size {
+		t.Fatalf("generated package was not registered for safe cleanup: %+v", record)
+	}
 	files := readZipFiles(t, filepath.Join(root, first.ArtifactRelPath))
 	for _, expected := range []string{
 		"INSTALL.txt", "apple_test_mod.mod", "apple_test_mod/descriptor.mod",
@@ -315,25 +319,74 @@ func TestIndexerValidatorReturnsMissingReferenceDiagnostics(t *testing.T) {
 	}
 }
 
-func TestBuildCleansExpiredArtifacts(t *testing.T) {
+func TestBuildCleansOnlyRegisteredExpiredArtifacts(t *testing.T) {
 	root := t.TempDir()
-	old := filepath.Join(root, "expired.zip")
-	if err := os.WriteFile(old, []byte("old"), 0o644); err != nil {
+	options := BuildOptions{ArtifactRoot: root, Retention: 7 * 24 * time.Hour, Limits: MCPLimits, Validator: allowAllValidator(0)}
+	first, err := Build(context.Background(), Request{Metadata: validMetadata(), Files: []FileInput{
+		textInput("common/scripted_triggers/old.txt", "old_trigger = { always = yes }")}}, options)
+	if err != nil {
 		t.Fatal(err)
+	}
+	old := filepath.Join(root, first.ArchiveName)
+	oldRecord := filepath.Join(root, artifactRecordName(first.ArchiveName))
+	userZip := filepath.Join(root, "my-manual-backup.zip")
+	lookalikeZip := filepath.Join(root, "apple_test_mod-0123456789abcdef.zip")
+	for _, path := range []string{userZip, lookalikeZip} {
+		if err := os.WriteFile(path, []byte("user-owned"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	past := time.Now().Add(-8 * 24 * time.Hour)
-	if err := os.Chtimes(old, past, past); err != nil {
+	for _, path := range []string{old, oldRecord, userZip, lookalikeZip} {
+		if err := os.Chtimes(path, past, past); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err = Build(context.Background(), Request{Metadata: validMetadata(), Files: []FileInput{
+		textInput("common/scripted_triggers/new.txt", "new_trigger = { always = yes }")}}, options)
+	if err != nil {
 		t.Fatal(err)
 	}
-	_, err := Build(context.Background(), Request{Metadata: validMetadata(), Files: []FileInput{
-		textInput("common/scripted_triggers/test.txt", "test_trigger = { always = yes }")}}, BuildOptions{
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatalf("registered expired artifact was not removed: %v", err)
+	}
+	if _, err := os.Stat(oldRecord); !os.IsNotExist(err) {
+		t.Fatalf("record for removed artifact was not removed: %v", err)
+	}
+	for _, path := range []string{userZip, lookalikeZip} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("cleanup removed an unregistered user ZIP %s: %v", filepath.Base(path), err)
+		}
+	}
+}
+
+func TestCleanupPreservesModifiedRegisteredArtifact(t *testing.T) {
+	root := t.TempDir()
+	result, err := Build(context.Background(), Request{Metadata: validMetadata(), Files: []FileInput{
+		textInput("common/scripted_triggers/old.txt", "old_trigger = { always = yes }")}}, BuildOptions{
 		ArtifactRoot: root, Retention: 7 * 24 * time.Hour, Limits: MCPLimits, Validator: allowAllValidator(0),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(old); !os.IsNotExist(err) {
-		t.Fatalf("expired artifact was not removed: %v", err)
+	archive := filepath.Join(root, result.ArchiveName)
+	record := filepath.Join(root, artifactRecordName(result.ArchiveName))
+	if err := os.WriteFile(archive, []byte("manually replaced archive"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-8 * 24 * time.Hour)
+	for _, path := range []string{archive, record} {
+		if err := os.Chtimes(path, past, past); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := cleanupArtifacts(root, 7*24*time.Hour, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{archive, record} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("cleanup removed a modified artifact or its record %s: %v", filepath.Base(path), err)
+		}
 	}
 }
 

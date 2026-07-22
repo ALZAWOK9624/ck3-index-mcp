@@ -17,6 +17,25 @@ import (
 
 var deterministicZipTime = time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC)
 
+const (
+	artifactRecordSchemaVersion = 1
+	artifactRecordPrefix        = ".ck3-package-artifact-"
+	artifactRecordSuffix        = ".json"
+	artifactStagePrefix         = ".ck3-package-stage-"
+)
+
+// artifactRecord is a local ownership marker for a generated archive. It is
+// deliberately kept outside the ZIP so expiry cleanup never has to treat a
+// filename alone as proof that ck3-index owns it.
+type artifactRecord struct {
+	SchemaVersion int    `json:"schema_version"`
+	ArtifactID    string `json:"artifact_id"`
+	ArchiveName   string `json:"archive_name"`
+	SHA256        string `json:"sha256"`
+	Size          int64  `json:"size"`
+	CreatedAt     string `json:"created_at"`
+}
+
 func Build(ctx context.Context, request Request, options BuildOptions) (Result, error) {
 	if strings.TrimSpace(options.ArtifactRoot) == "" {
 		return Result{}, fmt.Errorf("artifact root is required")
@@ -85,6 +104,16 @@ func Build(ctx context.Context, request Request, options BuildOptions) (Result, 
 		return Result{}, err
 	}
 	now := time.Now()
+	if err := writeArtifactRecord(options.ArtifactRoot, artifactRecord{
+		SchemaVersion: artifactRecordSchemaVersion,
+		ArtifactID:    artifactID,
+		ArchiveName:   archiveName,
+		SHA256:        hash,
+		Size:          size,
+		CreatedAt:     now.UTC().Format(time.RFC3339),
+	}); err != nil {
+		return Result{}, fmt.Errorf("record package artifact: %w", err)
+	}
 	result.Status = "ready"
 	result.ArtifactID = artifactID
 	result.ArtifactRelPath = archiveName
@@ -188,18 +217,149 @@ func cleanupArtifacts(root string, retention time.Duration, now time.Time) error
 	}
 	cutoff := now.Add(-retention)
 	for _, entry := range entries {
-		if !strings.HasSuffix(strings.ToLower(entry.Name()), ".zip") && !strings.HasPrefix(entry.Name(), ".ck3-package-stage-") {
+		if strings.HasPrefix(entry.Name(), artifactStagePrefix) {
+			if err := cleanupExpiredStage(root, entry, cutoff); err != nil {
+				return err
+			}
+			continue
+		}
+		if !isGeneratedArchiveName(entry.Name()) || entry.Type()&os.ModeSymlink != 0 {
 			continue
 		}
 		info, err := entry.Info()
 		if err != nil {
 			return fmt.Errorf("inspect artifact %s: %w", entry.Name(), err)
 		}
-		if info.ModTime().Before(cutoff) {
-			if err := os.RemoveAll(filepath.Join(root, entry.Name())); err != nil {
-				return fmt.Errorf("remove expired artifact %s: %w", entry.Name(), err)
-			}
+		if !info.Mode().IsRegular() || !info.ModTime().Before(cutoff) {
+			continue
+		}
+		record, ok := ownedArtifactRecord(root, entry.Name())
+		if !ok {
+			continue
+		}
+		archivePath := filepath.Join(root, entry.Name())
+		hash, size, err := hashFile(archivePath)
+		if err != nil {
+			return fmt.Errorf("verify artifact %s: %w", entry.Name(), err)
+		}
+		if record.SHA256 != hash || record.Size != size {
+			continue
+		}
+		if err := os.Remove(archivePath); err != nil {
+			return fmt.Errorf("remove expired artifact %s: %w", entry.Name(), err)
+		}
+		if err := os.Remove(filepath.Join(root, artifactRecordName(entry.Name()))); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove artifact record %s: %w", entry.Name(), err)
 		}
 	}
 	return nil
+}
+
+func cleanupExpiredStage(root string, entry os.DirEntry, cutoff time.Time) error {
+	if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
+		return nil
+	}
+	info, err := entry.Info()
+	if err != nil {
+		return fmt.Errorf("inspect package stage %s: %w", entry.Name(), err)
+	}
+	if !info.ModTime().Before(cutoff) {
+		return nil
+	}
+	if err := os.RemoveAll(filepath.Join(root, entry.Name())); err != nil {
+		return fmt.Errorf("remove expired package stage %s: %w", entry.Name(), err)
+	}
+	return nil
+}
+
+func writeArtifactRecord(root string, record artifactRecord) error {
+	if !validArtifactRecord(record, record.ArchiveName) {
+		return fmt.Errorf("invalid artifact record")
+	}
+	path := filepath.Join(root, artifactRecordName(record.ArchiveName))
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("artifact record collision is not a regular file: %s", filepath.Base(path))
+		}
+		existing, ok := ownedArtifactRecord(root, record.ArchiveName)
+		if !ok || existing.SHA256 != record.SHA256 || existing.Size != record.Size {
+			return fmt.Errorf("artifact record collision has unexpected content: %s", filepath.Base(path))
+		}
+		now := time.Now()
+		return os.Chtimes(path, now, now)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	data, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	return nil
+}
+
+func ownedArtifactRecord(root, archiveName string) (artifactRecord, bool) {
+	path := filepath.Join(root, artifactRecordName(archiveName))
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return artifactRecord{}, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return artifactRecord{}, false
+	}
+	var record artifactRecord
+	if err := json.Unmarshal(data, &record); err != nil || !validArtifactRecord(record, archiveName) {
+		return artifactRecord{}, false
+	}
+	return record, true
+}
+
+func artifactRecordName(archiveName string) string {
+	return artifactRecordPrefix + strings.TrimSuffix(archiveName, ".zip") + artifactRecordSuffix
+}
+
+func validArtifactRecord(record artifactRecord, archiveName string) bool {
+	if record.SchemaVersion != artifactRecordSchemaVersion || record.ArchiveName != archiveName || record.ArtifactID != strings.TrimSuffix(archiveName, ".zip") || record.Size < 0 || len(record.SHA256) != sha256.Size*2 {
+		return false
+	}
+	if _, err := time.Parse(time.RFC3339, record.CreatedAt); err != nil {
+		return false
+	}
+	for _, r := range record.SHA256 {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return false
+		}
+	}
+	return isGeneratedArchiveName(archiveName)
+}
+
+func isGeneratedArchiveName(name string) bool {
+	if filepath.Base(name) != name || !strings.HasSuffix(name, ".zip") {
+		return false
+	}
+	id := strings.TrimSuffix(name, ".zip")
+	separator := strings.LastIndexByte(id, '-')
+	if separator <= 0 || len(id)-separator-1 != 16 {
+		return false
+	}
+	for _, r := range id[separator+1:] {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return false
+		}
+	}
+	return true
 }

@@ -193,13 +193,13 @@ on_projection_fixture = { }
 		t.Fatal(err)
 	}
 	if _, err := db.sql.ExecContext(ctx, `INSERT INTO objects(object_type,name,value,file_id,node_local_id,source_name,source_rank,path,line,col)
-		VALUES('on_action','on_projection_fixture','',0,0,'vanilla',3,'common/on_action/fixture.txt',5,1)`); err != nil {
+		VALUES('on_action','on_projection_fixture','',0,0,'vanilla_fixture',3,'common/on_action/fixture.txt',5,1)`); err != nil {
 		t.Fatal(err)
 	}
 
 	documentation, err := db.LookupOnActionDocumentationContract(ctx, Config{Sources: []Source{
-		{Name: "game", Path: private, Rank: 1},
-		{Name: "vanilla", Path: vanilla, Rank: 3},
+		{Name: "private_fixture", Path: private, Rank: 1, Role: SourceRoleProject, Private: true},
+		{Name: "vanilla_fixture", Path: vanilla, Rank: 3, Role: SourceRoleGame, Private: false},
 	}}, "ON_PROJECTION_FIXTURE", 8)
 	if err != nil {
 		t.Fatal(err)

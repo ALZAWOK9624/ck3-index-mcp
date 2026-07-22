@@ -19,6 +19,12 @@ func TestQueryGUIReusesIndexedFilesAndPrivacyBoundary(t *testing.T) {
 	if err := db.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
+	if err := syncSourceLayers(ctx, db.sql, []Source{
+		{Name: "game", Path: "game", Rank: 3, Role: SourceRoleGame, Private: false},
+		{Name: "project", Path: "project", Rank: 1, Role: SourceRoleProject, Private: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	gamePath := writeGUIQueryFixture(t, root, "game/base.gui", `types Demo {
 	type base_panel = container { block "content" { text_single = { text = "base" } } }

@@ -159,9 +159,9 @@ func (db *DB) LookupOnActionDocumentationContract(ctx context.Context, cfg Confi
 			"engine_evidence_available describes the published engine-log layer; each candidate separately states whether that layer has a rule for this key.",
 		},
 	}
-	game, ok := vanillaGameSource(cfg)
+	game, ok := GameSource(cfg)
 	if !ok {
-		result.Guidance = append(result.Guidance, "A rank-3 vanilla game source is not configured, so documentation evidence is unavailable.")
+		result.Guidance = append(result.Guidance, "A configured game source is not available, so documentation evidence is unavailable.")
 		return result, nil
 	}
 	limit = boundedOnActionDocumentationLimit(limit)
@@ -446,7 +446,7 @@ func (db *DB) AuditOnActionScopeContracts(ctx context.Context, cfg Config, limit
 		return report, fmt.Errorf("on_action scope contract audit requires a ready published index; current scan status is %q", state.Status)
 	}
 
-	game, ok := vanillaGameSource(cfg)
+	game, ok := GameSource(cfg)
 	if !ok {
 		report.Status = "unavailable"
 		report.Guidance = append(report.Guidance, "No game source is configured, so vanilla on_action comments cannot be inspected.")
@@ -524,15 +524,6 @@ func (db *DB) AuditOnActionScopeContracts(ctx context.Context, cfg Config, limit
 	return report, nil
 }
 
-func vanillaGameSource(cfg Config) (Source, bool) {
-	for _, source := range cfg.Sources {
-		if source.Rank == 3 && strings.TrimSpace(source.Path) != "" {
-			return source, true
-		}
-	}
-	return Source{}, false
-}
-
 func (db *DB) onActionEngineScopes(ctx context.Context) (map[string][]string, error) {
 	rows, err := db.sql.QueryContext(ctx, `SELECT name,COALESCE(input_scopes,'') FROM engine_scope_rules WHERE rule_kind='on_action' ORDER BY name`)
 	if err != nil {
@@ -551,6 +542,9 @@ func (db *DB) onActionEngineScopes(ctx context.Context) (map[string][]string, er
 }
 
 func scanVanillaOnActionComments(ctx context.Context, source Source) (vanillaOnActionCommentScan, error) {
+	if err := validateSourceRoots([]Source{source}); err != nil {
+		return vanillaOnActionCommentScan{}, err
+	}
 	root := filepath.Join(source.Path, "common", "on_action")
 	result := vanillaOnActionCommentScan{}
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
@@ -559,6 +553,9 @@ func scanVanillaOnActionComments(ctx context.Context, source Source) (vanillaOnA
 		}
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("on_action documentation contains symbolic link %s", filepath.Base(path))
 		}
 		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".txt") {
 			return nil
@@ -583,6 +580,9 @@ func scanVanillaOnActionComments(ctx context.Context, source Source) (vanillaOnA
 }
 
 func scanOnActionCommentFile(ctx context.Context, path, rel, source string) ([]OnActionScopeContract, int, error) {
+	if _, err := sourceRegularFileInfo(path); err != nil {
+		return nil, 0, err
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, 0, err

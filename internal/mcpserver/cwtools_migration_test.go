@@ -88,12 +88,12 @@ mcp_documented = { }
 	publicUpstreamCompare := callToolForTest(t, db, cfg, "ck3_inspect", map[string]any{
 		"id": "trait:mcp_compare_trait", "operation": "compare", "visibility": "public", "source": "base",
 	})
-	if publicUpstreamCompare["isError"] == true {
-		t.Fatalf("public non-project object compare failed: %+v", publicUpstreamCompare)
+	if publicUpstreamCompare["isError"] != true {
+		t.Fatalf("public object compare bypassed the private-evidence boundary: %+v", publicUpstreamCompare)
 	}
 	publicUpstreamContent := publicUpstreamCompare["structuredContent"].(map[string]any)
-	if publicUpstreamContent["source"] != "base" || publicUpstreamContent["status"] != "source_only" {
-		t.Fatalf("public object compare did not stay on non-project layers: %+v", publicUpstreamContent)
+	if publicUpstreamContent["code"] != ErrorInvalidArguments || publicUpstreamContent["category"] != "privacy" {
+		t.Fatalf("public object compare error contract = %+v, want privacy boundary", publicUpstreamContent)
 	}
 
 	htmlChain := callToolForTest(t, db, cfg, "ck3_dependencies", map[string]any{

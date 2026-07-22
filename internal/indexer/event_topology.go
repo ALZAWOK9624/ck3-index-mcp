@@ -114,7 +114,7 @@ func (db *DB) eventChainCenter(ctx context.Context, id string, opts LLMOptions) 
 	}
 	for _, wanted := range []string{"event", "on_action"} {
 		for _, definition := range obj.Definitions {
-			if definition.Type == wanted && (!opts.publicMode() || !isProjectEvidence(definition.Source, definition.Path)) {
+			if definition.Type == wanted && (!opts.publicMode() || !opts.sourceIsPrivate(definition.Source)) {
 				return wanted, id, nil
 			}
 		}
@@ -188,7 +188,7 @@ func (db *DB) buildEventTopology(ctx context.Context, centerType, centerName, di
 				continue
 			}
 			seenEdges[edgeKey] = true
-			if opts.publicMode() && isProjectEvidence(hit.Source, hit.Path) {
+			if opts.publicMode() && opts.sourceIsPrivate(hit.Source) {
 				redacted++
 				continue
 			}
@@ -241,7 +241,7 @@ func (db *DB) enrichTopologyNode(ctx context.Context, state *topologyNodeState, 
 		return err
 	}
 	for _, definition := range obj.Definitions {
-		if opts.publicMode() && isProjectEvidence(definition.Source, definition.Path) {
+		if opts.publicMode() && opts.sourceIsPrivate(definition.Source) {
 			continue
 		}
 		state.Source = definition.Source
@@ -254,7 +254,7 @@ func (db *DB) enrichTopologyNode(ctx context.Context, state *topologyNodeState, 
 		return nil
 	}
 	for _, profile := range obj.EventProfiles {
-		if opts.publicMode() && isProjectEvidence(profile.Source, profile.Path) {
+		if opts.publicMode() && opts.sourceIsPrivate(profile.Source) {
 			continue
 		}
 		for _, field := range profile.Fields {

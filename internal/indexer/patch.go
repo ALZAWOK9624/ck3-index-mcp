@@ -96,11 +96,14 @@ func AnalyzeVirtualFile(relPath, sourceName string, sourceRank int, content stri
 		a.Refs = extractRefs(rec, a.Parsed.Nodes, a.Objects)
 		a.ObjectFields = extractObjectFields(rec, a.Parsed.Nodes, a.Objects)
 	case "localization":
-		a.Locs = parseLocBytes(rel, []byte(content))
+		a.Locs, err = parseLocBytes(rel, []byte(content))
 	case "schema":
-		a.SchemaEntries = parseSchemaBytes(rel, []byte(content))
+		a.SchemaEntries, err = parseSchemaBytes(rel, []byte(content))
 	case "resource":
 		a.Resources = append(a.Resources, normalizeResource(rel))
+	}
+	if err != nil {
+		return VirtualFileAnalysis{}, err
 	}
 	return a, nil
 }
@@ -163,6 +166,10 @@ func (db *DB) LLMPreflightPatch(ctx context.Context, files []PatchFileInput, opt
 	limit := opts.normalizedLimit()
 	if len(files) == 0 {
 		return LLMResult{}, fmt.Errorf("preflight_patch requires at least one file")
+	}
+	projectSource, err := db.projectSourceName(ctx)
+	if err != nil {
+		return LLMResult{}, err
 	}
 	symbols := activeSymbols{
 		objects:      map[string]bool{},
@@ -284,7 +291,13 @@ func (db *DB) LLMPreflightPatch(ctx context.Context, files []PatchFileInput, opt
 					return LLMResult{}, err
 				}
 				for _, definition := range indexed.Definitions {
-					if definition.Type != "title" || definition.Rank != 1 || replacedPaths[filepathSlash(definition.LogicalPath)] {
+					isProjectDefinition := strings.EqualFold(definition.Source, projectSource)
+					// Pre-source-policy caches predate source_layers. Preserve their
+					// legacy rank-1 behavior only until the next scan records roles.
+					if projectSource == "" {
+						isProjectDefinition = definition.Rank == 1
+					}
+					if definition.Type != "title" || !isProjectDefinition || replacedPaths[filepathSlash(definition.LogicalPath)] {
 						continue
 					}
 					duplicateDiags = append(duplicateDiags, Diagnostic{
@@ -578,8 +591,15 @@ func (db *DB) DirtyPatchFiles(ctx context.Context, cfg Config, limit int) (Dirty
 		rel string
 		sha string
 	}
+	project, err := ProjectSource(cfg)
+	if err != nil {
+		return DirtyPatchSet{}, err
+	}
+	if err := validateSourceRoots([]Source{project}); err != nil {
+		return DirtyPatchSet{}, err
+	}
 	indexed := map[string]indexedFile{}
-	rows, err := db.sql.QueryContext(ctx, `SELECT path, rel_path, sha256 FROM files WHERE source_rank=1 AND overridden=0`)
+	rows, err := db.sql.QueryContext(ctx, `SELECT path, rel_path, sha256 FROM files WHERE source_rank=? AND overridden=0`, project.Rank)
 	if err != nil {
 		return DirtyPatchSet{}, err
 	}
@@ -601,17 +621,18 @@ func (db *DB) DirtyPatchFiles(ctx context.Context, cfg Config, limit int) (Dirty
 	}
 	var candidates []dirtyCandidate
 	seen := map[string]bool{}
-	for _, src := range cfg.Sources {
-		if src.Rank != 1 || src.Path == "" {
-			continue
-		}
+	{
+		src := project
 		err := filepath.WalkDir(src.Path, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
-				return nil
+				return err
+			}
+			if d.Type()&os.ModeSymlink != 0 {
+				return fmt.Errorf("dirty-project source contains symbolic link %s", filepath.Base(path))
 			}
 			rel, relErr := filepath.Rel(src.Path, path)
 			if relErr != nil {
-				return nil
+				return relErr
 			}
 			rel = filepath.ToSlash(rel)
 			if d.IsDir() {
@@ -625,9 +646,12 @@ func (db *DB) DirtyPatchFiles(ctx context.Context, cfg Config, limit int) (Dirty
 				return nil
 			}
 			seen[path] = true
+			if _, err := sourceRegularFileInfo(path); err != nil {
+				return err
+			}
 			sum, err := shaFile(path)
 			if err != nil {
-				return nil
+				return err
 			}
 			if prev, ok := indexed[path]; ok && prev.sha == sum {
 				return nil
@@ -644,10 +668,13 @@ func (db *DB) DirtyPatchFiles(ctx context.Context, cfg Config, limit int) (Dirty
 		if seen[path] || classifyRel(prev.rel) == "" {
 			continue
 		}
-		if _, err := os.Stat(path); err == nil {
+		if info, err := os.Lstat(path); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return DirtyPatchSet{}, fmt.Errorf("dirty-project source contains symbolic link %s", filepath.Base(path))
+			}
 			continue
 		} else if !os.IsNotExist(err) {
-			continue
+			return DirtyPatchSet{}, err
 		}
 		deleted++
 		candidates = append(candidates, dirtyCandidate{path: path, rel: prev.rel, op: "delete"})
@@ -665,9 +692,12 @@ func (db *DB) DirtyPatchFiles(ctx context.Context, cfg Config, limit int) (Dirty
 		}
 		input := PatchFileInput{Path: candidate.rel, Op: candidate.op}
 		if candidate.op != "delete" {
+			if _, err := sourceRegularFileInfo(candidate.path); err != nil {
+				return DirtyPatchSet{}, err
+			}
 			data, err := os.ReadFile(candidate.path)
 			if err != nil {
-				continue
+				return DirtyPatchSet{}, err
 			}
 			input.Content = string(data)
 		}

@@ -22,6 +22,7 @@ func TestServeMCPProtocolContract(t *testing.T) {
 	dbPath := createProtocolTestDB(t)
 	requests := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"contract-test","version":"1"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"ping","params":{}}`,
 		`{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}`,
 		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"ck3_inspect","arguments":{}}}`,
@@ -53,8 +54,8 @@ func TestServeMCPProtocolContract(t *testing.T) {
 		t.Fatalf("ping did not return an empty object: %+v", responses[1])
 	}
 	listed := responses[2]["result"].(map[string]any)["tools"].([]any)
-	if len(listed) != 29 {
-		t.Fatalf("standard tools/list count = %d, want 29", len(listed))
+	if len(listed) != 30 {
+		t.Fatalf("standard tools/list count = %d, want 30", len(listed))
 	}
 	first := listed[0].(map[string]any)
 	for _, field := range []string{"title", "description", "inputSchema", "outputSchema", "annotations"} {
@@ -98,11 +99,71 @@ func TestServeMCPNegotiatesSupportedAndUnknownProtocolVersions(t *testing.T) {
 	if got := responses[0]["result"].(map[string]any)["protocolVersion"]; got != "2025-06-18" {
 		t.Fatalf("supported client version negotiation = %v", got)
 	}
-	if got := responses[1]["result"].(map[string]any)["protocolVersion"]; got != latestMCPProtocolVersion {
-		t.Fatalf("unknown client version negotiation = %v", got)
+	if code := int(responses[1]["error"].(map[string]any)["code"].(float64)); code != rpcInvalidRequest {
+		t.Fatalf("duplicate initialize error = %d, want %d", code, rpcInvalidRequest)
 	}
-	if code := int(responses[2]["error"].(map[string]any)["code"].(float64)); code != rpcInvalidParams {
-		t.Fatalf("missing initialize protocolVersion error = %d, want %d", code, rpcInvalidParams)
+	if code := int(responses[2]["error"].(map[string]any)["code"].(float64)); code != rpcInvalidRequest {
+		t.Fatalf("duplicate initialize takes precedence over malformed duplicate params: %d, want %d", code, rpcInvalidRequest)
+	}
+}
+
+func TestServeMCPRequiresInitializedNotificationBeforeTools(t *testing.T) {
+	dbPath := createProtocolTestDB(t)
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/list","params":{}}`,
+	}, "\n") + "\n"
+	var out bytes.Buffer
+	if err := Serve(context.Background(), emptyMCPConfig(dbPath), dbPath, strings.NewReader(input), &out); err != nil {
+		t.Fatal(err)
+	}
+	responses := decodeResponseLines(t, out.String())
+	if len(responses) != 4 {
+		t.Fatalf("response count = %d, want 4: %s", len(responses), out.String())
+	}
+	for _, index := range []int{0, 2} {
+		if code := int(responses[index]["error"].(map[string]any)["code"].(float64)); code != rpcInvalidRequest {
+			t.Fatalf("pre-initialized tools/list response = %+v, want invalid request", responses[index])
+		}
+	}
+	if _, ok := responses[1]["result"].(map[string]any); !ok {
+		t.Fatalf("initialize did not succeed: %+v", responses[1])
+	}
+	if tools, ok := responses[3]["result"].(map[string]any)["tools"].([]any); !ok || len(tools) == 0 {
+		t.Fatalf("tools/list after initialized notification failed: %+v", responses[3])
+	}
+}
+
+func TestServeMCPCancellationNotificationReachesActiveToolWithoutBlockingReader(t *testing.T) {
+	dbPath := createProtocolTestDB(t)
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`,
+		`{"jsonrpc":"2.0","id":"slow","method":"tools/call","params":{"name":"ck3_health","arguments":{}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"slow"}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"ping","params":{}}`,
+	}, "\n") + "\n"
+	caller := func(ctx context.Context, _ *indexer.DB, _ indexer.Config, _ json.RawMessage) (any, error) {
+		<-ctx.Done()
+		return map[string]any{"cancelled": true}, nil
+	}
+	var out bytes.Buffer
+	if err := serveWithToolCaller(context.Background(), emptyMCPConfig(dbPath), dbPath, strings.NewReader(input), &out, caller); err != nil {
+		t.Fatal(err)
+	}
+	responses := decodeResponseLines(t, out.String())
+	if len(responses) != 3 {
+		t.Fatalf("response count = %d, want initialize, cancelled tool, and ping: %s", len(responses), out.String())
+	}
+	tool := responses[1]["result"].(map[string]any)
+	if tool["cancelled"] != true {
+		t.Fatalf("cancellation did not reach active tool context: %+v", tool)
+	}
+	if _, ok := responses[2]["result"].(map[string]any); !ok {
+		t.Fatalf("ping was not read while tool request was active: %+v", responses[2])
 	}
 }
 
@@ -291,7 +352,7 @@ func TestToolErrorsRedactConfiguredPathsCaseInsensitively(t *testing.T) {
 	}
 }
 
-func TestNextQueriesUseCanonicalToolsAndExplicitArguments(t *testing.T) {
+func TestNextActionsUseCanonicalToolsAndExplicitArguments(t *testing.T) {
 	result, err := encodeToolResult(indexer.LLMResult{
 		Intent:  "fixture",
 		Summary: "fixture",
@@ -305,34 +366,85 @@ func TestNextQueriesUseCanonicalToolsAndExplicitArguments(t *testing.T) {
 		t.Fatal(err)
 	}
 	structured := result["structuredContent"].(map[string]any)
-	queries := structured["next_queries"].([]any)
-	first := queries[0].(map[string]any)
+	if _, legacy := structured["next_queries"]; legacy {
+		t.Fatalf("result retained legacy next_queries: %+v", structured)
+	}
+	var actions []map[string]any
+	encodedActions, err := json.Marshal(structured["next_actions"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(encodedActions, &actions); err != nil {
+		t.Fatal(err)
+	}
+	first := actions[0]
 	if first["tool"] != "ck3_prepare_edit" {
-		t.Fatalf("legacy next query was not canonicalized: %+v", first)
+		t.Fatalf("legacy next action was not canonicalized: %+v", first)
 	}
 	firstArgs := first["arguments"].(map[string]any)
 	if firstArgs["operation"] != "rules" || firstArgs["id"] != "trait" {
 		t.Fatalf("canonical prepare arguments are incomplete: %+v", firstArgs)
 	}
 	if _, legacyID := first["id"]; legacyID {
-		t.Fatalf("canonical next query retained legacy top-level id: %+v", first)
+		t.Fatalf("canonical next action retained legacy top-level id: %+v", first)
 	}
-	second := queries[1].(map[string]any)
+	if first["priority"] != "normal" || first["confidence"] != "medium" {
+		t.Fatalf("next action omitted stable planning defaults: %+v", first)
+	}
+	second := actions[1]
 	secondArgs := second["arguments"].(map[string]any)
 	if second["tool"] != "ck3_diagnostics" || secondArgs["operation"] != "explain" || secondArgs["code"] != "scope_mismatch" {
 		t.Fatalf("canonical diagnostic arguments are incomplete: %+v", second)
 	}
-	third := queries[2].(map[string]any)
+	third := actions[2]
 	thirdArgs := third["arguments"].(map[string]any)
 	if third["tool"] != "map_building_candidates" || thirdArgs["target"] != "k_example" {
 		t.Fatalf("canonical target arguments are incomplete: %+v", third)
 	}
 	if _, legacyID := third["id"]; legacyID {
-		t.Fatalf("canonical target query retained legacy top-level id: %+v", third)
+		t.Fatalf("canonical target action retained legacy top-level id: %+v", third)
+	}
+	for _, action := range actions {
+		definition, found := findCanonicalTool(action["tool"].(string))
+		if !found {
+			t.Fatalf("next action references a non-canonical tool: %+v", action)
+		}
+		arguments, err := json.Marshal(action["arguments"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateArguments(arguments, definition.InputSchema, definition.CompatibilityProperties); err != nil {
+			t.Fatalf("next action arguments do not satisfy %s schema: %v; action=%+v", definition.Name, err, action)
+		}
 	}
 }
 
-func TestNextQueriesRewriteDeprecatedHistoryYear(t *testing.T) {
+func TestNextActionsDropArgumentsOutsideCanonicalSchema(t *testing.T) {
+	result, err := encodeToolResult(map[string]any{
+		"next_queries": []map[string]any{
+			{"tool": "ck3_inspect", "id": "valid_trait", "arguments": map[string]any{"bogus": true}},
+			{"tool": "ck3_inspect", "id": "valid_trait"},
+		},
+	}, "private")
+	if err != nil {
+		t.Fatal(err)
+	}
+	structured := result["structuredContent"].(map[string]any)
+	encodedActions, err := json.Marshal(structured["next_actions"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actions []map[string]any
+	if err := json.Unmarshal(encodedActions, &actions); err != nil || len(actions) != 1 {
+		t.Fatalf("invalid next action was not dropped: %+v", structured)
+	}
+	action := actions[0]
+	if action["tool"] != "ck3_inspect" || action["arguments"].(map[string]any)["id"] != "valid_trait" {
+		t.Fatalf("valid next action did not survive filtering: %+v", action)
+	}
+}
+
+func TestNextActionsRewriteDeprecatedHistoryYear(t *testing.T) {
 	result, err := encodeToolResult(map[string]any{
 		"next_queries": []map[string]any{{
 			"tool":      "map_render",
@@ -342,13 +454,25 @@ func TestNextQueriesRewriteDeprecatedHistoryYear(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	query := result["structuredContent"].(map[string]any)["next_queries"].([]any)[0].(map[string]any)
-	arguments := query["arguments"].(map[string]any)
+	structured := result["structuredContent"].(map[string]any)
+	if _, legacy := structured["next_queries"]; legacy {
+		t.Fatalf("result retained legacy next_queries: %+v", structured)
+	}
+	var actions []map[string]any
+	encodedActions, err := json.Marshal(structured["next_actions"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(encodedActions, &actions); err != nil {
+		t.Fatal(err)
+	}
+	action := actions[0]
+	arguments := action["arguments"].(map[string]any)
 	if arguments["year"] != float64(6254) {
-		t.Fatalf("next query year = %v, want 6254", arguments["year"])
+		t.Fatalf("next action year = %v, want 6254", arguments["year"])
 	}
 	if _, exists := arguments["history_year"]; exists {
-		t.Fatalf("next query retained deprecated history_year: %+v", arguments)
+		t.Fatalf("next action retained deprecated history_year: %+v", arguments)
 	}
 }
 
@@ -369,7 +493,7 @@ func TestCallToolReportsUnavailableIndexState(t *testing.T) {
 		t.Fatalf("static script reference should remain usable without index state: %+v", result)
 	}
 	state := result["indexState"].(map[string]any)
-	if state["status"] != "unavailable" || state["error_code"] != "INDEX_STATE_UNAVAILABLE" {
+	if state["status"] != "unavailable" || state["error_code"] != ErrorIndexStale {
 		t.Fatalf("unavailable index state was not propagated: %+v", state)
 	}
 }
@@ -544,7 +668,7 @@ func TestCallToolBlocksFinalizingIndexButKeepsStaticReference(t *testing.T) {
 		t.Fatal(err)
 	}
 	blocked := callToolForTest(t, db, indexer.Config{}, "ck3_search", map[string]any{"query": "fixture"})
-	if blocked["isError"] != true || blocked["structuredContent"].(map[string]any)["code"] != "INDEX_REFRESH_IN_PROGRESS" {
+	if blocked["isError"] != true || blocked["structuredContent"].(map[string]any)["code"] != "INDEX_FINALIZING" {
 		t.Fatalf("finalizing cache was not blocked: %+v", blocked)
 	}
 	static := callToolForTest(t, db, indexer.Config{}, "ck3_script_reference", map[string]any{"kind": "shape", "id": "has_trait"})
@@ -589,7 +713,7 @@ func TestCallToolRejectsSecondGenerationChange(t *testing.T) {
 		t.Fatalf("second generation change returned success: %+v", result)
 	}
 	structured := result["structuredContent"].(map[string]any)
-	if structured["code"] != "INDEX_CHANGED_DURING_QUERY" {
+	if structured["code"] != ErrorConflictingGeneration {
 		t.Fatalf("second generation change code = %v", structured["code"])
 	}
 }
@@ -635,7 +759,7 @@ func TestArtifactToolIsNotRetriedAfterGenerationChange(t *testing.T) {
 		t.Fatalf("non-idempotent artifact handler ran %d times, want 1", calls)
 	}
 	structured := result["structuredContent"].(map[string]any)
-	if structured["code"] != "INDEX_CHANGED_DURING_QUERY" {
+	if structured["code"] != ErrorConflictingGeneration {
 		t.Fatalf("artifact generation-change code = %v", structured["code"])
 	}
 }
@@ -673,7 +797,7 @@ func TestCallToolReportsIndexStateFailureAfterHandler(t *testing.T) {
 		t.Fatalf("successful handler should preserve its result with an explicit unverified state: %+v", result)
 	}
 	state := result["indexState"].(map[string]any)
-	if state["status"] != "unavailable" || state["error_code"] != "INDEX_STATE_UNAVAILABLE" {
+	if state["status"] != "unavailable" || state["error_code"] != ErrorIndexStale {
 		t.Fatalf("post-handler index-state failure was not propagated: %+v", state)
 	}
 }
@@ -766,7 +890,10 @@ func TestRetainedMapNamesAcceptLegacyAliases(t *testing.T) {
 	}
 	defer db.Close()
 	assignment := callToolForTest(t, db, cfg, "map_assignment_plan", map[string]any{
-		"id": "k_k11", "mode": "religion", "privacy_mode": "public", "limit": 2,
+		// This test verifies retained aliases, not public-map filtering. Map
+		// cache rows do not yet carry source provenance, so public cache-backed
+		// requests are intentionally rejected until that evidence exists.
+		"id": "k_k11", "mode": "religion", "privacy_mode": "private", "limit": 2,
 	})
 	if assignment["isError"] == true {
 		t.Fatalf("legacy map_assignment_plan aliases failed: %+v", assignment)

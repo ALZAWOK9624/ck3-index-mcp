@@ -11,10 +11,11 @@ import (
 const defaultLLMLimit = 8
 
 type LLMOptions struct {
-	Limit        int    `json:"limit,omitempty"`
-	Depth        int    `json:"depth,omitempty"`
-	Mode         string `json:"mode,omitempty"`
-	AllowProject bool   `json:"allow_project,omitempty"`
+	Limit          int             `json:"limit,omitempty"`
+	Depth          int             `json:"depth,omitempty"`
+	Mode           string          `json:"mode,omitempty"`
+	AllowProject   bool            `json:"allow_project,omitempty"`
+	PrivateSources map[string]bool `json:"-"`
 }
 
 type LLMResult struct {
@@ -34,6 +35,19 @@ type LLMResult struct {
 	MissingResources []string                 `json:"missing_resources,omitempty"`
 	ScopeFixHints    []string                 `json:"scope_fix_hints,omitempty"`
 	Topology         *LLMTopology             `json:"topology,omitempty"`
+	Truncated        bool                     `json:"truncated,omitempty"`
+	Pagination       *LLMPagination           `json:"pagination,omitempty"`
+}
+
+// LLMPagination describes a bounded evidence page. It deliberately reports
+// only page-local facts: total counts can be private-source side channels in
+// public visibility, while has_more is enough for an agent to continue.
+type LLMPagination struct {
+	Page     int  `json:"page"`
+	Limit    int  `json:"limit"`
+	Returned int  `json:"returned"`
+	HasMore  bool `json:"has_more"`
+	NextPage int  `json:"next_page,omitempty"`
 }
 
 // LLMTopology is a compact, model-facing view over the indexed reference
@@ -129,6 +143,34 @@ func (o LLMOptions) normalizedDepth() int {
 	return o.Depth
 }
 
+func paginateLLMResult(r LLMResult, page, limit int) LLMResult {
+	if page <= 0 {
+		page = 1
+	}
+	if limit <= 0 {
+		limit = defaultLLMLimit
+	}
+	start := (page - 1) * limit
+	if start > len(r.Evidence) {
+		start = len(r.Evidence)
+	}
+	end := start + limit
+	if end > len(r.Evidence) {
+		end = len(r.Evidence)
+	}
+	hasMore := end < len(r.Evidence)
+	r.Evidence = r.Evidence[start:end]
+	// A later page has intentionally omitted earlier evidence even when it is
+	// the last page. Keep Truncated true for either direction of pagination so
+	// clients never mistake page N for the complete result set.
+	r.Truncated = r.Truncated || start > 0 || hasMore
+	r.Pagination = &LLMPagination{Page: page, Limit: limit, Returned: len(r.Evidence), HasMore: hasMore}
+	if hasMore {
+		r.Pagination.NextPage = page + 1
+	}
+	return r
+}
+
 func (o LLMOptions) publicMode() bool {
 	return strings.EqualFold(o.Mode, "public") || (!o.AllowProject && strings.EqualFold(o.Mode, "group"))
 }
@@ -137,26 +179,146 @@ func (r LLMResult) withPublicFilter(opts LLMOptions) LLMResult {
 	if !opts.publicMode() {
 		return r
 	}
-	kept := r.Evidence[:0]
-	for _, ev := range r.Evidence {
-		if isProjectEvidence(ev.Source, ev.Path) {
-			r.Redacted++
-			continue
+	filterEvidence := func(items []LLMEvidence) ([]LLMEvidence, int) {
+		kept := make([]LLMEvidence, 0, len(items))
+		redacted := 0
+		for _, item := range items {
+			if opts.sourceIsPrivate(item.Source) {
+				redacted++
+				continue
+			}
+			kept = append(kept, item)
 		}
-		kept = append(kept, ev)
+		return kept, redacted
 	}
-	r.Evidence = kept
-	if r.Redacted > 0 {
-		r.Summary = fmt.Sprintf("Public mode redacted %d private evidence item(s) for %s.", r.Redacted, r.Intent)
-		if len(r.Evidence) > 0 {
-			r.Summary += fmt.Sprintf(" %d public evidence item(s) remain.", len(r.Evidence))
+	var redacted int
+	r.Evidence, redacted = filterEvidence(r.Evidence)
+	r.Redacted += redacted
+	if r.Hotspots != nil {
+		filtered := make(map[string][]LLMEvidence, len(r.Hotspots))
+		for group, items := range r.Hotspots {
+			kept, count := filterEvidence(items)
+			r.Redacted += count
+			// Do not retain an empty keyed group: callers may use the group key
+			// as an object id, source label, or other provenance-bearing hint.
+			if len(kept) > 0 {
+				filtered[group] = kept
+			}
 		}
+		r.Hotspots = filtered
 	}
+	if r.Topology != nil {
+		r.Topology, redacted = filterPublicTopology(*r.Topology, opts)
+		r.Redacted += redacted
+	}
+	// Most LLMResult aggregates are calculated before evidence filtering. They
+	// can reveal private-source existence or cardinality even when every raw
+	// row was removed. Public results therefore expose only provenance-qualified
+	// evidence and topology; never retain aggregate counts, missing-id lists, or
+	// legacy follow-up hints that could contain a private identifier.
+	r.Counts = nil
+	r.Impact = nil
+	r.MissingLocKeys = nil
+	r.MissingResources = nil
+	r.ScopeFixHints = nil
+	r.NextQueries = nil
+	r.Redacted = 0
+	r.Summary = "Public visibility returns only evidence with a configured non-private source."
+	r.Guidance = []string{"Public visibility omits private-source findings and aggregate counts."}
 	return r
 }
 
-func isProjectEvidence(source, path string) bool {
-	return strings.EqualFold(source, "project") || strings.EqualFold(source, "patch")
+// filterPublicTopology is defensive: event-chain construction already applies
+// public visibility while walking the graph, but a result may be assembled by
+// another index query in the future. Keep every nested evidence surface behind
+// the same Source.Private policy rather than assuming top-level evidence is
+// the only provenance-bearing field.
+func filterPublicTopology(topology LLMTopology, opts LLMOptions) (*LLMTopology, int) {
+	filtered := topology
+	filtered.Nodes = make([]LLMTopologyNode, 0, len(topology.Nodes))
+	removed := map[string]bool{}
+	redacted := 0
+	for _, node := range topology.Nodes {
+		if opts.sourceIsPrivate(node.Source) {
+			removed[node.ID] = true
+			redacted++
+			continue
+		}
+		filtered.Nodes = append(filtered.Nodes, node)
+	}
+	if removed[topology.Center] {
+		return nil, redacted
+	}
+	filtered.Edges = make([]LLMTopologyEdge, 0, len(topology.Edges))
+	for _, edge := range topology.Edges {
+		if opts.sourceIsPrivate(edge.Source) || removed[edge.From] || removed[edge.To] {
+			redacted++
+			continue
+		}
+		filtered.Edges = append(filtered.Edges, edge)
+	}
+	filterIDs := func(ids []string) []string {
+		kept := make([]string, 0, len(ids))
+		for _, id := range ids {
+			if removed[id] {
+				continue
+			}
+			kept = append(kept, id)
+		}
+		return kept
+	}
+	filtered.Roots = filterIDs(topology.Roots)
+	filtered.Leaves = filterIDs(topology.Leaves)
+	filtered.Cycles = make([][]string, 0, len(topology.Cycles))
+	for _, cycle := range topology.Cycles {
+		keep := true
+		for _, id := range cycle {
+			if removed[id] {
+				keep = false
+				break
+			}
+		}
+		if keep {
+			filtered.Cycles = append(filtered.Cycles, cycle)
+		}
+	}
+	filtered.PathsFromCenter = make([]LLMTopologyPath, 0, len(topology.PathsFromCenter))
+	for _, path := range topology.PathsFromCenter {
+		keep := !removed[path.To]
+		for _, id := range path.Nodes {
+			if removed[id] {
+				keep = false
+				break
+			}
+		}
+		if keep {
+			filtered.PathsFromCenter = append(filtered.PathsFromCenter, path)
+		}
+	}
+	return &filtered, redacted
+}
+
+func (o LLMOptions) sourceIsPrivate(source string) bool {
+	name := strings.ToLower(strings.TrimSpace(source))
+	if name == "" {
+		// Public evidence must retain a positive source provenance. A missing
+		// source is indistinguishable from a future producer forgetting to set
+		// it, so fail closed instead of treating it as public by accident.
+		return true
+	}
+	if name == "patch" {
+		return true
+	}
+	if len(o.PrivateSources) == 0 {
+		// Direct indexer callers and legacy caches did not carry source policy.
+		// Retain their former project/patch behavior until an MCP runtime supplies
+		// the configured policy map.
+		return name == "project"
+	}
+	// Unknown provenance is private by default. Public filtering must never
+	// become permissive merely because a stale cache lacks a policy record.
+	private, known := o.PrivateSources[name]
+	return !known || private
 }
 
 func evidencePath(path string) string {
@@ -200,6 +362,7 @@ func (db *DB) LLMQueryObject(ctx context.Context, id string, opts LLMOptions) (L
 	if err != nil {
 		return LLMResult{}, err
 	}
+	obj, preRedacted := filterObjectQueryForPublic(obj, opts)
 	r := LLMResult{Query: id, Intent: "query_object", Counts: map[string]int{
 		"definitions":        len(obj.Definitions),
 		"resolution_groups":  len(obj.Resolution),
@@ -207,7 +370,7 @@ func (db *DB) LLMQueryObject(ctx context.Context, id string, opts LLMOptions) (L
 		"event_profiles":     len(obj.EventProfiles),
 		"character_profiles": len(obj.CharacterProfiles),
 		"diagnostics":        0,
-	}}
+	}, Redacted: preRedacted}
 	staticFields, historyDates, historyFields := characterProfileCounts(obj.CharacterProfiles)
 	r.Counts["character_static_fields"] = staticFields
 	r.Counts["character_history_dates"] = historyDates
@@ -278,6 +441,50 @@ func (db *DB) LLMQueryObject(ctx context.Context, id string, opts LLMOptions) (L
 		{Tool: "query_rules", ID: first.Type, Reason: "inspect known schema fields before editing"},
 	}
 	return r.withPublicFilter(opts), nil
+}
+
+// filterObjectQueryForPublic removes non-public object families before any
+// aggregate/resolution metadata is calculated. Top-level evidence filtering is
+// not enough here: DefinitionResolution and count fields have no source field
+// of their own, so they could otherwise disclose that a private definition
+// exists even after its individual evidence row was redacted.
+func filterObjectQueryForPublic(obj ObjectQuery, opts LLMOptions) (ObjectQuery, int) {
+	if !opts.publicMode() {
+		return obj, 0
+	}
+	filtered := obj
+	filtered.Definitions = make([]ObjectDef, 0, len(obj.Definitions))
+	redacted := 0
+	for _, definition := range obj.Definitions {
+		if opts.sourceIsPrivate(definition.Source) {
+			redacted++
+			continue
+		}
+		filtered.Definitions = append(filtered.Definitions, definition)
+	}
+	filtered.Overrides = append([]ObjectDef(nil), filtered.Definitions...)
+	filtered.Resolution = resolveDefinitionCandidates(filtered.Definitions)
+	// Override chains can mention the private source that hid a public file via
+	// OverrideBySource. Keep them private-only until that provenance is modeled
+	// as a first-class, independently filterable field.
+	filtered.FileOverrides = nil
+	filtered.EventProfiles = make([]EventProfile, 0, len(obj.EventProfiles))
+	for _, profile := range obj.EventProfiles {
+		if opts.sourceIsPrivate(profile.Source) {
+			redacted++
+			continue
+		}
+		filtered.EventProfiles = append(filtered.EventProfiles, profile)
+	}
+	filtered.CharacterProfiles = make([]CharacterProfile, 0, len(obj.CharacterProfiles))
+	for _, profile := range obj.CharacterProfiles {
+		if opts.sourceIsPrivate(profile.Source) {
+			redacted++
+			continue
+		}
+		filtered.CharacterProfiles = append(filtered.CharacterProfiles, profile)
+	}
+	return filtered, redacted
 }
 
 func objectEvidence(kind string, d ObjectDef) LLMEvidence {
@@ -623,7 +830,18 @@ func (db *DB) LLMQueryPatterns(ctx context.Context, typ string, opts LLMOptions)
 
 func (db *DB) LLMValidate(ctx context.Context, opts LLMOptions) (LLMResult, error) {
 	limit := opts.normalizedLimit()
-	rep, err := db.CachedValidationForSource(ctx, "project")
+	projectSource, err := db.projectSourceName(ctx)
+	if err != nil {
+		return LLMResult{}, err
+	}
+	if projectSource == "" {
+		// Source-role metadata was introduced after older published caches. Those
+		// caches used the conventional project source name, so preserve their
+		// read-only diagnostic behavior until the next successful scan persists
+		// source_layers. Current caches always resolve this through SourceRole.
+		projectSource = "project"
+	}
+	rep, err := db.CachedValidationForSource(ctx, projectSource)
 	if err != nil {
 		return LLMResult{}, err
 	}
@@ -652,19 +870,32 @@ func (db *DB) LLMExplainDiagnostic(ctx context.Context, code string, opts LLMOpt
 
 func (db *DB) LLMExplainDiagnosticFiltered(ctx context.Context, filter DiagnosticFilter, opts LLMOptions) (LLMResult, error) {
 	limit := opts.normalizedLimit()
+	page := filter.Page
+	if page <= 0 {
+		page = 1
+	}
+	fetchLimit := page*limit + 1
+	if fetchLimit > 501 {
+		fetchLimit = 501
+	}
 	diags, err := db.ExplainDiagnosticFiltered(ctx, filter)
 	if err != nil {
 		return LLMResult{}, err
 	}
 	r := LLMResult{Query: filter.Code, Intent: "explain_diagnostic", Counts: map[string]int{"diagnostics": len(diags)}}
-	for i, d := range diags {
-		if i >= limit {
-			break
+	for _, d := range diags {
+		if opts.publicMode() && opts.sourceIsPrivate(d.SourceLayer) {
+			continue
 		}
 		r.Evidence = append(r.Evidence, diagnosticEvidence(d))
+		if len(r.Evidence) >= fetchLimit {
+			break
+		}
 	}
-	r.Summary = fmt.Sprintf("Found %d unique diagnostic(s) with code %q.", len(diags), filter.Code)
-	return r.withPublicFilter(opts), nil
+	r = r.withPublicFilter(opts)
+	r = paginateLLMResult(r, page, limit)
+	r.Summary = fmt.Sprintf("Found diagnostic evidence for code %q; page %d returned %d item(s).", filter.Code, page, len(r.Evidence))
+	return r, nil
 }
 
 func diagnosticEvidence(d Diagnostic) LLMEvidence {
@@ -1079,8 +1310,9 @@ func (db *DB) LLMDiagnoseKey(ctx context.Context, id string, opts LLMOptions) (L
 		return LLMResult{}, err
 	}
 	r := LLMResult{
-		Query:  id,
-		Intent: "diagnose_key",
+		Query:    id,
+		Intent:   "diagnose_key",
+		Redacted: obj.Redacted + loc.Redacted + res.Redacted + refs.Redacted,
 		Counts: map[string]int{
 			"definitions":              obj.Counts["definitions"],
 			"character_profiles":       obj.Counts["character_profiles"],

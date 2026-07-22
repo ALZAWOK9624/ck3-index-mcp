@@ -12,6 +12,7 @@ type SearchOptions struct {
 	Kind       string
 	Source     string
 	PathPrefix string
+	Page       int
 	LLMOptions
 }
 
@@ -81,6 +82,17 @@ func (db *DB) LLMSearch(ctx context.Context, opts SearchOptions) (LLMResult, err
 		return LLMResult{}, fmt.Errorf("ck3_search requires query")
 	}
 	limit := opts.normalizedLimit()
+	page := opts.Page
+	if page <= 0 {
+		page = 1
+	}
+	// A page is never wider than the normal evidence limit. Fetch enough
+	// ranked candidates to prove whether one subsequent page exists, while
+	// keeping the broad multi-kind search bounded even for a deep page.
+	fetchLimit := page*limit + 1
+	if fetchLimit > 501 {
+		fetchLimit = 501
+	}
 	prefix := escapeLike(query) + "%"
 	result := LLMResult{
 		Query:  query,
@@ -97,13 +109,13 @@ func (db *DB) LLMSearch(ctx context.Context, opts SearchOptions) (LLMResult, err
 		fn   func() ([]LLMEvidence, error)
 	}
 	searchers := []searcher{
-		{"object", func() ([]LLMEvidence, error) { return db.searchObjects(ctx, query, prefix, opts, limit) }},
-		{"reference", func() ([]LLMEvidence, error) { return db.searchRefs(ctx, query, prefix, opts, limit) }},
-		{"localization", func() ([]LLMEvidence, error) { return db.searchLocalizationKeys(ctx, query, prefix, opts, limit) }},
-		{"resource", func() ([]LLMEvidence, error) { return db.searchResources(ctx, query, prefix, opts, limit) }},
-		{"diagnostic", func() ([]LLMEvidence, error) { return db.searchDiagnostics(ctx, query, prefix, opts, limit) }},
-		{"script_key", func() ([]LLMEvidence, error) { return db.searchScriptKeys(ctx, query, prefix, opts, limit) }},
-		{"datatype", func() ([]LLMEvidence, error) { return db.searchDatatypes(ctx, query, prefix, opts, limit) }},
+		{"object", func() ([]LLMEvidence, error) { return db.searchObjects(ctx, query, prefix, opts, fetchLimit) }},
+		{"reference", func() ([]LLMEvidence, error) { return db.searchRefs(ctx, query, prefix, opts, fetchLimit) }},
+		{"localization", func() ([]LLMEvidence, error) { return db.searchLocalizationKeys(ctx, query, prefix, opts, fetchLimit) }},
+		{"resource", func() ([]LLMEvidence, error) { return db.searchResources(ctx, query, prefix, opts, fetchLimit) }},
+		{"diagnostic", func() ([]LLMEvidence, error) { return db.searchDiagnostics(ctx, query, prefix, opts, fetchLimit) }},
+		{"script_key", func() ([]LLMEvidence, error) { return db.searchScriptKeys(ctx, query, prefix, opts, fetchLimit) }},
+		{"datatype", func() ([]LLMEvidence, error) { return db.searchDatatypes(ctx, query, prefix, opts, fetchLimit) }},
 	}
 	for _, search := range searchers {
 		if opts.Kind != "" && opts.Kind != search.kind {
@@ -127,27 +139,29 @@ func (db *DB) LLMSearch(ctx context.Context, opts SearchOptions) (LLMResult, err
 		return ri < rj
 	})
 	result.Evidence = dedupeSearchEvidence(result.Evidence)
-	if len(result.Evidence) > limit {
-		result.Evidence = result.Evidence[:limit]
+	if len(result.Evidence) > fetchLimit {
+		result.Evidence = result.Evidence[:fetchLimit]
 	}
-	if len(result.Evidence) < limit {
-		fts, err := db.searchFTS(ctx, query, opts, limit-len(result.Evidence))
+	if len(result.Evidence) < fetchLimit {
+		fts, err := db.searchFTS(ctx, query, opts, fetchLimit-len(result.Evidence))
 		if err != nil {
 			return LLMResult{}, err
 		}
 		result.Counts["fts"] = len(fts)
-		result.Evidence = appendUniqueEvidence(result.Evidence, fts, limit)
+		result.Evidence = appendUniqueEvidence(result.Evidence, fts, fetchLimit)
 	}
 	if len(result.Evidence) == 0 {
-		contains, err := db.searchContains(ctx, query, opts, limit-len(result.Evidence))
+		contains, err := db.searchContains(ctx, query, opts, fetchLimit-len(result.Evidence))
 		if err != nil {
 			return LLMResult{}, err
 		}
 		result.Counts["contains"] = len(contains)
-		result.Evidence = appendUniqueEvidence(result.Evidence, contains, limit)
+		result.Evidence = appendUniqueEvidence(result.Evidence, contains, fetchLimit)
 	}
-	result.Summary = fmt.Sprintf("Semantic search for %q returned %d evidence item(s).", query, len(result.Evidence))
-	if len(result.Evidence) > 0 {
+	result = result.withPublicFilter(opts.LLMOptions)
+	result = paginateLLMResult(result, page, limit)
+	result.Summary = fmt.Sprintf("Semantic search for %q returned %d evidence item(s) on page %d.", query, len(result.Evidence), page)
+	if len(result.Evidence) > 0 && !opts.publicMode() {
 		best := result.Evidence[0]
 		id := best.Name
 		if best.Type != "" && best.Name != "" {
@@ -155,7 +169,7 @@ func (db *DB) LLMSearch(ctx context.Context, opts SearchOptions) (LLMResult, err
 		}
 		result.NextQueries = []LLMNextQuery{{Tool: "ck3_inspect", ID: id, Reason: "inspect the highest-ranked semantic match"}}
 	}
-	return result.withPublicFilter(opts.LLMOptions), nil
+	return result, nil
 }
 
 func dedupeSearchEvidence(in []LLMEvidence) []LLMEvidence {

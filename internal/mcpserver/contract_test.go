@@ -19,17 +19,17 @@ import (
 
 func TestToolRegistryContract(t *testing.T) {
 	definitions := registry()
-	if len(definitions) != 29 {
-		t.Fatalf("standard registry count = %d, want 29", len(definitions))
+	if len(definitions) != 30 {
+		t.Fatalf("standard registry count = %d, want 30", len(definitions))
 	}
 	if len(legacyAliases) != 28 {
 		t.Fatalf("legacy alias count = %d, want 28", len(legacyAliases))
 	}
-	if got := len(mcpToolsForProfile(ProfileStandard)); got != 29 {
-		t.Fatalf("standard tools/list count = %d, want 29", got)
+	if got := len(mcpToolsForProfile(ProfileStandard)); got != 30 {
+		t.Fatalf("standard tools/list count = %d, want 30", got)
 	}
-	if got := len(mcpToolsForProfile(ProfileExpert)); got != 57 {
-		t.Fatalf("expert tools/list count = %d, want 57", got)
+	if got := len(mcpToolsForProfile(ProfileExpert)); got != 58 {
+		t.Fatalf("expert tools/list count = %d, want 58", got)
 	}
 
 	seen := make(map[string]struct{}, len(definitions)+len(legacyAliases))
@@ -53,7 +53,7 @@ func TestToolRegistryContract(t *testing.T) {
 		if got := definition.OutputSchema["type"]; got != "object" {
 			t.Fatalf("tool %q output schema type = %v, want object", definition.Name, got)
 		}
-		if definition.Name == "ck3_package" || definition.Name == "map_migration_snapshot" || definition.Name == "map_province_migration" {
+		if definition.Name == "ck3_refresh" || definition.Name == "ck3_package" || definition.Name == "map_migration_snapshot" || definition.Name == "map_province_migration" {
 			if definition.Annotations.ReadOnlyHint || definition.Annotations.DestructiveHint || definition.Annotations.OpenWorldHint {
 				t.Fatalf("tool %q annotations must be non-read-only, non-destructive, and closed-world", definition.Name)
 			}
@@ -223,6 +223,7 @@ func TestCanonicalSchemasMatchTypedArguments(t *testing.T) {
 		"ck3_inspect":             reflect.TypeOf(ck3InspectArgs{}),
 		"ck3_review":              reflect.TypeOf(ck3ReviewArgs{}),
 		"ck3_workspace":           reflect.TypeOf(ck3WorkspaceArgs{}),
+		"ck3_refresh":             reflect.TypeOf(ck3RefreshArgs{}),
 		"ck3_dependencies":        reflect.TypeOf(ck3DependenciesArgs{}),
 		"ck3_prepare_edit":        reflect.TypeOf(ck3PrepareEditArgs{}),
 		"ck3_preflight":           reflect.TypeOf(ck3PreflightArgs{}),
@@ -257,6 +258,10 @@ func TestCanonicalSchemasMatchTypedArguments(t *testing.T) {
 		// accepting it from MCP callers would allow provenance spoofing.
 		"map_build_metric": {"provenance"},
 	}
+	// max_response_bytes is decoded once by the MCP runtime and deliberately
+	// removed before tool-specific structs are decoded. It is a transport
+	// control shared by every canonical tool, not a semantic handler field.
+	sharedRuntimeFields := map[string]bool{"max_response_bytes": true}
 	for _, definition := range canonicalTools {
 		typ, ok := types[definition.Name]
 		if !ok {
@@ -273,6 +278,9 @@ func TestCanonicalSchemasMatchTypedArguments(t *testing.T) {
 		properties, _ := definition.InputSchema["properties"].(map[string]any)
 		var schemaOnly, structOnly []string
 		for name := range properties {
+			if sharedRuntimeFields[name] {
+				continue
+			}
 			if !fields[name] {
 				schemaOnly = append(schemaOnly, name)
 			}
@@ -426,6 +434,7 @@ func TestEveryCallableToolHasSuccessAndMalformedArgumentCases(t *testing.T) {
 		"ck3_preflight":        {"operation": "patch", "files": patchFiles, "limit": 2},
 		"ck3_impact":           {"files": patchFiles, "limit": 2},
 		"ck3_diagnostics":      {"operation": "summary", "limit": 2},
+		"ck3_refresh":          {"operation": "status"},
 		"ck3_script_reference": {"kind": "shape", "id": "has_trait", "limit": 2},
 		"ck3_health":           {},
 		"ck3_package": {
@@ -478,8 +487,8 @@ func TestEveryCallableToolHasSuccessAndMalformedArgumentCases(t *testing.T) {
 		"map_route":               {"from": "1", "to": "2", "mode": "land", "year": 6253, "limit": 2},
 		"map_render":              {"target": "k_k11", "year": 6253, "width": 400, "layers": []map[string]any{{"type": "borders", "level": "county"}}},
 	}
-	if len(successArguments) != 57 {
-		t.Fatalf("success case count = %d, want 57 callable canonical/legacy names", len(successArguments))
+	if len(successArguments) != 58 {
+		t.Fatalf("success case count = %d, want 58 callable canonical/legacy names", len(successArguments))
 	}
 
 	legacyNames := map[string]bool{}

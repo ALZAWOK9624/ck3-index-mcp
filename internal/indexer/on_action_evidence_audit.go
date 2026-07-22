@@ -2,6 +2,7 @@ package indexer
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -135,7 +136,7 @@ func (db *DB) AuditOnActionEvidence(ctx context.Context, cfg Config, limit int) 
 
 	documentation := map[string][]OnActionScopeContract{}
 	documentationStale := false
-	if game, found := vanillaGameSource(cfg); found {
+	if game, found := GameSource(cfg); found {
 		canReadDocumentation := true
 		// The engine layer is a published database snapshot while comments are
 		// read directly from the configured source tree. Do not silently compare
@@ -154,7 +155,7 @@ func (db *DB) AuditOnActionEvidence(ctx context.Context, cfg Config, limit int) 
 				report.Guidance = append(report.Guidance, "Vanilla on_action files differ from the published index snapshot; run a full scan before comparing their comments with cached engine evidence.")
 			case onActionDocumentationSnapshotUnavailable:
 				canReadDocumentation = false
-				report.Guidance = append(report.Guidance, "The configured rank-three game source has no readable common/on_action directory.")
+				report.Guidance = append(report.Guidance, "The configured game source has no readable common/on_action directory.")
 			}
 		}
 		if canReadDocumentation {
@@ -170,7 +171,7 @@ func (db *DB) AuditOnActionEvidence(ctx context.Context, cfg Config, limit int) 
 					}
 				}
 			case os.IsNotExist(scanErr):
-				report.Guidance = append(report.Guidance, "The configured rank-three game source has no readable common/on_action directory.")
+				report.Guidance = append(report.Guidance, "The configured game source has no readable common/on_action directory.")
 			default:
 				return report, scanErr
 			}
@@ -192,12 +193,12 @@ func (db *DB) AuditOnActionEvidence(ctx context.Context, cfg Config, limit int) 
 					report.Guidance = append(report.Guidance, "Vanilla on_action files changed while this audit was reading them; comment comparisons were withheld.")
 				} else {
 					report.DocumentationEvidenceStatus = "unavailable"
-					report.Guidance = append(report.Guidance, "The configured rank-three game source became unreadable while this audit was running; comment comparisons were withheld.")
+					report.Guidance = append(report.Guidance, "The configured game source became unreadable while this audit was running; comment comparisons were withheld.")
 				}
 			}
 		}
 	} else {
-		report.Guidance = append(report.Guidance, "No rank-three game source is configured, so adjacent vanilla comment roots are unavailable.")
+		report.Guidance = append(report.Guidance, "No configured game source is available, so adjacent vanilla comment roots are unavailable.")
 	}
 	if state.Ready() {
 		finalState, finalStateErr := db.IndexState(ctx)
@@ -585,6 +586,9 @@ func (db *DB) indexedOnActionDocumentationHashes(ctx context.Context, source Sou
 }
 
 func currentOnActionDocumentationHashes(ctx context.Context, source Source) (map[string]string, bool, error) {
+	if err := validateSourceRoots([]Source{source}); err != nil {
+		return nil, false, err
+	}
 	root := filepath.Join(source.Path, "common", "on_action")
 	hashes := map[string]string{}
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
@@ -594,11 +598,17 @@ func currentOnActionDocumentationHashes(ctx context.Context, source Source) (map
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("on_action documentation contains symbolic link %s", filepath.Base(path))
+		}
 		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".txt") {
 			return nil
 		}
 		rel, err := filepath.Rel(source.Path, path)
 		if err != nil {
+			return err
+		}
+		if _, err := sourceRegularFileInfo(path); err != nil {
 			return err
 		}
 		hash, err := shaFile(path)

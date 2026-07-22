@@ -2,7 +2,7 @@
 
 > 本文档由 `go run ./cmd/mcp-docgen` 根据 `internal/mcpserver` 自动生成，请勿手工修改。
 
-标准模式公开 29 个规范工具。专家模式另外公开 28 个已弃用的发现别名；即使这些别名未显示，兼容期内仍然可以调用。
+标准模式公开 30 个规范工具。专家模式另外公开 28 个已弃用的发现别名；即使这些别名未显示，兼容期内仍然可以调用。
 
 ## `ck3_search` — 搜索 CK3 索引
 
@@ -12,10 +12,12 @@
 |---|---:|---|---|---|
 | `kind` | 否 | 字符串 | 可选值=[object reference localization resource diagnostic script_key datatype] | 可选的证据类别。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
+| `page` | 否 | 整数 | 最小值=1; 最大值=25; 默认值=1 | 从 1 开始的证据页码；仅在工具结果返回的已发布扫描 generation 未变化时页面顺序稳定。 |
 | `path_prefix` | 否 | 字符串 |  | 可选的来源根目录相对路径前缀。 |
 | `query` | 是 | 字符串 |  | CK3 标识符、本地化文本、资源路径、诊断代码或语义前缀。 |
 | `source` | 否 | 字符串 |  | 可选的已索引来源名称。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
 
@@ -28,9 +30,10 @@
 | `base` | 否 | 字符串 |  | operation=compare 时可选的已配置低优先级基线来源；默认使用最近的低优先级层。 |
 | `id` | 是 | 字符串 |  | 准确的 CK3 标识符、键或资源路径。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
 | `operation` | 否 | 字符串 | 可选值=[aggregate definition references localization resource context diagnose compare] | 检查视图。 |
 | `source` | 否 | 字符串 |  | operation=compare 时可选的已配置高优先级来源；私有可见性下默认使用当前 Mod/最高优先级层。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
 
@@ -42,7 +45,8 @@
 |---|---:|---|---|---|
 | `files` | 否 | 数组 |  | 仅在内存中分析、相对于来源根目录的完整文件。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
 
@@ -52,9 +56,11 @@
 
 | 参数 | 必填 | 类型 | 约束 | 说明 |
 |---|---:|---|---|---|
+| `domain` | 否 | 字符串 | 可选值=[all semantic diagnostics map gui script_reference editing workspace dependencies packaging] | operation=capabilities 使用的可选能力领域筛选；留空或 all 返回全部领域。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
-| `operation` | 否 | 字符串 | 可选值=[overview object_types on_action_evidence] | 工作区视图。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
+| `operation` | 否 | 字符串 | 可选值=[overview object_types on_action_evidence capabilities] | 工作区视图。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
 
@@ -70,8 +76,9 @@
 | `id` | 是 | 字符串 | 最长长度=512 | 中心对象或被引用标识符；event_chain 接受 event:<id>、on_action:<id> 或无类型事件标识符。 |
 | `include_on_actions` | 否 | 布尔值 |  | event_chain 是否包含 on_action 节点和边；默认为 true。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
 | `operation` | 否 | 字符串 | 可选值=[neighborhood event_chain] | 依赖视图；neighborhood 最多两跳，event_chain 最多六跳。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
 
@@ -83,8 +90,9 @@
 |---|---:|---|---|---|
 | `id` | 是 | 字符串 |  | 对象标识符、对象类型或 type:term。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
 | `operation` | 否 | 字符串 | 可选值=[context examples rules patterns] | 准备视图。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
 
@@ -97,8 +105,9 @@
 | `files` | 否 | 数组 |  | 仅在内存中分析、相对于来源根目录的完整文件。 |
 | `id` | 否 | 字符串 |  | operation=subject 时必填。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
 | `operation` | 是 | 字符串 | 可选值=[subject patch dirty] | 预检目标。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
 
@@ -110,7 +119,8 @@
 |---|---:|---|---|---|
 | `files` | 是 | 数组 |  | 仅在内存中分析、相对于来源根目录的完整文件。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
 
@@ -123,10 +133,24 @@
 | `code` | 否 | 字符串 |  | operation=explain 时必填。 |
 | `confidence` | 否 | 字符串 |  | 可选的置信度筛选器。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
 | `operation` | 否 | 字符串 | 可选值=[summary explain] | 诊断视图。 |
+| `page` | 否 | 整数 | 最小值=1; 最大值=25; 默认值=1 | 从 1 开始的证据页码；仅在工具结果返回的已发布扫描 generation 未变化时页面顺序稳定。 |
 | `path_prefix` | 否 | 字符串 |  | 可选的来源根目录相对路径前缀。 |
 | `source` | 否 | 字符串 |  | 可选的诊断来源。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `ck3_refresh` — 刷新 CK3 索引
+
+在 Mod 源文件变动后刷新已配置工程层的索引。status 只报告就绪状态；files 只增量更新显式给出的相对路径；full 通过旁路扫描和事务发布完整重建，不会悄悄降级。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
+| `operation` | 否 | 字符串 | 可选值=[status files full]; 默认值=status | 刷新操作；status 为默认值且不改变索引，files 增量刷新指定工程文件，full 会先暂存完整扫描并原子发布。 |
+| `paths` | 否 | 数组 | 最少项数=1; 最多项数=64 | operation=files 使用的工程源根相对路径；拒绝绝对路径和上级目录穿越。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
 
@@ -139,7 +163,8 @@
 | `id` | 是 | 字符串 |  | 引擎键或脚本键。 |
 | `kind` | 是 | 字符串 | 可选值=[scope datatype shape define on_action iterator example modifier] | 参考资料类别。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
 
@@ -147,7 +172,9 @@
 
 检查数据库、结构、索引与 MCP 注册是否可信。返回隐藏路径后的简短健康报告。
 
-输入参数：无。
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
 
@@ -158,6 +185,7 @@
 | 参数 | 必填 | 类型 | 约束 | 说明 |
 |---|---:|---|---|---|
 | `files` | 是 | 数组 | 最少项数=1; 最多项数=256 | — |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
 | `metadata` | 是 | 对象 |  | — |
 
 属性：生成受限临时产物、非破坏、封闭世界。输出：结构化对象与 JSON 文本；成功时返回可供附件发送层解析的 artifact 标识和相对路径。
@@ -174,6 +202,7 @@
 | `html_mode` | 否 | 字符串 | 可选值=[static inspector] | HTML 行为模式：static 完全无脚本；inspector 使用固定 CSP 哈希脚本提供控件树、缩放、搜索、裁剪滚动视口、属性检查和视觉状态模拟。仅适用于 format=html 或 both。 |
 | `language` | 否 | 字符串 | 可选值=[raw english simp_chinese bilingual] | 初始 GUI 本地化视图：raw 保留脚本 key；英文、简体中文和双语值只来自当前生效的本地化索引。检查器可离线切换已嵌入的语言变体。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
 | `model_samples` | 否 | 数组 | 最多项数=8 | 可选的有界数据模型行样例；每个集合必须精确选中一个仅含单一 item 模板的 fixedgridbox 或 dynamicgridbox，全部集合最多接受 32 行。 |
 | `operation` | 否 | 字符串 | 可选值=[summary file type template preview] | GUI 查询视图。 |
 | `path` | 否 | 字符串 |  | operation=file 使用的、相对于来源根目录的 gui/*.gui 路径。 |
@@ -181,7 +210,7 @@
 | `runtime_facts` | 否 | 数组 | 最多项数=64 | 可选的调用方原子事实，用于受限的 And/Or/Not 和比较求值；事实标记为 provided 而非游戏观察值，缺失事实保持 unknown。 |
 | `sample_values` | 否 | 数组 | 最多项数=32 | 可选的调用方精确 GUI 表达式样例结果；数值明确标记为 provided 而非游戏观察事实，未命中表达式会被报告，纹理样例必须指向已索引的 gfx 源根相对资源。 |
 | `symbol` | 否 | 字符串 |  | preview 可使用精确的自定义类型、模板或具名 GUI 控件；type/template 保持原有窄语义。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 | `width` | 否 | 整数 | 最小值=64; 最大值=3840 | 可选的 GUI 预览宽度（像素）。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
@@ -193,6 +222,7 @@
 | 参数 | 必填 | 类型 | 约束 | 说明 |
 |---|---:|---|---|---|
 | `base` | 是 | 字符串 |  | 已配置的旧上游来源名称。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
 | `project` | 是 | 字符串 |  | 已配置的当前 Mod 来源名称。 |
 
 属性：生成受限临时产物、非破坏、封闭世界。输出：结构化对象与 JSON 文本；成功时返回可供附件发送层解析的 artifact 标识和相对路径。
@@ -205,6 +235,7 @@
 |---|---:|---|---|---|
 | `control_points` | 否 | 数组 | 最少项数=3; 最多项数=128 | — |
 | `delete_paths` | 否 | 数组 | 最多项数=1024 | — |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
 | `output_name` | 否 | 字符串 |  | 本地测试 Fork 的可选安全目录名。 |
 | `resolutions` | 否 | 数组 | 最多项数=4096 | — |
 | `snapshot_id` | 是 | 字符串 |  | map_migration_snapshot 返回的持久快照标识。 |
@@ -219,8 +250,9 @@
 | 参数 | 必填 | 类型 | 约束 | 说明 |
 |---|---:|---|---|---|
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
 | `operation` | 否 | 字符串 | 可选值=[summary provinces rivers] | 要审计的地图资源类别。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
 
@@ -234,10 +266,11 @@
 | `control_points` | 否 | 数组 | 最少项数=3; 最多项数=128 | 可选的地理控制点对，用于建立分片仿射变换。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
 | `max_candidates` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=5 | 每个来源省份最多返回的目标候选数。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
 | `min_share` | 否 | 数值 | 最小值=1e-06; 最大值=1; 默认值=0.05 | 保留为映射边的最小来源或目标交叠比例。 |
 | `source` | 是 | 字符串 |  | 已配置的来源地图名称，或 active。 |
 | `target` | 是 | 字符串 |  | 已配置的目标地图名称，或 active。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
 
@@ -249,7 +282,8 @@
 |---|---:|---|---|---|
 | `id` | 是 | 字符串 |  | 地图地点：数字省份 ID、b_/c_/d_/k_/e_ 头衔 ID，或可唯一解析的准确英文或中文本地化名称。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 | `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
@@ -262,11 +296,12 @@
 |---|---:|---|---|---|
 | `include_adjacent_water` | 否 | 布尔值 |  | 包含受限的沿岸至相邻水体聚合；湖泊和大河省份不会进入海洋深度结论。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
 | `operation` | 否 | 字符串 | 可选值=[summary terrain surface hydrology oceanography barriers] | 要查询的物理地理视图；surface 返回观测到的材质混合权重以及配置引用的 mask 与 DDS 资源，不依赖 WhiteboxTools。 |
 | `target` | 否 | 字符串 |  | 一个数字省份 ID、领地头衔 ID、region:<id>、配合 target_type=region 使用的准确地区 ID，或 all。 |
 | `target_type` | 否 | 字符串 | 可选值=[province title region targets all] | 目标选择类型。 |
 | `targets` | 否 | 数组 | 最少项数=1; 最多项数=16 | 最多 16 个省份、头衔或 region:<id> 目标。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
 
@@ -278,8 +313,9 @@
 |---|---:|---|---|---|
 | `id` | 是 | 字符串 |  | 地图地点：数字省份 ID、b_/c_/d_/k_/e_ 头衔 ID，或可唯一解析的准确英文或中文本地化名称。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
 | `radius` | 否 | 整数 | 最小值=1; 最大值=3; 默认值=1 | 遍历半径。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 | `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
@@ -292,8 +328,9 @@
 |---|---:|---|---|---|
 | `from` | 是 | 字符串 |  | 来源地图地点：数字省份 ID、b_/c_/d_/k_/e_ 头衔 ID，或可唯一解析的准确英文或中文本地化名称。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
 | `to` | 是 | 字符串 |  | 目标地图地点，接受与 from 相同的形式。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 | `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
@@ -306,8 +343,9 @@
 |---|---:|---|---|---|
 | `kind` | 否 | 字符串 | 可选值=[strait sea_route river_crossing mountain_pass land_passage underground_internal underground_gateway offmap_gateway explicit_passage] | 可选的通道类别。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
 | `target` | 否 | 字符串 |  | 省份标识符、领地头衔标识符、逗号分隔的多个目标或 all。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
 
@@ -319,7 +357,8 @@
 |---|---:|---|---|---|
 | `id` | 是 | 字符串 |  | 领地头衔标识符。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 | `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
@@ -332,8 +371,9 @@
 |---|---:|---|---|---|
 | `assignment_mode` | 否 | 字符串 | 可选值=[religion characters both] | 分配类别。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
 | `target` | 是 | 字符串 |  | 省份或领地头衔目标。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 | `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
@@ -345,8 +385,9 @@
 | 参数 | 必填 | 类型 | 约束 | 说明 |
 |---|---:|---|---|---|
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
 | `target` | 是 | 字符串 |  | 省份或领地头衔目标。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 | `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
@@ -357,7 +398,8 @@
 
 | 参数 | 必填 | 类型 | 约束 | 说明 |
 |---|---:|---|---|---|
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
 
@@ -376,12 +418,13 @@
 | `level` | 否 | 字符串 | 可选值=[province barony county duchy kingdom empire region] | 聚合层级。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
 | `match_value` | 否 | 字符串 |  | — |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
 | `recipe` | 否 | 字符串 |  | 来自 map_recipe_catalog 的内置配方标识符。 |
 | `source_note` | 否 | 字符串 |  | 由模型提供 values 时必填。 |
 | `target` | 否 | 字符串 |  | 省份或头衔标识符、逗号分隔的多个标识符或 all。 |
 | `transform` | 否 | 对象 |  | — |
 | `values` | 否 | 数组 | 最多项数=200000 | — |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 | `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
@@ -398,11 +441,12 @@
 | `label_language` | 否 | 字符串 | 可选值=[en zh bilingual]; 默认值=bilingual | 首选的上下文标签语言。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
 | `max_nodes` | 否 | 整数 | 最小值=1; 最大值=5000; 默认值=5000 | 返回受限失败前最多展开的图节点数。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
 | `mode` | 否 | 字符串 | 可选值=[sea land mixed]; 默认值=mixed | 通行模式。 |
 | `objective` | 否 | 字符串 | 可选值=[shortest scenic]; 默认值=shortest | 路线目标。 |
 | `to` | 是 | 字符串 |  | 终点：数字省份 ID、b_/c_/d_/k_/e_ 头衔 ID，或可唯一解析的准确英文或中文本地化名称。 |
 | `verbose` | 否 | 布尔值 | 默认值=false | 包含受限的图加载与节点展开证据。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 | `waypoints` | 否 | 数组 | 最多项数=16 | 路线必须按顺序经过的可选准确地图地点。 |
 | `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
 
@@ -427,6 +471,7 @@
 | `layout` | 否 | 字符串 | 可选值=[map_only light_frame full_atlas] | — |
 | `level` | 否 | 字符串 | 可选值=[province barony county duchy kingdom empire region] | 主要渲染层级。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
 | `padding` | 否 | 整数 | 最小值=0; 最大值=1024 | 以最终输出像素计的地图外边距。 |
 | `recipe` | 否 | 字符串 | 可选值=[political_atlas thematic_atlas duchy_political_atlas strategic_waterways_atlas] | — |
 | `relief_strength` | 否 | 字符串 | 可选值=[none subtle strong] | — |
@@ -440,7 +485,7 @@
 | `theme` | 否 | 字符串 | 可选值=[political culture faith development terrain custom] | — |
 | `title` | 否 | 字符串 |  | — |
 | `verbose` | 否 | 布尔值 |  | 包含完整指标值和配方目标；路线渲染默认返回紧凑元数据。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 可从结果中移除当前工程与补丁证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 | `width` | 否 | 整数 | 最小值=1; 最大值=8192 | 可选的明确输出宽度；同时省略 width 与 height 时自动确定尺寸。 |
 | `year` | 否 | 整数 | 最小值=1 | 地图册显示年份。 |
 

@@ -3,7 +3,6 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,6 +20,10 @@ type Runtime struct {
 type toolOutput struct {
 	Value      any
 	Visibility string
+	// Committed means the handler has already made an atomic, externally
+	// visible publication. A cancellation that arrives after that commit must
+	// not be reported as if the old generation had been retained.
+	Committed bool
 }
 
 type callToolParams struct {
@@ -56,55 +59,77 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 		var err error
 		call.Arguments, err = adaptLegacyArguments(*alias, call.Arguments)
 		if err != nil {
-			return encodeToolError(sanitizeToolError(err, runtime)), nil
+			return encodeToolError(err, runtime), nil
 		}
 		definition, _ = findCanonicalTool(alias.Canonical)
 		deprecatedName = alias.Name
 	}
 
 	if err := validateArguments(call.Arguments, definition.InputSchema, definition.CompatibilityProperties); err != nil {
-		return encodeToolError(sanitizeToolError(err, runtime)), nil
+		return encodeToolError(err, runtime), nil
+	}
+	handlerArguments, responseControl, err := splitResponseControl(call.Arguments)
+	if err != nil {
+		return encodeToolError(err, runtime), nil
+	}
+	if err := ctx.Err(); err != nil {
+		return encodeToolError(err, runtime), nil
 	}
 	before, beforeErr := db.IndexState(ctx)
-	if beforeErr == nil && indexStatePublishing(before) && !indexStateIndependentTool(definition.Name) {
-		return encodeInternalToolError("INDEX_REFRESH_IN_PROGRESS", "ck3-index is rebuilding or finalizing a new scan generation; retry this query after the index reports ready."), nil
+	if beforeErr == nil && indexStatePublishing(before) && !indexStateIndependentRequest(definition.Name, handlerArguments) {
+		return encodeInternalToolError(ErrorIndexFinalizing, "ck3-index is rebuilding or finalizing a new scan generation; retry this query after the index reports ready."), nil
 	}
-	output, err := definition.Handler(ctx, runtime, definition, call.Arguments)
+	output, err := definition.Handler(ctx, runtime, definition, handlerArguments)
 	if err != nil {
-		return encodeToolError(sanitizeToolError(err, runtime)), nil
+		return encodeToolError(err, runtime), nil
 	}
-	after, afterErr := db.IndexState(ctx)
+	if err := ctx.Err(); err != nil && !output.Committed {
+		return encodeToolError(err, runtime), nil
+	}
+	resultContext := ctx
+	if output.Committed {
+		resultContext = context.WithoutCancel(ctx)
+	}
+	after, afterErr := db.IndexState(resultContext)
 	if beforeErr == nil && afterErr == nil && indexStateChanged(before, after) {
-		if indexStatePublishing(after) && !indexStateIndependentTool(definition.Name) {
-			return encodeInternalToolError("INDEX_REFRESH_IN_PROGRESS", "ck3-index began publishing a new scan generation while this query was running; retry after the index reports ready."), nil
-		}
-		if !definition.Annotations.ReadOnlyHint {
-			// Artifact tools can be non-idempotent (migration artifacts use a
-			// random id), so never execute them twice behind the caller's back.
-			return encodeInternalToolError("INDEX_CHANGED_DURING_QUERY", "The ck3-index scan generation changed while the artifact tool was running; retry the tool call."), nil
-		}
-		// Index reads are generation-bound; artifact-only tools never mutate the
-		// database. Retry read-only tools once when a scan committed during the
-		// request so one response never mixes two index generations.
-		retryStart := after
-		output, err = definition.Handler(ctx, runtime, definition, call.Arguments)
-		if err != nil {
-			return encodeToolError(sanitizeToolError(err, runtime)), nil
-		}
-		after, afterErr = db.IndexState(ctx)
-		if afterErr != nil {
-			return encodeInternalToolError("INDEX_STATE_UNAVAILABLE", "ck3-index could not verify the scan generation after retrying the query."), nil
-		}
-		if indexStatePublishing(after) && !indexStateIndependentTool(definition.Name) {
-			return encodeInternalToolError("INDEX_REFRESH_IN_PROGRESS", "ck3-index is still finalizing the refreshed generation; retry this query shortly."), nil
-		}
-		if indexStateChanged(retryStart, after) {
-			return encodeInternalToolError("INDEX_CHANGED_DURING_QUERY", "The ck3-index scan generation changed twice during one query; retry the tool call."), nil
+		// Refresh owns its one intentional generation change. Re-running it
+		// would either duplicate work or produce a second generation, so return
+		// its first transactional result directly.
+		if definition.Name != "ck3_refresh" {
+			if indexStatePublishing(after) && !indexStateIndependentRequest(definition.Name, handlerArguments) {
+				return encodeInternalToolError(ErrorIndexFinalizing, "ck3-index began publishing a new scan generation while this query was running; retry after the index reports ready."), nil
+			}
+			if !definition.Annotations.ReadOnlyHint {
+				// Artifact tools can be non-idempotent (migration artifacts use a
+				// random id), so never execute them twice behind the caller's back.
+				return encodeInternalToolError(ErrorConflictingGeneration, "The ck3-index scan generation changed while the artifact tool was running; retry the tool call."), nil
+			}
+			// Index reads are generation-bound; artifact-only tools never mutate the
+			// database. Retry read-only tools once when a scan committed during the
+			// request so one response never mixes two index generations.
+			retryStart := after
+			output, err = definition.Handler(ctx, runtime, definition, handlerArguments)
+			if err != nil {
+				return encodeToolError(err, runtime), nil
+			}
+			if err := ctx.Err(); err != nil {
+				return encodeToolError(err, runtime), nil
+			}
+			after, afterErr = db.IndexState(resultContext)
+			if afterErr != nil {
+				return encodeInternalToolError(ErrorIndexStale, "ck3-index could not verify the scan generation after retrying the query."), nil
+			}
+			if indexStatePublishing(after) && !indexStateIndependentRequest(definition.Name, handlerArguments) {
+				return encodeInternalToolError(ErrorIndexFinalizing, "ck3-index is still finalizing the refreshed generation; retry this query shortly."), nil
+			}
+			if indexStateChanged(retryStart, after) {
+				return encodeInternalToolError(ErrorConflictingGeneration, "The ck3-index scan generation changed twice during one query; retry the tool call."), nil
+			}
 		}
 	}
-	result, err := encodeToolResult(output.Value, output.Visibility)
+	result, err := encodeToolResultWithBudget(output.Value, output.Visibility, responseControl.MaxResponseBytes)
 	if err != nil {
-		return encodeInternalToolError("TOOL_RESULT_ENCODING_FAILED", "ck3-index could not encode the tool result as finite JSON."), nil
+		return encodeToolError(err, runtime), nil
 	}
 	if beforeErr == nil && afterErr == nil && after.Ready() {
 		result["indexState"] = map[string]any{
@@ -116,7 +141,7 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 	} else {
 		result["indexState"] = map[string]any{
 			"status":     "unavailable",
-			"error_code": "INDEX_STATE_UNAVAILABLE",
+			"error_code": ErrorIndexStale,
 			"guidance":   "The tool result was produced, but ck3-index could not verify one stable scan generation.",
 		}
 	}
@@ -125,6 +150,13 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 			"deprecated_tool": deprecatedName,
 			"replacement":     definition.Name,
 		}
+	}
+	// encodeToolResultWithBudget bounds the payload generated by the handler.
+	// Index-state and compatibility metadata are attached afterwards, so verify
+	// the final wire object as well rather than letting those common envelopes
+	// silently exceed the caller's declared response budget.
+	if _, err := enforceResponseBudget(result, responseControl.MaxResponseBytes); err != nil {
+		return encodeToolError(err, runtime), nil
 	}
 	return result, nil
 }
@@ -144,11 +176,27 @@ func indexStatePublishing(state indexer.IndexState) bool {
 // behavior; it has no previously published rows to accidentally expose.
 func indexStateIndependentTool(name string) bool {
 	switch name {
-	case "ck3_script_reference", "ck3_health":
+	case "ck3_script_reference", "ck3_health", "ck3_refresh":
 		return true
 	default:
 		return false
 	}
+}
+
+func indexStateIndependentRequest(name string, raw json.RawMessage) bool {
+	if indexStateIndependentTool(name) {
+		return true
+	}
+	if name != "ck3_workspace" {
+		return false
+	}
+	var args struct {
+		Operation string `json:"operation"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(args.Operation), "capabilities")
 }
 
 func adaptRetainedCanonicalArguments(name string, raw json.RawMessage) json.RawMessage {
@@ -174,10 +222,10 @@ func adaptRetainedCanonicalArguments(name string, raw json.RawMessage) json.RawM
 func adaptLegacyArguments(alias LegacyAlias, raw json.RawMessage) (json.RawMessage, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
-		return nil, fmt.Errorf("legacy tool %s arguments must be a JSON object", alias.Name)
+		return nil, invalidArgument("", "legacy tool arguments must be a JSON object")
 	}
 	if fields == nil {
-		return nil, fmt.Errorf("legacy tool %s arguments must be a JSON object", alias.Name)
+		return nil, invalidArgument("", "legacy tool arguments must be a JSON object")
 	}
 	if alias.Operation != "" {
 		fields["operation"] = mustJSON(alias.Operation)
@@ -193,7 +241,7 @@ func adaptLegacyArguments(alias LegacyAlias, raw json.RawMessage) (json.RawMessa
 	}
 	canonical, ok := findCanonicalTool(alias.Canonical)
 	if !ok {
-		return nil, fmt.Errorf("legacy tool %s has no canonical target", alias.Name)
+		return nil, newToolError(ErrorInternal, "internal", "legacy tool has no registered canonical target", false, nil, nil)
 	}
 	properties, _ := canonical.InputSchema["properties"].(map[string]any)
 	compatibility := make(map[string]bool, len(canonical.CompatibilityProperties))
@@ -214,7 +262,13 @@ func mustJSON(value string) json.RawMessage {
 }
 
 func sanitizeToolError(err error, runtime *Runtime) string {
+	if err == nil {
+		return ""
+	}
 	message := err.Error()
+	if runtime == nil {
+		return message
+	}
 	paths := []string{runtime.DBPath, runtime.Config.ConfigPath, runtime.Config.ArtifactRoot, runtime.Config.MigrationSnapshotRoot, os.Getenv("CK3_INDEX_MAP_FONT")}
 	for _, source := range runtime.Config.Sources {
 		paths = append(paths, source.Path)

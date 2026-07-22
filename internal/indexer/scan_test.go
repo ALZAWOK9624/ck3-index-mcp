@@ -2,6 +2,7 @@ package indexer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -258,8 +259,10 @@ func TestScanFilesRefusesToAdvanceStaleRuleVersion(t *testing.T) {
 	if err := os.WriteFile(path, []byte("test_trait = { prowess = 1 }\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ScanFiles(context.Background(), cfg, []string{"common/traits/test.txt"}); err == nil || !strings.Contains(err.Error(), "full ck3-index scan") {
-		t.Fatalf("expected stale rule version to block incremental scan, got %v", err)
+	_, err = ScanFiles(context.Background(), cfg, []string{"common/traits/test.txt"})
+	var fullRequired *FullScanRequiredError
+	if !errors.As(err, &fullRequired) || fullRequired.Reason != "the index rule version changed" {
+		t.Fatalf("expected typed stale-rule full-scan requirement, got %v", err)
 	}
 	db, err = Open(filepath.Join(dir, "cache", "test.sqlite"))
 	if err != nil {

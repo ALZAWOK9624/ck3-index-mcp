@@ -312,7 +312,7 @@ func (db *DB) queryGUIPreviewLocalizations(ctx context.Context, keys map[string]
 			FROM localization l JOIN files f ON f.id=l.file_id
 			WHERE f.overridden=0 AND l.key IN (` + strings.Join(placeholders, ",") + `)`
 		if !allowProject {
-			query += ` AND l.source_rank>1`
+			query += ` AND EXISTS (SELECT 1 FROM source_layers sl WHERE lower(sl.name)=lower(l.source_name) AND sl.private=0)`
 		}
 		query += ` ORDER BY l.key,l.source_rank,l.replace_dir DESC,l.path`
 		rows, err := db.sql.QueryContext(ctx, query, args...)

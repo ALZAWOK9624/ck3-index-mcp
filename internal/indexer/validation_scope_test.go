@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestLLMValidateDefaultsToProjectSource(t *testing.T) {
+func TestLLMValidateUsesConfiguredProjectRole(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "test.sqlite"))
 	if err != nil {
 		t.Fatal(err)
@@ -16,12 +16,18 @@ func TestLLMValidateDefaultsToProjectSource(t *testing.T) {
 	if err := db.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
-	projectResult, err := db.sql.ExecContext(ctx, `INSERT INTO files(source_name,source_rank,path,rel_path,kind,mtime,sha256) VALUES('project',1,'project.txt','common/project.txt','script',0,'project')`)
+	if err := syncSourceLayers(ctx, db.sql, []Source{
+		{Name: "current_mod", Path: "current_mod", Rank: 7, Role: SourceRoleProject, Private: true},
+		{Name: "vanilla_119", Path: "vanilla_119", Rank: 9, Role: SourceRoleGame, Private: false},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	projectResult, err := db.sql.ExecContext(ctx, `INSERT INTO files(source_name,source_rank,path,rel_path,kind,mtime,sha256) VALUES('current_mod',7,'project.txt','common/project.txt','script',0,'project')`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	projectID, _ := projectResult.LastInsertId()
-	gameResult, err := db.sql.ExecContext(ctx, `INSERT INTO files(source_name,source_rank,path,rel_path,kind,mtime,sha256) VALUES('game',3,'game.txt','common/game.txt','script',0,'game')`)
+	gameResult, err := db.sql.ExecContext(ctx, `INSERT INTO files(source_name,source_rank,path,rel_path,kind,mtime,sha256) VALUES('vanilla_119',9,'game.txt','common/game.txt','script',0,'game')`)
 	if err != nil {
 		t.Fatal(err)
 	}

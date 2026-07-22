@@ -71,12 +71,16 @@ func visibilityProperty() map[string]any {
 		"type":        "string",
 		"enum":        []string{"private", "public"},
 		"default":     "private",
-		"description": "Use public to remove current-project and patch evidence from the result.",
+		"description": "Use public to return only configured non-private source evidence; aggregate counts and operations requiring private workspace evidence are unavailable.",
 	}
 }
 
 func limitProperty() map[string]any {
 	return integerProperty("Maximum evidence items per section.", 1, 20, 8)
+}
+
+func pageProperty() map[string]any {
+	return integerProperty("One-based evidence page. Pages are stable only for the published scan generation returned with the tool result.", 1, 25, 1)
 }
 
 func genericOutputSchema() map[string]any {
@@ -96,10 +100,10 @@ func validateArguments(raw json.RawMessage, schema map[string]any, compatibility
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
-		return fmt.Errorf("arguments must be a JSON object: %w", err)
+		return invalidArgument("", "arguments must be a JSON object")
 	}
 	if fields == nil {
-		return fmt.Errorf("arguments must be a JSON object")
+		return invalidArgument("", "arguments must be a JSON object")
 	}
 	properties, _ := schema["properties"].(map[string]any)
 	allowedCompatibility := make(map[string]bool, len(compatibilityProperties))
@@ -109,14 +113,14 @@ func validateArguments(raw json.RawMessage, schema map[string]any, compatibility
 	if additional, ok := schema["additionalProperties"].(bool); ok && !additional {
 		for name := range fields {
 			if _, known := properties[name]; !known && !allowedCompatibility[name] {
-				return fmt.Errorf("unknown argument field %q; remove it or use the documented input schema", name)
+				return invalidArgument(name, fmt.Sprintf("unknown argument field %q; remove it or use the documented input schema", name))
 			}
 		}
 	}
 	for _, required := range schemaStrings(schema["required"]) {
 		value, exists := fields[required]
 		if !exists || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
-			return fmt.Errorf("missing required argument field %q", required)
+			return missingArgument(required)
 		}
 	}
 	for name, value := range fields {
@@ -125,7 +129,7 @@ func validateArguments(raw json.RawMessage, schema map[string]any, compatibility
 			continue
 		}
 		if err := validateProperty(name, value, property); err != nil {
-			return err
+			return invalidArgument(name, err.Error())
 		}
 	}
 	if alternatives, ok := schema["anyOf"].([]any); ok && len(alternatives) > 0 {
@@ -146,7 +150,7 @@ func validateArguments(raw json.RawMessage, schema map[string]any, compatibility
 			matched = matched || valid
 		}
 		if !matched {
-			return fmt.Errorf("arguments must include one of: %s", strings.Join(choices, ", "))
+			return invalidArgument("", fmt.Sprintf("arguments must include one of: %s", strings.Join(choices, ", ")))
 		}
 	}
 	return nil

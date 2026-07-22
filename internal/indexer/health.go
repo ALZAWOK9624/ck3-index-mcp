@@ -67,7 +67,8 @@ func (db *DB) checkLIOSSafety(ctx context.Context) error {
 		FROM objects ow
 		JOIN files w ON w.id=ow.file_id
 		JOIN files fl ON fl.rel_path=w.rel_path AND fl.overridden=1
-		WHERE w.overridden=0 AND w.source_name='project'
+		JOIN source_layers sl ON sl.name=w.source_name
+		WHERE w.overridden=0 AND sl.role='project'
 		GROUP BY w.rel_path, fl.id, fl.path, fl.source_name, fl.source_rank, fl.kind`)
 	if err != nil {
 		return err

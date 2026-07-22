@@ -192,10 +192,8 @@ func overrideAuditSource(cfg Config, requested string) (Source, error) {
 		}
 		return Source{}, fmt.Errorf("override audit source %q is not configured", requested)
 	}
-	for _, source := range cfg.Sources {
-		if strings.EqualFold(source.Name, "project") {
-			return source, nil
-		}
+	if project, err := ProjectSource(cfg); err == nil {
+		return project, nil
 	}
 	sources := append([]Source(nil), cfg.Sources...)
 	sort.Slice(sources, func(i, j int) bool { return sources[i].Rank < sources[j].Rank })

@@ -27,6 +27,11 @@ def request_lines(version: str) -> str:
                 "clientInfo": {"name": "ck3-index-release", "version": version},
             },
         },
+        {
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {},
+        },
         {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
         {
             "jsonrpc": "2.0",
@@ -191,6 +196,11 @@ def verify(args: argparse.Namespace) -> dict[str, object]:
                         "version": version,
                     },
                 },
+            },
+            {
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+                "params": {},
             },
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
         )

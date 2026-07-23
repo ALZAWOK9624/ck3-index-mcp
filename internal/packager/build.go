@@ -83,24 +83,7 @@ func Build(ctx context.Context, request Request, options BuildOptions) (Result, 
 	artifactID := meta.Slug + "-" + hash[:16]
 	archiveName := artifactID + ".zip"
 	finalPath := filepath.Join(options.ArtifactRoot, archiveName)
-	if info, err := os.Stat(finalPath); err == nil {
-		if !info.Mode().IsRegular() {
-			return Result{}, fmt.Errorf("artifact collision is not a regular file: %s", archiveName)
-		}
-		existingHash, existingSize, err := hashFile(finalPath)
-		if err != nil {
-			return Result{}, err
-		}
-		if existingHash != hash || existingSize != size {
-			return Result{}, fmt.Errorf("artifact collision has unexpected content: %s", archiveName)
-		}
-		now := time.Now()
-		if err := os.Chtimes(finalPath, now, now); err != nil {
-			return Result{}, err
-		}
-	} else if !os.IsNotExist(err) {
-		return Result{}, err
-	} else if err := os.Rename(temporaryArchive, finalPath); err != nil {
+	if err := publishArtifactArchive(temporaryArchive, finalPath, archiveName, hash, size); err != nil {
 		return Result{}, err
 	}
 	now := time.Now()
@@ -123,6 +106,44 @@ func Build(ctx context.Context, request Request, options BuildOptions) (Result, 
 	result.FileCount = len(archiveEntries)
 	result.ExpiresAt = now.Add(options.Retention).UTC().Format(time.RFC3339)
 	return result, nil
+}
+
+func publishArtifactArchive(temporaryArchive, finalPath, archiveName, hash string, size int64) error {
+	if _, err := os.Lstat(finalPath); err == nil {
+		return acceptMatchingArtifactArchive(finalPath, archiveName, hash, size)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Rename(temporaryArchive, finalPath); err != nil {
+		// Another process can win the Stat -> Rename race. Windows rejects the
+		// losing rename while Unix implementations may replace atomically.
+		// Revalidate the content-addressed destination before treating the
+		// rename error as fatal.
+		if matchErr := acceptMatchingArtifactArchive(finalPath, archiveName, hash, size); matchErr == nil {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func acceptMatchingArtifactArchive(path, archiveName, hash string, size int64) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("artifact collision is not a regular file: %s", archiveName)
+	}
+	existingHash, existingSize, err := hashFile(path)
+	if err != nil {
+		return err
+	}
+	if existingHash != hash || existingSize != size {
+		return fmt.Errorf("artifact collision has unexpected content: %s", archiveName)
+	}
+	now := time.Now()
+	return os.Chtimes(path, now, now)
 }
 
 func buildArchiveEntries(meta Metadata, content []PreparedFile, validation ValidationReport) []PreparedFile {
@@ -281,12 +302,7 @@ func writeArtifactRecord(root string, record artifactRecord) error {
 		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			return fmt.Errorf("artifact record collision is not a regular file: %s", filepath.Base(path))
 		}
-		existing, ok := ownedArtifactRecord(root, record.ArchiveName)
-		if !ok || existing.SHA256 != record.SHA256 || existing.Size != record.Size {
-			return fmt.Errorf("artifact record collision has unexpected content: %s", filepath.Base(path))
-		}
-		now := time.Now()
-		return os.Chtimes(path, now, now)
+		return acceptMatchingArtifactRecord(root, record)
 	} else if !os.IsNotExist(err) {
 		return err
 	}
@@ -297,6 +313,9 @@ func writeArtifactRecord(root string, record artifactRecord) error {
 	data = append(data, '\n')
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
+		if os.IsExist(err) {
+			return waitForMatchingArtifactRecord(root, record)
+		}
 		return err
 	}
 	if _, err := file.Write(data); err != nil {
@@ -309,6 +328,38 @@ func writeArtifactRecord(root string, record artifactRecord) error {
 		return err
 	}
 	return nil
+}
+
+func waitForMatchingArtifactRecord(root string, record artifactRecord) error {
+	var lastErr error
+	for attempt := 0; attempt < 20; attempt++ {
+		if err := acceptMatchingArtifactRecord(root, record); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		// The O_EXCL winner may still be writing its small JSON record. This
+		// bounded wait is only entered after a confirmed cross-process race.
+		time.Sleep(5 * time.Millisecond)
+	}
+	return lastErr
+}
+
+func acceptMatchingArtifactRecord(root string, record artifactRecord) error {
+	path := filepath.Join(root, artifactRecordName(record.ArchiveName))
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("artifact record collision is not a regular file: %s", filepath.Base(path))
+	}
+	existing, ok := ownedArtifactRecord(root, record.ArchiveName)
+	if !ok || existing.SHA256 != record.SHA256 || existing.Size != record.Size {
+		return fmt.Errorf("artifact record collision has unexpected content: %s", filepath.Base(path))
+	}
+	now := time.Now()
+	return os.Chtimes(path, now, now)
 }
 
 func ownedArtifactRecord(root, archiveName string) (artifactRecord, bool) {

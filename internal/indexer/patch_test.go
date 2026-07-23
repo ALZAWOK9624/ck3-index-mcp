@@ -112,6 +112,10 @@ func TestPreflightPatchOverlayResolvesPatchAndDBSymbols(t *testing.T) {
 	title = patch_decision.t
 	desc = existing_decision.desc
 	icon = "gfx/interface/icons/existing.dds"
+	picture = {
+		reference = "gfx/interface/icons/existing.dds"
+	}
+	ai_check_interval = 12
 	is_shown = {
 		has_trait = patch_trait
 		has_trait = existing_trait

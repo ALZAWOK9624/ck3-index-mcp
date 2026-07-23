@@ -26,7 +26,7 @@ func buildCanonicalTools() []ToolDefinition {
 				"page":        pageProperty(),
 				"visibility":  visibilityProperty(),
 			}, "query"),
-			OutputSchema: output, Annotations: annotations, Handler: handleSearch,
+			OutputSchema: preciseToolOutputSchema(llmResultOutputSchema()), Annotations: annotations, Handler: handleSearch,
 			CompatibilityProperties: legacyPrivacyProperties,
 		},
 		{
@@ -66,7 +66,7 @@ func buildCanonicalTools() []ToolDefinition {
 				"limit":      limitProperty(),
 				"visibility": visibilityProperty(),
 			}),
-			OutputSchema: output, Annotations: annotations, Handler: handleWorkspace,
+			OutputSchema: workspaceOutputSchema(), Annotations: annotations, Handler: handleWorkspace,
 			CompatibilityProperties: legacyPrivacyProperties,
 		},
 		{
@@ -114,7 +114,7 @@ func buildCanonicalTools() []ToolDefinition {
 				"limit":      limitProperty(),
 				"visibility": visibilityProperty(),
 			}, "operation"),
-			OutputSchema: output, Annotations: annotations, Handler: handlePreflight,
+			OutputSchema: preciseToolOutputSchema(llmResultOutputSchema()), Annotations: annotations, Handler: handlePreflight,
 			CompatibilityProperties: legacyPrivacyProperties,
 		},
 		{
@@ -151,7 +151,7 @@ func buildCanonicalTools() []ToolDefinition {
 			Title:        "Refresh CK3 Index",
 			Description:  "Refresh the configured project source after source files change. status reports index readiness without mutation; files incrementally updates explicitly named source-root-relative project files; full rebuilds in a staged cache and atomically publishes only after it is ready, never silently substituting for files.",
 			InputSchema:  refreshInputSchema(),
-			OutputSchema: output, Annotations: artifactAnnotations(), Handler: handleRefresh,
+			OutputSchema: refreshOutputSchema(), Annotations: artifactAnnotations(), Handler: handleRefresh,
 		},
 		{
 			Name:        "ck3_script_reference",
@@ -870,52 +870,4 @@ func legacyInputSchema(name string) map[string]any {
 		}
 	}
 	return objectSchema(map[string]any{})
-}
-
-func buildLegacyAliases() []LegacyAlias {
-	type aliasSpec struct{ name, canonical, operation, kind string }
-	specs := []aliasSpec{
-		{"query_object", "ck3_inspect", "definition", ""},
-		{"find_refs", "ck3_inspect", "references", ""},
-		{"query_loc", "ck3_inspect", "localization", ""},
-		{"query_resource", "ck3_inspect", "resource", ""},
-		{"inspect_object", "ck3_inspect", "context", ""},
-		{"diagnose_key", "ck3_inspect", "diagnose", ""},
-		{"query_object_types", "ck3_workspace", "object_types", ""},
-		{"architecture_overview", "ck3_workspace", "overview", ""},
-		{"dependency_graph", "ck3_dependencies", "", ""},
-		{"prepare_edit", "ck3_prepare_edit", "context", ""},
-		{"query_examples", "ck3_prepare_edit", "examples", ""},
-		{"query_rules", "ck3_prepare_edit", "rules", ""},
-		{"query_patterns", "ck3_prepare_edit", "patterns", ""},
-		{"preflight_code", "ck3_preflight", "subject", ""},
-		{"preflight_patch", "ck3_preflight", "patch", ""},
-		{"preflight_dirty", "ck3_preflight", "dirty", ""},
-		{"impact_patch", "ck3_impact", "", ""},
-		{"validate_project", "ck3_diagnostics", "summary", ""},
-		{"explain_diagnostic", "ck3_diagnostics", "explain", ""},
-		{"lookup_scope", "ck3_script_reference", "", "scope"},
-		{"lookup_datatype", "ck3_script_reference", "", "datatype"},
-		{"lookup_shape", "ck3_script_reference", "", "shape"},
-		{"lookup_define", "ck3_script_reference", "", "define"},
-		{"lookup_on_action", "ck3_script_reference", "", "on_action"},
-		{"lookup_iterator", "ck3_script_reference", "", "iterator"},
-		{"lookup_example", "ck3_script_reference", "", "example"},
-		{"lookup_modifier", "ck3_script_reference", "", "modifier"},
-		{"health_check", "ck3_health", "", ""},
-	}
-	legacy := legacyToolCatalog()
-	byName := map[string]map[string]any{}
-	for _, tool := range legacy {
-		byName[tool["name"].(string)] = tool
-	}
-	aliases := make([]LegacyAlias, 0, len(specs))
-	for _, spec := range specs {
-		tool := byName[spec.name]
-		aliases = append(aliases, LegacyAlias{
-			Name: spec.name, Canonical: spec.canonical, Operation: spec.operation, Kind: spec.kind,
-			Description: tool["description"].(string), InputSchema: tool["inputSchema"].(map[string]any),
-		})
-	}
-	return aliases
 }

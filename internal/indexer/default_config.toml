@@ -25,3 +25,13 @@ path = "../Crusader Kings III/game"
 rank = 2
 role = "game"
 private = false
+
+# Optional lower-priority asset roots can fill incomplete copied game trees
+# without indexing their scripts a second time.
+# [[source]]
+# name = "game-assets"
+# path = "../Crusader Kings III/game"
+# rank = 3
+# role = "reference"
+# private = false
+# resource_only = true

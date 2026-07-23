@@ -29,6 +29,7 @@ rank = 2
 name = "windows_abs"
 path = "D:/mod-project/game"
 rank = 3
+resource_only = true
 `
 	if err := os.WriteFile(cfgPath, []byte(cfgText), 0644); err != nil {
 		t.Fatal(err)
@@ -70,6 +71,9 @@ rank = 3
 	wantWindowsAbs := filepath.Clean(filepath.FromSlash("D:/mod-project/game"))
 	if cfg.Sources[2].Path != wantWindowsAbs {
 		t.Fatalf("windows absolute path = %q, want %q", cfg.Sources[2].Path, wantWindowsAbs)
+	}
+	if !cfg.Sources[2].ResourceOnly {
+		t.Fatal("resource_only source flag was not preserved")
 	}
 }
 
@@ -141,6 +145,13 @@ name = "project"
 path = "project"
 rank = 1
 `, "duplicate source rank"},
+		{"resource only project", `[[source]]
+name = "project"
+path = "project"
+rank = 1
+role = "project"
+resource_only = true
+`, "cannot be both project and resource_only"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -152,6 +163,55 @@ rank = 1
 			_, err := LoadConfig(path)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("LoadConfig error=%v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadConfigRejectsUnknownAndMalformedTOML(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "unknown top level field",
+			body: `database = "cache/test.sqlite"
+surprise = true
+[[source]]
+name = "project"
+path = "project"
+rank = 1
+`,
+			want: "unknown configuration field(s): surprise",
+		},
+		{
+			name: "unknown source field",
+			body: `database = "cache/test.sqlite"
+[[source]]
+name = "project"
+path = "project"
+rank = 1
+surprise = true
+`,
+			want: "unknown configuration field(s): source.surprise",
+		},
+		{
+			name: "malformed toml",
+			body: `database = "cache/test.sqlite
+`,
+			want: "decode TOML config",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "ck3-index.toml")
+			if err := os.WriteFile(path, []byte(test.body), 0644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadConfig(path)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("LoadConfig error=%v, want substring %q", err, test.want)
 			}
 		})
 	}

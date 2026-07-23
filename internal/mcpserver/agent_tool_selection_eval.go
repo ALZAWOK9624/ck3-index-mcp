@@ -214,9 +214,6 @@ func validateAgentToolSelectionCall(call AgentToolSelectionEvalCall) error {
 	}
 	definition, found := findCanonicalTool(name)
 	if !found {
-		if _, legacy := findLegacyAlias(name); legacy {
-			return fmt.Errorf("tool %q is a deprecated alias; use its canonical replacement", name)
-		}
 		return fmt.Errorf("tool %q is not a registered canonical tool", name)
 	}
 	if err := validateArguments(call.Arguments, definition.InputSchema, definition.CompatibilityProperties); err != nil {

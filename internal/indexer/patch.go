@@ -81,14 +81,15 @@ func AnalyzeVirtualFile(relPath, sourceName string, sourceRank int, content stri
 			})
 		}
 		a.Diagnostics = append(a.Diagnostics, ctxDiagnostics(rel, "compiler", checkScriptContext(a.Parsed.Nodes, rel))...)
-		a.Diagnostics = append(a.Diagnostics, ctxDiagnostics(rel, "compiler", checkScriptLint(a.Parsed.Nodes, rel, sourceName))...)
+		a.Diagnostics = append(a.Diagnostics, ctxDiagnostics(rel, "compiler", checkScriptLint(a.Parsed.Nodes, rel, SourceRoleProject))...)
+		a.Diagnostics = append(a.Diagnostics, ctxDiagnostics(rel, "compiler", checkRuntimeContracts(a.Parsed.Nodes, rel))...)
 		a.Diagnostics = append(a.Diagnostics, ctxDiagnostics(rel, "compiler", checkScopeTracker(a.Parsed.Nodes, rel))...)
 		a.SavedScopes = collectSavedScopes(a.Parsed.Nodes)
 		a.Variables = collectVariables(a.Parsed.Nodes)
 		if strings.Contains(rel, "scripted_effects") {
 			for _, n := range a.Parsed.Nodes {
 				if n.Kind == "block" && n.Key != "" {
-					a.Diagnostics = append(a.Diagnostics, ctxDiagnostics(rel, "compiler", checkScriptEffectRecursion(a.Parsed.Nodes, rel, n.Key))...)
+					a.Diagnostics = append(a.Diagnostics, ctxDiagnostics(rel, "compiler", checkScriptEffectRecursion(n.Children, rel, n.Key))...)
 				}
 			}
 		}
@@ -97,6 +98,10 @@ func AnalyzeVirtualFile(relPath, sourceName string, sourceRank int, content stri
 		a.ObjectFields = extractObjectFields(rec, a.Parsed.Nodes, a.Objects)
 	case "localization":
 		a.Locs, err = parseLocBytes(rel, []byte(content))
+		if err == nil {
+			a.Refs = extractLocalizationRuntimeRefs(a.Locs)
+		}
+		a.Diagnostics = append(a.Diagnostics, ctxDiagnostics(rel, "parser", checkLocalizationSyntax(rel, []byte(content)))...)
 	case "schema":
 		a.SchemaEntries, err = parseSchemaBytes(rel, []byte(content))
 	case "resource":

@@ -31,6 +31,7 @@ const (
 	ErrorIncompleteFileContent      = "INCOMPLETE_FILE_CONTENT"
 	ErrorInvalidPatch               = "INVALID_PATCH"
 	ErrorConflictingGeneration      = "CONFLICTING_GENERATION"
+	ErrorServerBusy                 = "SERVER_BUSY"
 	ErrorOperationCancelled         = "OPERATION_CANCELLED"
 	ErrorOperationTimeout           = "OPERATION_TIMEOUT"
 	ErrorInternal                   = "INTERNAL_ERROR"
@@ -106,6 +107,10 @@ func toolErrorFrom(err error) *ToolError {
 		return newToolError(ErrorResponseTooLarge, "response_size", "the encoded tool result exceeds the requested response budget", true,
 			map[string]any{"actual_bytes": responseTooLarge.Actual, "max_response_bytes": responseTooLarge.Limit},
 			map[string]any{"guidance": "Use a smaller limit or a later page, or retry with a larger max_response_bytes within the advertised cap."})
+	}
+	if errors.Is(err, indexer.ErrConflictingGeneration) {
+		return newToolError(ErrorConflictingGeneration, "concurrency", "the published index changed while a staged refresh was being prepared", true, nil,
+			map[string]any{"guidance": "Read ck3_refresh status and retry the full refresh from the new generation."})
 	}
 	if errors.Is(err, context.Canceled) {
 		return newToolError(ErrorOperationCancelled, "operation_state", "the operation was cancelled before it completed", true, nil,

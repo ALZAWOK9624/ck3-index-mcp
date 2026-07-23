@@ -72,6 +72,30 @@ func openSQLite(path string, readOnly bool) (*DB, error) {
 
 func (db *DB) Close() error { return db.sql.Close() }
 
+// scanWriteConnection pins scan transactions and their connection-local
+// PRAGMAs to the same SQLite connection. Applying these through *sql.DB would
+// configure an arbitrary pooled connection and leave the actual writer with
+// different durability, cache, or timeout settings.
+func (db *DB) scanWriteConnection(ctx context.Context) (*sql.Conn, error) {
+	conn, err := db.sql.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, pragma := range []string{
+		`PRAGMA busy_timeout=60000`,
+		`PRAGMA journal_mode=WAL`,
+		`PRAGMA synchronous=OFF`,
+		`PRAGMA temp_store=MEMORY`,
+		`PRAGMA cache_size=-200000`,
+	} {
+		if _, err := conn.ExecContext(ctx, pragma); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+	}
+	return conn, nil
+}
+
 func (db *DB) EnsureSchema(ctx context.Context) error {
 	return db.ensureSchema(ctx)
 }
@@ -80,55 +104,14 @@ func (db *DB) EnsureSchema(ctx context.Context) error {
 // Indexes are NOT created here; call CreateIndexes after the bulk insert to
 // keep the write phase fast.
 func (db *DB) reset(ctx context.Context) error {
-	drops := []string{
-		`PRAGMA journal_mode=WAL`,
-		`DROP TABLE IF EXISTS meta`,
-		`DROP TABLE IF EXISTS source_layers`,
-		`DROP TABLE IF EXISTS files`,
-		`DROP TABLE IF EXISTS nodes`,
-		`DROP TABLE IF EXISTS objects`,
-		`DROP TABLE IF EXISTS object_defs`,
-		`DROP TABLE IF EXISTS refs`,
-		`DROP TABLE IF EXISTS localization`,
-		`DROP TABLE IF EXISTS resources`,
-		`DROP TABLE IF EXISTS schema_fields`,
-		`DROP TABLE IF EXISTS object_fields`,
-		`DROP TABLE IF EXISTS diagnostics`,
-		`DROP TABLE IF EXISTS saved_scopes`,
-		`DROP TABLE IF EXISTS variables`,
-		`DROP TABLE IF EXISTS map_provinces`,
-		`DROP TABLE IF EXISTS map_province_geometry`,
-		`DROP TABLE IF EXISTS map_physical_rasters`,
-		`DROP TABLE IF EXISTS map_province_physical`,
-		`DROP TABLE IF EXISTS map_physical_water_body_provinces`,
-		`DROP TABLE IF EXISTS map_physical_water_bodies`,
-		`DROP TABLE IF EXISTS map_major_river_edges`,
-		`DROP TABLE IF EXISTS map_surface_rasters`,
-		`DROP TABLE IF EXISTS map_surface_materials`,
-		`DROP TABLE IF EXISTS map_province_materials`,
-		`DROP TABLE IF EXISTS map_object_instances`,
-		`DROP TABLE IF EXISTS map_adjacencies`,
-		`DROP TABLE IF EXISTS map_strategic_adjacencies`,
-		`DROP TABLE IF EXISTS map_water_body_shores`,
-		`DROP TABLE IF EXISTS map_water_body_provinces`,
-		`DROP TABLE IF EXISTS map_water_bodies`,
-		`DROP TABLE IF EXISTS map_title_adjacencies`,
-		`DROP TABLE IF EXISTS map_titles`,
-		`DROP TABLE IF EXISTS map_title_provinces`,
-		`DROP TABLE IF EXISTS map_integrity_issues`,
-		`DROP TABLE IF EXISTS map_province_history`,
-		`DROP TABLE IF EXISTS map_title_history`,
-		`DROP TABLE IF EXISTS map_characters`,
-		`DROP TABLE IF EXISTS map_character_history`,
-		`DROP TABLE IF EXISTS map_holy_sites`,
-		`DROP TABLE IF EXISTS map_holy_site_faiths`,
-		`DROP TABLE IF EXISTS map_province_regions`,
-		`DROP TABLE IF EXISTS engine_datatypes`,
-		`DROP TABLE IF EXISTS engine_scope_rules`,
-		`DROP TABLE IF EXISTS search_fts`,
+	if _, err := db.sql.ExecContext(ctx, `PRAGMA journal_mode=WAL`); err != nil {
+		return err
 	}
-	for _, s := range drops {
-		if _, err := db.sql.ExecContext(ctx, s); err != nil {
+	// Drop in reverse catalog order so the FTS virtual table releases its
+	// shadow tables before ordinary semantic tables are recreated.
+	for index := len(semanticIndexTableCatalog) - 1; index >= 0; index-- {
+		table := semanticIndexTableCatalog[index]
+		if _, err := db.sql.ExecContext(ctx, `DROP TABLE IF EXISTS "`+table+`"`); err != nil {
 			return err
 		}
 	}
@@ -695,6 +678,7 @@ var indexStmts = []string{
 	`CREATE INDEX IF NOT EXISTS idx_diag_code ON diagnostics(code)`,
 	`CREATE INDEX IF NOT EXISTS idx_diag_file_id ON diagnostics(file_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_files_overridden ON files(overridden, rel_path)`,
+	`CREATE INDEX IF NOT EXISTS idx_files_source_active_rel ON files(source_name, overridden, rel_path)`,
 	`CREATE INDEX IF NOT EXISTS idx_files_override_by ON files(override_by_rank, override_reason)`,
 	`CREATE INDEX IF NOT EXISTS idx_scope_name ON saved_scopes(scope_name)`,
 	`CREATE INDEX IF NOT EXISTS idx_scope_file_id ON saved_scopes(file_id)`,

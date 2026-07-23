@@ -12,8 +12,8 @@ import (
 func TestReleaseMetadataIsSynchronized(t *testing.T) {
 	root := repositoryRoot(t)
 	version := strings.TrimSpace(readFile(t, filepath.Join(root, "VERSION")))
-	if version != "0.4.0" {
-		t.Fatalf("release version = %q, want 0.4.0", version)
+	if version != "0.5.0" {
+		t.Fatalf("release version = %q, want 0.5.0", version)
 	}
 
 	var manifest struct {

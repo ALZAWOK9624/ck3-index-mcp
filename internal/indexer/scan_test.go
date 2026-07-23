@@ -34,6 +34,41 @@ func TestClassifyRelOnlyIndexesCK3LoadRoots(t *testing.T) {
 	}
 }
 
+func TestResourceLookupResolvesCK3PathForms(t *testing.T) {
+	lookup := newResourceLookup(map[string]bool{
+		"gfx/interface/icons/buildings/shared.dds":                true,
+		"gfx/interface/icons/traits/_stars_3.dds":                 true,
+		"gfx/interface/illustrations/activity_header/default.dds": true,
+	})
+	for _, name := range []string{
+		"gfx/interface/icons/buildings/shared.dds",
+		"shared.dds",
+		"interface/icons/buildings/shared.dds",
+		"gfx/interface/icons//buildings/shared.dds",
+		"shared",
+		"gfx/interface/icons/traits/_stars_",
+		"gfx/interface/illustrations/activity_header",
+	} {
+		if !lookup.resolved(name) {
+			t.Errorf("resource %q should resolve through CK3 path semantics", name)
+		}
+	}
+	for _, name := range []string{"missing.dds", "gfx/interface/not_present"} {
+		if lookup.resolved(name) {
+			t.Errorf("missing resource %q resolved unexpectedly", name)
+		}
+	}
+}
+
+func TestReferenceSentinelsAreNarrow(t *testing.T) {
+	if !isNullObjectReference("title", "0") || isNullObjectReference("character", "0") {
+		t.Fatal("only title=0 should be accepted as CK3's null object sentinel")
+	}
+	if !isPlaceholderLocalizationKey(`"..."`) || isPlaceholderLocalizationKey("REAL_KEY") {
+		t.Fatal("localization placeholder recognition is too broad or too narrow")
+	}
+}
+
 func TestQueryRefsReportsExactTotalsWhenEvidenceIsCapped(t *testing.T) {
 	dir := t.TempDir()
 	project := filepath.Join(dir, "project")
@@ -142,6 +177,14 @@ rank = 3
 	}
 	if stats.Objects < 2 || stats.Localization != 1 || stats.Resources != 1 || stats.ObjectFields == 0 {
 		t.Fatalf("bad stats: %+v", stats)
+	}
+	if stats.FilesRead == 0 || stats.FilesHashed == 0 || stats.FilesParsed == 0 || stats.BytesRead == 0 || stats.BytesHashed == 0 {
+		t.Fatalf("scan work counters were not populated: %+v", stats)
+	}
+	for _, key := range []string{"load_engine_bundle", "load_existing_index", "walk_sources", "parse_worker_cpu_total", "extract_worker_cpu_total", "sqlite_write"} {
+		if _, ok := stats.TimingsMillis[key]; !ok {
+			t.Fatalf("scan omitted %s timing: %+v", key, stats.TimingsMillis)
+		}
 	}
 	db, err := Open(filepath.Join(dir, "cache/test.sqlite"))
 	if err != nil {
@@ -459,6 +502,10 @@ test_chain.0001 = {
 test_chain.0002 = {
 	desc = test_chain.0002.desc
 }
+
+test_chain.0002.option.a_effect = {
+	add_gold = 1
+}
 `)
 
 	cfgPath := filepath.Join(dir, "ck3-index.toml")
@@ -493,6 +540,182 @@ rank = 1
 	}
 	if obj.Definitions[0].Line != 10 {
 		t.Fatalf("expected definition at top-level event line 10, got line %d", obj.Definitions[0].Line)
+	}
+	helper, err := db.QueryObject(context.Background(), "test_chain.0002.option.a_effect")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(helper.Definitions) != 0 {
+		t.Fatalf("dotted helper block was indexed as an event: %+v", helper.Definitions)
+	}
+}
+
+func TestEventDecisionLocalizationHealthUnderstandsHiddenAndImplicitKeys(t *testing.T) {
+	dir := t.TempDir()
+	write := func(path, text string) {
+		full := filepath.Join(dir, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(text), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("project/events/test_events.txt", `namespace = loc_health
+loc_health.1 = {
+	type = character_event
+	hidden = yes
+	immediate = { add_gold = 1 }
+}
+loc_health.2 = {
+	type = character_event
+	option = { name = loc_health.2.a }
+}
+loc_health.3 = {
+	type = character_event
+	option = { add_gold = 1 }
+}`)
+	write("project/common/decisions/test_decisions.txt", `implicit_decision = {
+	ai_check_interval = 1
+	picture = { reference = "gfx/interface/test.dds" }
+}`)
+	write("project/localization/english/test_l_english.yml", "l_english:\n implicit_decision:0 \"Decision\"\n implicit_decision_desc:0 \"Description\"\n loc_health.2.a:0 \"OK\"\n")
+
+	cfgPath := filepath.Join(dir, "ck3-index.toml")
+	if err := os.WriteFile(cfgPath, []byte(`database = "cache/test.sqlite"
+[[source]]
+name = "project"
+path = "project"
+rank = 1
+role = "project"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Scan(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(filepath.Join(dir, "cache", "test.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Validate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM diagnostics WHERE code='missing_event_loc'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		rows, err := db.sql.Query(`SELECT message FROM diagnostics WHERE code='missing_event_loc' ORDER BY message`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var messages []string
+		for rows.Next() {
+			var message string
+			if err := rows.Scan(&message); err != nil {
+				t.Fatal(err)
+			}
+			messages = append(messages, message)
+		}
+		t.Fatalf("missing_event_loc=%d, want only the visible unlocalized event: %v", count, messages)
+	}
+}
+
+func TestValidationUsesVanillaProvenanceAndResourceOnlyLayers(t *testing.T) {
+	dir := t.TempDir()
+	write := func(path, text string) {
+		full := filepath.Join(dir, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(text), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("game/gui/shared.gui", `types Test {
+	type vanilla_label = text_single { text = "ENGINE_OWNED_LABEL" }
+}`)
+	write("project/gui/shared.gui", `types Test {
+	type project_labels = vbox {
+		text_single = { text = "ENGINE_OWNED_LABEL" }
+		text_single = { text = "PROJECT_TYPO_LABEL" }
+		text_single = { text = "..." }
+	}
+}`)
+	write("project/common/landed_titles/test_titles.txt", `e_test = {
+	de_jure_liege = 0
+}`)
+	write("project/common/buildings/test_buildings.txt", `test_building = {
+	icon = "shared.dds"
+}`)
+	write("assets/gfx/interface/icons/buildings/shared.dds", "")
+	write("assets/common/traits/must_not_be_indexed.txt", `asset_only_trait = {}`)
+
+	cfgPath := filepath.Join(dir, "ck3-index.toml")
+	write("ck3-index.toml", `database = "cache/test.sqlite"
+[[source]]
+name = "project"
+path = "project"
+rank = 1
+role = "project"
+
+[[source]]
+name = "game"
+path = "game"
+rank = 2
+role = "game"
+
+[[source]]
+name = "engine-assets"
+path = "assets"
+rank = 3
+role = "reference"
+resource_only = true
+`)
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Scan(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(filepath.Join(dir, "cache", "test.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	rows, err := db.sql.Query(`SELECT code,message FROM diagnostics
+		WHERE code IN ('missing_localization','missing_resource','resource_resolution_uncertain','missing_object_reference')
+		ORDER BY code,message`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var diagnostics []string
+	for rows.Next() {
+		var code, message string
+		if err := rows.Scan(&code, &message); err != nil {
+			t.Fatal(err)
+		}
+		diagnostics = append(diagnostics, code+":"+message)
+	}
+	if len(diagnostics) != 1 || !strings.Contains(diagnostics[0], "PROJECT_TYPO_LABEL") {
+		t.Fatalf("provenance-aware validation diagnostics = %v", diagnostics)
+	}
+	var assetScripts int
+	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM files WHERE source_name='engine-assets' AND kind<>'resource'`).Scan(&assetScripts); err != nil {
+		t.Fatal(err)
+	}
+	if assetScripts != 0 {
+		t.Fatalf("resource_only source indexed %d non-resource files", assetScripts)
 	}
 }
 

@@ -18,23 +18,51 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
-	suite, err := mcpserver.ParseAgentToolSelectionEvalSuite(casesData)
+	version, err := toolEvalSchemaVersion(casesData)
 	if err != nil {
 		fail(err)
 	}
-	if *plansPath == "" {
-		fmt.Printf("validated %s (%d canonical CK3 tool-selection cases)\n", suite.SuiteID, len(suite.Cases))
-		return
+	var report mcpserver.AgentToolSelectionEvalReport
+	switch version {
+	case mcpserver.AgentToolSelectionEvalSchemaVersion:
+		suite, parseErr := mcpserver.ParseAgentToolSelectionEvalSuite(casesData)
+		if parseErr != nil {
+			fail(parseErr)
+		}
+		if *plansPath == "" {
+			fmt.Printf("validated %s (%d canonical CK3 tool-selection cases)\n", suite.SuiteID, len(suite.Cases))
+			return
+		}
+		plansData, readErr := os.ReadFile(*plansPath)
+		if readErr != nil {
+			fail(readErr)
+		}
+		plans, parseErr := mcpserver.ParseAgentToolSelectionPlanSet(plansData)
+		if parseErr != nil {
+			fail(parseErr)
+		}
+		report, err = mcpserver.ScoreAgentToolSelectionPlans(suite, plans)
+	case mcpserver.AgentToolSelectionEvalV2SchemaVersion:
+		suite, parseErr := mcpserver.ParseAgentToolSelectionEvalSuiteV2(casesData)
+		if parseErr != nil {
+			fail(parseErr)
+		}
+		if *plansPath == "" {
+			fmt.Printf("validated %s (%d semantic CK3 tool-selection cases)\n", suite.SuiteID, len(suite.Cases))
+			return
+		}
+		plansData, readErr := os.ReadFile(*plansPath)
+		if readErr != nil {
+			fail(readErr)
+		}
+		plans, parseErr := mcpserver.ParseAgentToolSelectionPlanSetV2(plansData)
+		if parseErr != nil {
+			fail(parseErr)
+		}
+		report, err = mcpserver.ScoreAgentToolSelectionPlansV2(suite, plans)
+	default:
+		fail(fmt.Errorf("unsupported schema_version %d", version))
 	}
-	plansData, err := os.ReadFile(*plansPath)
-	if err != nil {
-		fail(err)
-	}
-	plans, err := mcpserver.ParseAgentToolSelectionPlanSet(plansData)
-	if err != nil {
-		fail(err)
-	}
-	report, err := mcpserver.ScoreAgentToolSelectionPlans(suite, plans)
 	if err != nil {
 		fail(err)
 	}
@@ -46,6 +74,19 @@ func main() {
 	if !report.Passed {
 		os.Exit(1)
 	}
+}
+
+func toolEvalSchemaVersion(data []byte) (int, error) {
+	var envelope struct {
+		SchemaVersion int `json:"schema_version"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return 0, fmt.Errorf("decode schema_version: %w", err)
+	}
+	if envelope.SchemaVersion == 0 {
+		return 0, fmt.Errorf("schema_version is required")
+	}
+	return envelope.SchemaVersion, nil
 }
 
 func fail(err error) {

@@ -101,6 +101,7 @@ $repoBinary = Join-Path $repoBin $binaryName
 $verifyBinary = Join-Path $repoBin "$binaryName.repro-check"
 $env:GOCACHE = Join-Path $repo 'cache\go-build'
 $env:CGO_ENABLED = '0'
+$env:GOFLAGS = (($env:GOFLAGS -split '\s+' | Where-Object { $_ -and $_ -ne '-buildvcs=false' }) + '-buildvcs=false') -join ' '
 
 & $go run ./cmd/mcp-docgen -check
 if ($LASTEXITCODE -ne 0) { throw 'Generated MCP documentation is stale.' }
@@ -183,7 +184,7 @@ $settings = @{version = 1; config_path = ''} | ConvertTo-Json -Compress
 & $python $pluginValidator $stage
 if ($LASTEXITCODE -ne 0) { throw 'Staged plugin validation failed.' }
 
-& $python $mcpSmoke --stage $stage --platform windows-x64 --config $resolvedConfig --expected-standard-tools 30 --expected-expert-tools 58
+& $python $mcpSmoke --stage $stage --platform windows-x64 --config $resolvedConfig --expected-tools 30
 if ($LASTEXITCODE -ne 0) { throw 'Staged plugin MCP smoke check failed.' }
 
 $releaseRoot = Join-Path $repo 'cache\release'

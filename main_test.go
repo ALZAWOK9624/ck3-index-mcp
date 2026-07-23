@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -50,5 +52,12 @@ func TestMapPhysicalContextCLILimit(t *testing.T) {
 				t.Fatalf("normalizedLimit() = %d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRunScanFilesRequiresAtLeastOnePathBeforeConfigAccess(t *testing.T) {
+	err := run(context.Background(), []string{"--config", "definitely-missing.toml", "scan", "--files"})
+	if err == nil || !strings.Contains(err.Error(), "scan --files requires at least one") {
+		t.Fatalf("run scan --files error = %v, want explicit empty-path error", err)
 	}
 }

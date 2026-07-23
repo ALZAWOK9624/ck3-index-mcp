@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"bytes"
 	"encoding/json"
+	"strconv"
 )
 
 type rpcRequest struct {
@@ -36,19 +37,33 @@ func (r *rpcRequest) UnmarshalJSON(data []byte) error {
 }
 
 func validRPCRequestID(raw json.RawMessage) bool {
-	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return true
+	_, ok := normalizedRPCRequestID(raw)
+	return ok
+}
+
+// normalizedRPCRequestID implements the MCP/JSON-RPC request-id contract:
+// only strings and integer JSON numbers are accepted. Keys are based on the
+// decoded value, so "a" and "\u0061" are the same session identifier.
+func normalizedRPCRequestID(raw json.RawMessage) (string, bool) {
+	if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return "", false
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	var value any
 	if err := decoder.Decode(&value); err != nil {
-		return false
+		return "", false
 	}
-	switch value.(type) {
-	case string, json.Number:
-		return true
+	switch typed := value.(type) {
+	case string:
+		return "string:" + typed, true
+	case json.Number:
+		integer, err := typed.Int64()
+		if err != nil {
+			return "", false
+		}
+		return "integer:" + strconv.FormatInt(integer, 10), true
 	default:
-		return false
+		return "", false
 	}
 }

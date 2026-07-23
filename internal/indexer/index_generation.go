@@ -3,7 +3,6 @@ package indexer
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"strconv"
 	"strings"
@@ -56,35 +55,41 @@ func samePublishedIndexState(left, right IndexState) bool {
 }
 
 func (db *DB) IndexState(ctx context.Context) (IndexState, error) {
-	state := IndexState{Status: "initializing"}
 	if !db.tableExists(ctx, "meta") {
-		return state, nil
+		return IndexState{Status: "initializing"}, nil
 	}
-	var hasGeneration bool
-	var raw string
-	err := db.sql.QueryRowContext(ctx, `SELECT value FROM meta WHERE key='scan_generation'`).Scan(&raw)
-	if err == nil {
-		hasGeneration = true
-		state.Generation, _ = strconv.ParseInt(raw, 10, 64)
-	} else if err != sql.ErrNoRows {
+	return readIndexState(ctx, db.sql)
+}
+
+func readIndexState(ctx context.Context, queryer integrityQueryExecer) (IndexState, error) {
+	state := IndexState{Status: "initializing"}
+	rows, err := queryer.QueryContext(ctx, `SELECT key,value FROM meta
+		WHERE key IN ('scan_generation','scan_revision','scan_committed_at','scan_status')`)
+	if err != nil {
 		return state, err
 	}
-	var hasRevision bool
-	err = db.sql.QueryRowContext(ctx, `SELECT value FROM meta WHERE key='scan_revision'`).Scan(&state.Revision)
-	if err == nil {
-		hasRevision = strings.TrimSpace(state.Revision) != ""
-	} else if err != sql.ErrNoRows {
-		return state, err
+	defer rows.Close()
+	hasGeneration := false
+	hasRevision := false
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return state, err
+		}
+		switch key {
+		case "scan_generation":
+			hasGeneration = true
+			state.Generation, _ = strconv.ParseInt(value, 10, 64)
+		case "scan_revision":
+			state.Revision = value
+			hasRevision = strings.TrimSpace(value) != ""
+		case "scan_committed_at":
+			state.CommittedAt = value
+		case "scan_status":
+			state.Status = strings.TrimSpace(value)
+		}
 	}
-	err = db.sql.QueryRowContext(ctx, `SELECT value FROM meta WHERE key='scan_committed_at'`).Scan(&state.CommittedAt)
-	if err != nil && err != sql.ErrNoRows {
-		return state, err
-	}
-	var rawStatus string
-	err = db.sql.QueryRowContext(ctx, `SELECT value FROM meta WHERE key='scan_status'`).Scan(&rawStatus)
-	if err == nil {
-		state.Status = strings.TrimSpace(rawStatus)
-	} else if err != sql.ErrNoRows {
+	if err := rows.Err(); err != nil {
 		return state, err
 	}
 	if state.Status == "" {

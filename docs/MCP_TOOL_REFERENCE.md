@@ -2,7 +2,7 @@
 
 > 本文档由 `go run ./cmd/mcp-docgen` 根据 `internal/mcpserver` 自动生成，请勿手工修改。
 
-标准模式公开 30 个规范工具。专家模式另外公开 28 个已弃用的发现别名；即使这些别名未显示，兼容期内仍然可以调用。
+ck3-index 公开 30 个规范工具。细分能力由各工具的受限 operation 参数表达，不再提供旧版专用工具别名。
 
 ## `ck3_search` — 搜索 CK3 索引
 
@@ -490,36 +490,3 @@
 | `year` | 否 | 整数 | 最小值=1 | 地图册显示年份。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
-
-## 已弃用的专家模式别名
-
-| 旧名称 | 规范替代工具 |
-|---|---|
-| `query_object` | `ck3_inspect` |
-| `find_refs` | `ck3_inspect` |
-| `query_loc` | `ck3_inspect` |
-| `query_resource` | `ck3_inspect` |
-| `inspect_object` | `ck3_inspect` |
-| `diagnose_key` | `ck3_inspect` |
-| `query_object_types` | `ck3_workspace` |
-| `architecture_overview` | `ck3_workspace` |
-| `dependency_graph` | `ck3_dependencies` |
-| `prepare_edit` | `ck3_prepare_edit` |
-| `query_examples` | `ck3_prepare_edit` |
-| `query_rules` | `ck3_prepare_edit` |
-| `query_patterns` | `ck3_prepare_edit` |
-| `preflight_code` | `ck3_preflight` |
-| `preflight_patch` | `ck3_preflight` |
-| `preflight_dirty` | `ck3_preflight` |
-| `impact_patch` | `ck3_impact` |
-| `validate_project` | `ck3_diagnostics` |
-| `explain_diagnostic` | `ck3_diagnostics` |
-| `lookup_scope` | `ck3_script_reference` |
-| `lookup_datatype` | `ck3_script_reference` |
-| `lookup_shape` | `ck3_script_reference` |
-| `lookup_define` | `ck3_script_reference` |
-| `lookup_on_action` | `ck3_script_reference` |
-| `lookup_iterator` | `ck3_script_reference` |
-| `lookup_example` | `ck3_script_reference` |
-| `lookup_modifier` | `ck3_script_reference` |
-| `health_check` | `ck3_health` |

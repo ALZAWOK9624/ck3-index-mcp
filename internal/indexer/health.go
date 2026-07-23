@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"ck3-index/internal/script"
 )
@@ -24,17 +25,50 @@ func (db *DB) runHealthChecks(ctx context.Context) error {
 	return nil
 }
 
-// M18: Events and decisions should reference title and desc localization keys.
+// M18: Visible events and decisions need usable localization. Hidden events do
+// not render a title/description, and decisions can rely on CK3's documented
+// implicit <id> and <id>_desc keys.
 func (db *DB) checkEventDecisionLocKeys(ctx context.Context) error {
-	// Single LEFT JOIN: find events/decisions with zero localization refs.
+	locRows, err := db.sql.QueryContext(ctx, `SELECT DISTINCT l.key
+		FROM localization l JOIN files f ON f.id=l.file_id
+		WHERE f.overridden=0`)
+	if err != nil {
+		return err
+	}
+	locKeys := map[string]bool{}
+	for locRows.Next() {
+		var key string
+		if err := locRows.Scan(&key); err != nil {
+			locRows.Close()
+			return err
+		}
+		locKeys[key] = true
+	}
+	if err := locRows.Close(); err != nil {
+		return err
+	}
+
 	rows, err := db.sql.QueryContext(ctx, `
-		SELECT DISTINCT o.object_type, o.name, o.path, o.line
+		SELECT o.object_type, o.name, o.path, o.line,
+			EXISTS (
+				SELECT 1 FROM refs r
+				WHERE r.file_id=o.file_id
+				AND r.from_object_type=o.object_type
+				AND r.from_object_name=o.name
+				AND r.ref_kind='localization'
+			),
+			EXISTS (
+				SELECT 1 FROM object_fields of
+				WHERE of.file_id=o.file_id
+				AND of.object_type=o.object_type
+				AND of.object_name=o.name
+				AND of.field='hidden'
+				AND LOWER(of.raw) LIKE '%= yes%'
+			)
 		FROM objects o
 		JOIN files f ON f.id=o.file_id
-		LEFT JOIN refs r ON r.from_object_name=o.name AND r.ref_kind='localization'
 		WHERE o.object_type IN ('event','decision')
 		AND f.overridden=0
-		AND r.id IS NULL
 		LIMIT 5000`)
 	if err != nil {
 		return err
@@ -43,10 +77,24 @@ func (db *DB) checkEventDecisionLocKeys(ctx context.Context) error {
 	for rows.Next() {
 		var typ, name, path string
 		var line int
-		if err := rows.Scan(&typ, &name, &path, &line); err != nil {
+		var hasExplicitLoc, hidden int
+		if err := rows.Scan(&typ, &name, &path, &line, &hasExplicitLoc, &hidden); err != nil {
 			return err
 		}
-		msg := fmt.Sprintf("%s %q has no localization references (title/desc may be missing)", typ, name)
+		if typ == "event" && hidden != 0 {
+			continue
+		}
+		if hasExplicitLoc != 0 {
+			continue
+		}
+		if typ == "decision" && locKeys[name] && locKeys[name+"_desc"] {
+			continue
+		}
+		expected := "an explicit title/desc localization reference"
+		if typ == "decision" {
+			expected = fmt.Sprintf("explicit localization or the implicit keys %q and %q", name, name+"_desc")
+		}
+		msg := fmt.Sprintf("%s %q has no usable localization; expected %s", typ, name, strings.TrimSpace(expected))
 		if _, err := db.sql.ExecContext(ctx,
 			`INSERT INTO diagnostics(source,severity,code,message,path,line) VALUES(?,?,?,?,?,?)`,
 			"health", "warning", "missing_event_loc", msg, path, line); err != nil {

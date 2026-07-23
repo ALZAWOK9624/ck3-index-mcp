@@ -1067,6 +1067,9 @@ func (db *DB) LLMPrepareEdit(ctx context.Context, id string, opts LLMOptions) (L
 		"Use existing scripted triggers/effects and modifiers when indexed; invent new ids only after diagnose_key returns no definition/ref conflict.",
 		"Generated code must include matching localization and must be refreshed with scan or CLI validate before use.",
 	}
+	if typ == "casus_belli_type" {
+		r.Guidance = append(r.Guidance, "For casus belli ai_score and ai_score_mult blocks, initialize with value = ... and then use add/multiply operations; base = ... is not a valid current CK3 script-value field.")
+	}
 	r.NextQueries = []LLMNextQuery{
 		{Tool: "query_patterns", ID: typ, Reason: "inspect empirical field shapes and sample locations"},
 		{Tool: "validate_project", Reason: "run after script, localization, GUI, or resource changes"},

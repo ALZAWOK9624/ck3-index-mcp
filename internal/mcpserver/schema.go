@@ -250,8 +250,7 @@ func validateDecodedProperty(name string, value any, property map[string]any) er
 		}
 		properties, _ := property["properties"].(map[string]any)
 		for _, required := range schemaStrings(property["required"]) {
-			item, exists := object[required]
-			if !exists || item == nil {
+			if _, exists := object[required]; !exists {
 				return fmt.Errorf("argument field %q requires property %q", name, required)
 			}
 		}
@@ -285,6 +284,8 @@ func matchesJSONType(value any, want string) bool {
 		return want == "null"
 	}
 	switch want {
+	case "null":
+		return false
 	case "string":
 		_, ok := value.(string)
 		return ok

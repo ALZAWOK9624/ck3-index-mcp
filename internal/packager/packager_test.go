@@ -2,11 +2,13 @@ package packager
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -104,6 +106,107 @@ func TestBuildPortableDeterministicPackage(t *testing.T) {
 	}
 }
 
+func TestBuildConcurrentSameContentAcrossProcesses(t *testing.T) {
+	if os.Getenv("CK3_PACKAGER_RACE_HELPER") == "1" {
+		runPackagerRaceHelper(t)
+		return
+	}
+
+	root := t.TempDir()
+	start := filepath.Join(root, "start")
+	const processCount = 6
+	type child struct {
+		command *exec.Cmd
+		output  *bytes.Buffer
+	}
+	children := make([]child, 0, processCount)
+	for index := 0; index < processCount; index++ {
+		output := &bytes.Buffer{}
+		command := exec.Command(os.Args[0], "-test.run=^TestBuildConcurrentSameContentAcrossProcesses$", "-test.count=1")
+		command.Env = append(os.Environ(),
+			"CK3_PACKAGER_RACE_HELPER=1",
+			"CK3_PACKAGER_RACE_ROOT="+root,
+			"CK3_PACKAGER_RACE_START="+start,
+		)
+		command.Stdout = output
+		command.Stderr = output
+		if err := command.Start(); err != nil {
+			t.Fatalf("start packager race child %d: %v", index, err)
+		}
+		children = append(children, child{command: command, output: output})
+	}
+	if err := os.WriteFile(start, []byte("go"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for index, child := range children {
+		if err := child.command.Wait(); err != nil {
+			t.Fatalf("packager race child %d failed: %v\n%s", index, err, child.output.String())
+		}
+	}
+
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var archives, records []string
+	for _, entry := range entries {
+		switch {
+		case isGeneratedArchiveName(entry.Name()):
+			archives = append(archives, entry.Name())
+		case strings.HasPrefix(entry.Name(), artifactRecordPrefix) && strings.HasSuffix(entry.Name(), artifactRecordSuffix):
+			records = append(records, entry.Name())
+		}
+	}
+	if len(archives) != 1 || len(records) != 1 {
+		t.Fatalf("cross-process package race left archives=%v records=%v", archives, records)
+	}
+	record, ok := ownedArtifactRecord(root, archives[0])
+	if !ok {
+		t.Fatalf("cross-process package race left no valid ownership record")
+	}
+	hash, size, err := hashFile(filepath.Join(root, archives[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.SHA256 != hash || record.Size != size {
+		t.Fatalf("cross-process package record does not match archive: record=%+v hash=%s size=%d", record, hash, size)
+	}
+}
+
+func runPackagerRaceHelper(t *testing.T) {
+	t.Helper()
+	root := os.Getenv("CK3_PACKAGER_RACE_ROOT")
+	start := os.Getenv("CK3_PACKAGER_RACE_START")
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(start); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for packager race barrier")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	request := Request{Metadata: validMetadata(), Files: []FileInput{
+		textInput("common/scripted_triggers/apple_race.txt", "apple_race_trigger = { always = yes }\n"),
+		textInput("localization/english/apple_race_l_english.yml", "l_english:\n apple_race_name:0 \"Apple\"\n"),
+	}}
+	result, err := Build(context.Background(), request, BuildOptions{
+		ArtifactRoot: root,
+		Retention:    7 * 24 * time.Hour,
+		Limits:       MCPLimits,
+		Validator:    allowAllValidator(0),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "ready" || result.SHA256 == "" {
+		t.Fatalf("race helper package result = %+v", result)
+	}
+}
+
 func TestBuiltArchiveCanBeRescanned(t *testing.T) {
 	artifactRoot := t.TempDir()
 	request := Request{Metadata: validMetadata(), Files: []FileInput{
@@ -192,9 +295,11 @@ func TestBuildEnforcesMetadataKinds(t *testing.T) {
 		meta Metadata
 		code string
 	}{
-		{"submod dependency", Metadata{Name: "Submod", Slug: "test_submod", Version: "1", SupportedVersion: "1.*", Tags: []string{"Gameplay"}, Kind: "submod"}, "package_dependency_required"},
-		{"addon replace path", Metadata{Name: "Addon", Slug: "test_addon", Version: "1", SupportedVersion: "1.*", Tags: []string{"Gameplay"}, ReplacePaths: []string{"common/culture"}}, "package_replace_path_forbidden"},
-		{"unsafe replace path", Metadata{Name: "TC", Slug: "test_total", Version: "1", SupportedVersion: "1.*", Tags: []string{"Total Conversion"}, Kind: "total_conversion", ReplacePaths: []string{"../common"}}, "package_replace_path_invalid"},
+		{"submod dependency", Metadata{Name: "Submod", Slug: "test_submod", Version: "1", SupportedVersion: "1.19.*", Tags: []string{"Gameplay"}, Kind: "submod"}, "package_dependency_required"},
+		{"addon replace path", Metadata{Name: "Addon", Slug: "test_addon", Version: "1", SupportedVersion: "1.19.*", Tags: []string{"Gameplay"}, ReplacePaths: []string{"common/culture"}}, "package_replace_path_forbidden"},
+		{"unsafe replace path", Metadata{Name: "TC", Slug: "test_total", Version: "1", SupportedVersion: "1.19.*", Tags: []string{"Total Conversion"}, Kind: "total_conversion", ReplacePaths: []string{"../common"}}, "package_replace_path_invalid"},
+		{"major wildcard", Metadata{Name: "Bad", Slug: "test_bad", Version: "1", SupportedVersion: "1.*", Tags: []string{"Gameplay"}}, "package_supported_version_invalid"},
+		{"minor wildcard", Metadata{Name: "Bad", Slug: "test_bad", Version: "1", SupportedVersion: "1.*.*", Tags: []string{"Gameplay"}}, "package_supported_version_invalid"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

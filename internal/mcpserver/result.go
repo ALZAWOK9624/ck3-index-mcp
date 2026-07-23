@@ -97,7 +97,7 @@ func encodeStructuredValue(value any) ([]byte, map[string]any, error) {
 	return data, structured, nil
 }
 
-// canonicalizeNextActions translates legacy next_queries hints into structured,
+// canonicalizeNextActions translates historical next_queries hints into structured,
 // bounded action suggestions. They are advisory only: MCP never executes them
 // automatically, and duplicates are removed to avoid client-side loops.
 func canonicalizeNextActions(structured map[string]any) {
@@ -119,20 +119,7 @@ func canonicalizeNextActions(structured map[string]any) {
 				arguments[name] = value
 			}
 		}
-		knownTool := false
-		if alias, ok := findLegacyAlias(tool); ok {
-			query["tool"] = alias.Canonical
-			tool = alias.Canonical
-			knownTool = true
-			if alias.Operation != "" {
-				arguments["operation"] = alias.Operation
-			}
-			if alias.Kind != "" {
-				arguments["kind"] = alias.Kind
-			}
-		} else if _, ok := findCanonicalTool(tool); ok {
-			knownTool = true
-		}
+		_, knownTool := findCanonicalTool(tool)
 		definition, definitionFound := findCanonicalTool(tool)
 		id, _ := query["id"].(string)
 		mappedID := id == ""
@@ -167,7 +154,7 @@ func canonicalizeNextActions(structured map[string]any) {
 		if err != nil {
 			continue
 		}
-		// Actions are an API contract, not a loose hint. A retained legacy
+		// Actions are an API contract, not a loose hint. A historical
 		// next_queries producer may only emit a next_actions item when its final
 		// canonical argument object passes the actual registered tool schema.
 		if err := validateArguments(data, definition.InputSchema, definition.CompatibilityProperties); err != nil {
@@ -181,9 +168,11 @@ func canonicalizeNextActions(structured map[string]any) {
 		action := map[string]any{
 			"tool":       tool,
 			"arguments":  arguments,
-			"reason":     query["reason"],
 			"priority":   "normal",
 			"confidence": "medium",
+		}
+		if reason, ok := query["reason"].(string); ok && strings.TrimSpace(reason) != "" {
+			action["reason"] = reason
 		}
 		for _, name := range []string{"condition", "expected_result", "stop_if"} {
 			if value, exists := query[name]; exists {

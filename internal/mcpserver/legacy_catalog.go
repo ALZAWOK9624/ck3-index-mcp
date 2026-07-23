@@ -2,9 +2,9 @@ package mcpserver
 
 import "ck3-index/internal/indexer"
 
-// legacyToolCatalog preserves the 0.2.2 names, descriptions, and schemas for
-// expert-profile discovery and compatibility goldens. Calls are adapted into
-// the typed canonical registry; the old universal argument switch is gone.
+// legacyToolCatalog preserves historical map schema seeds while the canonical
+// map schemas are hardened. Its names are not registered, advertised, or
+// callable in the MCP server.
 func legacyToolCatalog() []map[string]any {
 	schema := func(desc string) map[string]any {
 		return map[string]any{

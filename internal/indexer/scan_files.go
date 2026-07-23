@@ -54,9 +54,13 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 	if err := validateSourceRoots(cfg.Sources); err != nil {
 		return ScanStats{}, err
 	}
-	if err := ConfigureEngineRules(cfg.EngineLogs); err != nil {
+	engineLoadStart := time.Now()
+	engineBundle, err := LoadEngineBundle(ctx, cfg.EngineLogs)
+	if err != nil {
 		return ScanStats{}, err
 	}
+	engineLoadMillis := time.Since(engineLoadStart).Milliseconds()
+	ConfigureEngineRulesFromBundle(engineBundle)
 	if len(relPaths) == 0 {
 		return ScanStats{}, fmt.Errorf("scan --files requires at least one source-root relative path")
 	}
@@ -68,6 +72,11 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 	if err != nil {
 		return ScanStats{}, err
 	}
+	lock, err := acquirePublicationLock(ctx, dbPath)
+	if err != nil {
+		return ScanStats{}, err
+	}
+	defer lock.Close()
 	db, err := Open(dbPath)
 	if err != nil {
 		return ScanStats{}, err
@@ -97,10 +106,7 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 	if !state.Ready() {
 		return ScanStats{}, fmt.Errorf("incremental scan requires a ready published index; current scan status is %q, run or wait for a full ck3-index scan", state.Status)
 	}
-	engineFingerprint, err := engineDataFingerprint(cfg.EngineLogs)
-	if err != nil {
-		return ScanStats{}, err
-	}
+	engineFingerprint := engineBundle.Fingerprint
 	cachedEngineFingerprint, err := db.metaValue(ctx, "engine_data_fingerprint")
 	if err != nil {
 		return ScanStats{}, err
@@ -109,11 +115,14 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 		return ScanStats{}, &FullScanRequiredError{Reason: "engine log rules changed"}
 	}
 	stats = ScanStats{Database: dbPath, BySource: map[string]int{}, TimingsMillis: map[string]int64{}}
+	stats.TimingsMillis["load_engine_bundle"] = engineLoadMillis
 
+	existingLoadStart := time.Now()
 	existing, err := db.fileRecordsByProjectRel(ctx, src.Rank)
 	if err != nil {
 		return ScanStats{}, err
 	}
+	stats.TimingsMillis["load_existing_index"] = time.Since(existingLoadStart).Milliseconds()
 	jobs := make([]fileJob, 0, len(relPaths))
 	removed := make([]fileRecord, 0, len(relPaths))
 	mapRefresh := false
@@ -187,7 +196,12 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 		return ScanStats{}, err
 	}
 
-	tx, err := db.sql.BeginTx(ctx, nil)
+	writerConn, err := db.scanWriteConnection(ctx)
+	if err != nil {
+		return ScanStats{}, err
+	}
+	defer writerConn.Close()
+	tx, err := writerConn.BeginTx(ctx, nil)
 	if err != nil {
 		return ScanStats{}, err
 	}
@@ -208,18 +222,25 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 	resources := map[string]bool{}
 	newFileIDs := map[int64]bool{}
 	changedSymbols := map[string]bool{}
-	for _, rec := range removed {
-		if err := collectFileSymbolLabelsTx(ctx, tx, rec.ID, changedSymbols); err != nil {
-			return ScanStats{}, err
+	var workTotals fileWorkTotals
+	var sqliteWriteTotal time.Duration
+	if len(removed) > 0 {
+		writeStart := time.Now()
+		for _, rec := range removed {
+			if err := collectFileSymbolLabelsTx(ctx, tx, rec.ID, changedSymbols); err != nil {
+				return ScanStats{}, err
+			}
+			if err := deleteFileRecords(ctx, tx, rec.ID); err != nil {
+				return ScanStats{}, err
+			}
+			stats.ChangedFiles++
+			stats.RemovedFiles++
 		}
-		if err := deleteFileRecords(ctx, tx, rec.ID); err != nil {
-			return ScanStats{}, err
-		}
-		stats.ChangedFiles++
-		stats.RemovedFiles++
+		sqliteWriteTotal += time.Since(writeStart)
 	}
 	for _, job := range jobs {
 		res := parseOneFile(job)
+		workTotals.add(&stats, res.work)
 		stats.Files++
 		stats.BySource[src.Name]++
 		if res.err != nil {
@@ -230,15 +251,18 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 		}
 		if res.skip {
 			pathOutcomes[job.rel] = RefreshPathOutcome{Path: job.rel, Status: "unchanged"}
+			writeStart := time.Now()
 			if err := refreshSkippedFileMetadata(ctx, tx, res); err != nil {
 				return ScanStats{}, err
 			}
+			sqliteWriteTotal += time.Since(writeStart)
 			if job.prev.ID != 0 {
 				newFileIDs[job.prev.ID] = true
 			}
 			continue
 		}
 		stats.ChangedFiles++
+		writeStart := time.Now()
 		if job.prev.ID != 0 {
 			if err := collectFileSymbolLabelsTx(ctx, tx, job.prev.ID, changedSymbols); err != nil {
 				return ScanStats{}, err
@@ -273,7 +297,13 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 		if err := collectFileSymbolLabelsTx(ctx, tx, rec.ID, changedSymbols); err != nil {
 			return ScanStats{}, err
 		}
+		sqliteWriteTotal += time.Since(writeStart)
 	}
+	if len(jobs) > 0 {
+		stats.PeakQueuedResults = 1
+	}
+	workTotals.applyTimings(&stats)
+	stats.TimingsMillis["sqlite_write"] = sqliteWriteTotal.Milliseconds()
 	scopedFinalizer := len(newFileIDs) <= scopedFinalizerFileLimit && len(affected) <= scopedFinalizerSymbolLimit
 	if scopedFinalizer {
 		fits, err := scopedValidatorCandidatesFit(ctx, tx, src.Rank, newFileIDs, affected, scopedValidatorFileLimit)
@@ -296,6 +326,21 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 		if err := refreshTitleIntegrityDiagnostics(ctx, tx); err != nil {
 			return ScanStats{}, err
 		}
+		if err := refreshGovernmentRegistrationDiagnostics(ctx, tx, src.Rank); err != nil {
+			return ScanStats{}, err
+		}
+		if err := refreshGovernmentFallbackDiagnostics(ctx, tx); err != nil {
+			return ScanStats{}, err
+		}
+		if err := refreshGovernmentMechanicDefaultDiagnostics(ctx, tx); err != nil {
+			return ScanStats{}, err
+		}
+		if err := refreshCourtTypeDefaultDiagnostics(ctx, tx); err != nil {
+			return ScanStats{}, err
+		}
+		if err := refreshErrorLogContractDiagnostics(ctx, tx, src.Rank); err != nil {
+			return ScanStats{}, err
+		}
 		stats.TimingsMillis["validator"] = time.Since(stageStart).Milliseconds()
 		stats.TimingsMillis["validator_scoped"] = stats.TimingsMillis["validator"]
 	} else {
@@ -313,9 +358,13 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 		if err := loadAllResources(ctx, tx, resources); err != nil {
 			return ScanStats{}, err
 		}
+		evidence, err := loadReferenceResolutionEvidence(ctx, tx, locKeys, resources)
+		if err != nil {
+			return ScanStats{}, err
+		}
 		stats.TimingsMillis["load_symbols"] = time.Since(stageStart).Milliseconds()
 		stageStart = time.Now()
-		if err := refreshRefsResolvedGo(ctx, tx, objectNames, locKeys, resources); err != nil {
+		if err := refreshRefsResolvedGo(ctx, tx, objectNames, locKeys, evidence); err != nil {
 			return ScanStats{}, err
 		}
 		stats.TimingsMillis["resolve_refs"] = time.Since(stageStart).Milliseconds()
@@ -323,10 +372,25 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 		if _, err := tx.ExecContext(ctx, `DELETE FROM diagnostics WHERE source='validator'`); err != nil {
 			return ScanStats{}, err
 		}
-		if err := addValidationDiagnostics(ctx, tx, src.Rank, locKeys, resources, objectNames); err != nil {
+		if err := addValidationDiagnostics(ctx, tx, src.Rank, locKeys, objectNames, evidence); err != nil {
 			return ScanStats{}, err
 		}
 		if err := refreshTitleIntegrityDiagnostics(ctx, tx); err != nil {
+			return ScanStats{}, err
+		}
+		if err := refreshGovernmentRegistrationDiagnostics(ctx, tx, src.Rank); err != nil {
+			return ScanStats{}, err
+		}
+		if err := refreshGovernmentFallbackDiagnostics(ctx, tx); err != nil {
+			return ScanStats{}, err
+		}
+		if err := refreshGovernmentMechanicDefaultDiagnostics(ctx, tx); err != nil {
+			return ScanStats{}, err
+		}
+		if err := refreshCourtTypeDefaultDiagnostics(ctx, tx); err != nil {
+			return ScanStats{}, err
+		}
+		if err := refreshErrorLogContractDiagnostics(ctx, tx, src.Rank); err != nil {
 			return ScanStats{}, err
 		}
 		stats.TimingsMillis["validator"] = time.Since(stageStart).Milliseconds()
@@ -358,7 +422,9 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 	if err := bumpScanGeneration(ctx, tx); err != nil {
 		return ScanStats{}, err
 	}
-	stats.Diagnostics = countDiagnostics(ctx, tx)
+	if err := refreshScanStatsTotals(ctx, tx, &stats); err != nil {
+		return ScanStats{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return ScanStats{}, err
 	}
@@ -520,23 +586,7 @@ func prepareScanWriter(ctx context.Context, tx *sql.Tx) (scanWriter, func(), err
 		closeFn()
 		return scanWriter{}, nil, err
 	}
-	objStmt, err := prep(`INSERT INTO objects(object_type,name,value,file_id,node_local_id,source_name,source_rank,path,line,col,end_line,end_col) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
-	if err != nil {
-		closeFn()
-		return scanWriter{}, nil, err
-	}
-	refStmt, err := prep(`INSERT INTO refs(from_object_type,from_object_name,ref_kind,ref_name,file_id,node_local_id,line,col,raw,resolved,
-		relation,phase,confidence,resolution_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-	if err != nil {
-		closeFn()
-		return scanWriter{}, nil, err
-	}
 	diagStmt, err := prep(`INSERT INTO diagnostics(source,severity,code,message,file_id,path,line,col) VALUES(?,?,?,?,?,?,?,?)`)
-	if err != nil {
-		closeFn()
-		return scanWriter{}, nil, err
-	}
-	locStmt, err := prep(`INSERT INTO localization(key,language,value,file_id,source_name,source_rank,path,line,replace_dir) VALUES(?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		closeFn()
 		return scanWriter{}, nil, err
@@ -551,32 +601,12 @@ func prepareScanWriter(ctx context.Context, tx *sql.Tx) (scanWriter, func(), err
 		closeFn()
 		return scanWriter{}, nil, err
 	}
-	fieldStmt, err := prep(`INSERT INTO object_fields(object_type,object_name,field,value_shape,date_key,file_id,source_name,source_rank,path,line,raw) VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
-	if err != nil {
-		closeFn()
-		return scanWriter{}, nil, err
-	}
-	scopeStmt, err := prep(`INSERT INTO saved_scopes(file_id,scope_name) VALUES(?,?)`)
-	if err != nil {
-		closeFn()
-		return scanWriter{}, nil, err
-	}
-	varStmt, err := prep(`INSERT INTO variables(file_id,var_name) VALUES(?,?)`)
-	if err != nil {
-		closeFn()
-		return scanWriter{}, nil, err
-	}
 	return scanWriter{
+		tx:         tx,
 		fileStmt:   fileStmt,
-		objStmt:    objStmt,
-		refStmt:    refStmt,
 		diagStmt:   diagStmt,
-		locStmt:    locStmt,
 		resStmt:    resStmt,
 		schemaStmt: schemaStmt,
-		fieldStmt:  fieldStmt,
-		scopeStmt:  scopeStmt,
-		varStmt:    varStmt,
 	}, closeFn, nil
 }
 

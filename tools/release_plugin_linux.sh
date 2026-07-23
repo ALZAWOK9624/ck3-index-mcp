@@ -36,6 +36,7 @@ if [ -z "$project_license" ] && [ "$allow_unlicensed" != 1 ]; then
 fi
 
 export GOCACHE="$repo/cache/go-build-linux"
+export GOFLAGS="${GOFLAGS:+$GOFLAGS }-buildvcs=false"
 cd "$repo"
 go run ./cmd/mcp-docgen -check
 python3 "$repo/tools/test_release_bundle.py"
@@ -142,8 +143,7 @@ python3 "$repo/tools/verify_release_mcp.py" \
   --stage "$stage" \
   --platform linux-x64 \
   --config "$config" \
-  --expected-standard-tools 30 \
-  --expected-expert-tools 58
+  --expected-tools 30
 
 if [ "$allow_unlicensed" = 1 ] && [ -z "$project_license" ]; then
   archive_suffix=-unlicensed-local-rc

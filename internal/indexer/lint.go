@@ -20,13 +20,18 @@ import (
 //	M6  鈥?nested iterator explosion detection
 //	M20 鈥?scripted effect self-recursion
 //	M17 鈥?event has at least one option
-func checkScriptLint(nodes []*script.Node, relPath string, sourceName string) []ctxDiag {
+func checkScriptLint(nodes []*script.Node, relPath string, sourceRole SourceRole) []ctxDiag {
 	var out []ctxDiag
 	// Structural checks: run on all sources.
 	out = append(out, checkTriggerElseTerminator(nodes, relPath)...)
-	out = append(out, checkOnActionOverride(nodes, relPath)...)
+	out = append(out, checkOnActionOverride(nodes, relPath, sourceRole)...)
 	out = append(out, checkGUISafety(nodes, relPath)...)
-	out = append(out, checkIteratorDepth(nodes, relPath)...)
+	// Iterator nesting is a review heuristic, not an engine illegality. Keep it
+	// scoped to the writable project instead of reporting vanilla/dependency
+	// implementation choices as project defects.
+	if sourceRole == SourceRoleProject {
+		out = append(out, checkIteratorDepth(nodes, relPath)...)
+	}
 	out = append(out, checkEventHasOption(nodes, relPath)...)
 	return out
 }
@@ -86,8 +91,8 @@ var vanillaOnActions = map[string]bool{
 	"on_game_start": true, "on_game_start_after_lobby": true,
 }
 
-func checkOnActionOverride(nodes []*script.Node, relPath string) []ctxDiag {
-	if !strings.Contains(relPath, "on_action") {
+func checkOnActionOverride(nodes []*script.Node, relPath string, sourceRole SourceRole) []ctxDiag {
+	if !strings.Contains(relPath, "on_action") || sourceRole == SourceRoleGame {
 		return nil
 	}
 	var out []ctxDiag
@@ -96,7 +101,8 @@ func checkOnActionOverride(nodes []*script.Node, relPath string) []ctxDiag {
 			continue
 		}
 		for _, c := range n.Children {
-			if (c.Key == "effect" || c.Key == "trigger") && vanillaOnActions[n.Key] {
+			_, generatedVanilla := engineOnActions[strings.ToLower(n.Key)]
+			if (c.Key == "effect" || c.Key == "trigger") && (vanillaOnActions[n.Key] || generatedVanilla) {
 				out = append(out, ctxDiag{
 					severity: "warning",
 					code:     "on_action_direct_override",
@@ -126,17 +132,8 @@ func checkGUISafety(nodes []*script.Node, relPath string) []ctxDiag {
 					// CK3 1.19 vanilla deliberately uses percent-sized hbox/vbox
 					// controls for both window and row layouts. Percentage size alone
 					// is therefore not evidence of a crash.
-					// M22: hbox/vbox should not use parentanchor.
-					for _, c := range n.Children {
-						if c.Key == "parentanchor" {
-							out = append(out, ctxDiag{
-								severity: "warning",
-								code:     "gui_layout_misuse",
-								msg:      fmt.Sprintf("parentanchor inside %q should be replaced with expand={}", k),
-								line:     c.Line, col: c.Col,
-							})
-						}
-					}
+					// Vanilla also deliberately uses parentanchor inside these
+					// controls, so that combination is not a categorical misuse.
 				case "flowcontainer":
 					// M21: hbox/vbox inside flowcontainer may crash.
 					for _, c := range n.Children {
@@ -225,18 +222,20 @@ func checkIteratorDepth(nodes []*script.Node, relPath string) []ctxDiag {
 	return out
 }
 
-// M20: Scripted effect should not call itself recursively.
-func checkScriptEffectRecursion(nodes []*script.Node, relPath string, ownName string) []ctxDiag {
+// M20: Scripted effect should not call itself recursively. Callers pass only
+// the definition's children: scanning the whole file once per definition is
+// both quadratic and incorrectly treats another effect's call as recursion.
+func checkScriptEffectRecursion(children []*script.Node, relPath string, ownName string) []ctxDiag {
 	if ownName == "" || !strings.Contains(relPath, "scripted_effects") {
 		return nil
 	}
 	var out []ctxDiag
-	walkNodes(nodes, func(n *script.Node) {
-		if n.Kind == "bare" && n.Key == ownName {
+	walkNodes(children, func(n *script.Node) {
+		if n.Key == ownName {
 			out = append(out, ctxDiag{
-				severity: "error",
+				severity: "warning",
 				code:     "scripted_effect_recursion",
-				msg:      fmt.Sprintf("scripted effect %q appears to call itself (recursion not supported)", ownName),
+				msg:      fmt.Sprintf("scripted effect %q calls itself; verify that each call reduces a finite scope or add an explicit termination guard", ownName),
 				line:     n.Line, col: n.Col,
 			})
 		}

@@ -33,12 +33,11 @@ func run(root string, check bool) error {
 		return err
 	}
 	canonical := mcpserver.CanonicalToolDocumentation()
-	legacy := mcpserver.LegacyToolDocumentation()
 	if err := validateChineseCatalog(canonical); err != nil {
 		return err
 	}
-	readmeSection := renderChineseCatalogSection(canonical, legacy)
-	skillSection := renderCatalogSection(canonical, legacy)
+	readmeSection := renderChineseCatalogSection(canonical)
+	skillSection := renderCatalogSection(canonical)
 	readmePath := filepath.Join(root, "README.md")
 	skillPath := filepath.Join(root, "skill", "ck3-coding", "SKILL.md")
 	pluginSkillPath := filepath.Join(root, "plugin", "ck3-index", "skills", "ck3-coding", "SKILL.md")
@@ -56,7 +55,7 @@ func run(root string, check bool) error {
 		readmePath:      readme,
 		skillPath:       skill,
 		pluginSkillPath: skill,
-		referencePath:   []byte(renderReference(canonical, legacy)),
+		referencePath:   []byte(renderReference(canonical)),
 	}
 	var drift []string
 	for path, expected := range outputs {
@@ -98,25 +97,21 @@ func replaceSectionFile(path, generated string) ([]byte, error) {
 	return []byte(text[:start] + replacement + text[end:]), nil
 }
 
-func renderCatalogSection(canonical, legacy []mcpserver.ToolDocumentation) string {
+func renderCatalogSection(canonical []mcpserver.ToolDocumentation) string {
 	var builder strings.Builder
-	fmt.Fprintf(&builder, "## MCP Tools (standard: %d; expert: %d)\n\n", len(canonical), len(canonical)+len(legacy))
-	builder.WriteString("The standard profile advertises the canonical tools below. The expert profile also advertises deprecated compatibility names; all legacy names remain callable during the compatibility window.\n\n")
+	fmt.Fprintf(&builder, "## MCP Tools (%d canonical tools)\n\n", len(canonical))
+	builder.WriteString("ck3-index exposes one canonical MCP tool surface. Each tool uses bounded operations rather than legacy specialist aliases.\n\n")
 	writeToolTable(&builder, "Core Tools", filterTools(canonical, false))
 	writeToolTable(&builder, "Map Tools", filterTools(canonical, true))
-	builder.WriteString("### Compatibility\n\n")
-	builder.WriteString("Set `CK3_INDEX_MCP_PROFILE=expert` only when an existing client still discovers legacy specialist names. New prompts and `next_actions` use canonical names.\n")
-	return builder.String()
+	return strings.TrimRight(builder.String(), "\n") + "\n"
 }
 
-func renderChineseCatalogSection(canonical, legacy []mcpserver.ToolDocumentation) string {
+func renderChineseCatalogSection(canonical []mcpserver.ToolDocumentation) string {
 	var builder strings.Builder
-	fmt.Fprintf(&builder, "## MCP 工具（标准模式：%d；专家模式：%d）\n\n", len(canonical), len(canonical)+len(legacy))
-	builder.WriteString("标准模式只公开下列规范工具。专家模式还会公开已弃用的兼容名称；在兼容期内，所有旧名称仍然可以调用。\n\n")
+	fmt.Fprintf(&builder, "## MCP 工具（%d 个规范工具）\n\n", len(canonical))
+	builder.WriteString("ck3-index 仅公开一套规范 MCP 工具；细分能力通过受限 operation 提供，不再保留旧版专用工具别名。\n\n")
 	writeChineseToolTable(&builder, "核心工具", filterTools(canonical, false))
 	writeChineseToolTable(&builder, "地图工具", filterTools(canonical, true))
-	builder.WriteString("### 兼容模式\n\n")
-	builder.WriteString("只有仍需发现旧版专用工具名的客户端才应设置 `CK3_INDEX_MCP_PROFILE=expert`。新提示词与 `next_actions` 一律使用规范工具名。\n")
 	return builder.String()
 }
 
@@ -149,11 +144,11 @@ func writeChineseToolTable(builder *strings.Builder, title string, tools []mcpse
 	builder.WriteString("\n")
 }
 
-func renderReference(canonical, legacy []mcpserver.ToolDocumentation) string {
+func renderReference(canonical []mcpserver.ToolDocumentation) string {
 	var builder strings.Builder
 	builder.WriteString("# ck3-index MCP 工具参考\n\n")
 	builder.WriteString("> 本文档由 `go run ./cmd/mcp-docgen` 根据 `internal/mcpserver` 自动生成，请勿手工修改。\n\n")
-	fmt.Fprintf(&builder, "标准模式公开 %d 个规范工具。专家模式另外公开 %d 个已弃用的发现别名；即使这些别名未显示，兼容期内仍然可以调用。\n\n", len(canonical), len(legacy))
+	fmt.Fprintf(&builder, "ck3-index 公开 %d 个规范工具。细分能力由各工具的受限 operation 参数表达，不再提供旧版专用工具别名。\n\n", len(canonical))
 	for _, tool := range canonical {
 		text := chineseToolTexts[tool.Name]
 		fmt.Fprintf(&builder, "## `%s` — %s\n\n%s\n\n", tool.Name, text.Title, text.Description)
@@ -164,12 +159,7 @@ func renderReference(canonical, legacy []mcpserver.ToolDocumentation) string {
 			builder.WriteString("属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。\n\n")
 		}
 	}
-	builder.WriteString("## 已弃用的专家模式别名\n\n")
-	builder.WriteString("| 旧名称 | 规范替代工具 |\n|---|---|\n")
-	for _, tool := range legacy {
-		fmt.Fprintf(&builder, "| `%s` | `%s` |\n", tool.Name, tool.Canonical)
-	}
-	return builder.String()
+	return strings.TrimRight(builder.String(), "\n") + "\n"
 }
 
 func writeInputFields(builder *strings.Builder, schema map[string]any) {

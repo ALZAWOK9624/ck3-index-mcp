@@ -27,8 +27,8 @@ func TestUserDocumentationIsChineseAndSkillCatalogStaysEnglish(t *testing.T) {
 		content  string
 		expected []string
 	}{
-		"README":         {content: readme, expected: []string{"标准模式", "核心工具", "地图工具"}},
-		"tool reference": {content: reference, expected: []string{"MCP 工具参考", "| 参数 | 必填 | 类型 | 约束 | 说明 |", "已弃用的专家模式别名"}},
+		"README":         {content: readme, expected: []string{"规范工具", "核心工具", "地图工具"}},
+		"tool reference": {content: reference, expected: []string{"MCP 工具参考", "| 参数 | 必填 | 类型 | 约束 | 说明 |", "不再提供旧版专用工具别名"}},
 	}
 	for name, check := range checks {
 		for _, expected := range check.expected {

@@ -88,6 +88,7 @@ func run(ctx context.Context, args []string) error {
 	// Allow --clean anywhere after the command, e.g. "scan --clean".
 	clean := false
 	var scanFiles []string
+	filesFlagSeen := false
 	filtered := args[:0]
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -96,6 +97,7 @@ func run(ctx context.Context, args []string) error {
 			continue
 		}
 		if a == "--files" {
+			filesFlagSeen = true
 			scanFiles = append(scanFiles, args[i+1:]...)
 			break
 		}
@@ -165,19 +167,25 @@ func run(ctx context.Context, args []string) error {
 		}
 		return printJSON(result)
 	case "scan":
+		if filesFlagSeen && len(scanFiles) == 0 {
+			return errors.New("scan --files requires at least one source-root relative path")
+		}
 		cfg, err := indexer.LoadConfig(cfgPath)
 		if err != nil {
 			return err
 		}
-		if len(scanFiles) > 0 {
+		if filesFlagSeen {
 			stats, err := indexer.ScanFiles(ctx, cfg, scanFiles)
 			if err != nil {
 				return err
 			}
 			return printJSON(stats)
 		}
+		// Every user-visible full scan uses staged publication. --clean remains
+		// accepted for CLI compatibility; the staging database is always a clean
+		// rebuild and replaces the live generation only after finalization.
 		cfg.ForceClean = clean
-		stats, err := indexer.Scan(ctx, cfg)
+		stats, err := indexer.ScanFullStaged(ctx, cfg)
 		if err != nil {
 			return err
 		}
@@ -214,7 +222,7 @@ func run(ctx context.Context, args []string) error {
 		if len(args) < 1 {
 			return errors.New("usage: ck3-index refs <id>")
 		}
-		db, err := openDB(ctx, cfgPath)
+		db, err := openReadOnlyDB(cfgPath)
 		if err != nil {
 			return err
 		}
@@ -228,7 +236,7 @@ func run(ctx context.Context, args []string) error {
 		if len(args) < 1 {
 			return errors.New("usage: ck3-index loc <key>")
 		}
-		db, err := openDB(ctx, cfgPath)
+		db, err := openReadOnlyDB(cfgPath)
 		if err != nil {
 			return err
 		}
@@ -242,7 +250,7 @@ func run(ctx context.Context, args []string) error {
 		if len(args) < 1 {
 			return errors.New("usage: ck3-index resource <path-or-id>")
 		}
-		db, err := openDB(ctx, cfgPath)
+		db, err := openReadOnlyDB(cfgPath)
 		if err != nil {
 			return err
 		}

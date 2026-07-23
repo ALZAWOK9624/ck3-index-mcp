@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"sort"
 	"strings"
 )
 
@@ -138,6 +139,86 @@ type ModifierLookup struct {
 	Source   string   `json:"source,omitempty"`
 }
 
+type generatedModifierTemplate struct {
+	Pattern      string
+	LiteralBytes int
+	Info         ModifierInfo
+}
+
+var generatedModifierTemplates = buildGeneratedModifierTemplates()
+
+func buildGeneratedModifierTemplates() []generatedModifierTemplate {
+	templates := make([]generatedModifierTemplate, 0)
+	for pattern, info := range engineModifiers {
+		if !strings.Contains(pattern, "$") {
+			continue
+		}
+		literalBytes := len(pattern)
+		for rest := pattern; ; {
+			start := strings.IndexByte(rest, '$')
+			if start < 0 {
+				break
+			}
+			end := strings.IndexByte(rest[start+1:], '$')
+			if end < 0 {
+				break
+			}
+			literalBytes -= end + 2
+			rest = rest[start+end+2:]
+		}
+		templates = append(templates, generatedModifierTemplate{
+			Pattern:      pattern,
+			LiteralBytes: literalBytes,
+			Info:         info,
+		})
+	}
+	sort.Slice(templates, func(i, j int) bool {
+		if templates[i].LiteralBytes != templates[j].LiteralBytes {
+			return templates[i].LiteralBytes > templates[j].LiteralBytes
+		}
+		return templates[i].Pattern < templates[j].Pattern
+	})
+	return templates
+}
+
+// matchesGeneratedModifierTemplate accepts concrete expansions of formats
+// published by modifiers.log, such as $MEN_AT_ARMS_TYPE$_damage_add.
+// Placeholders must consume at least one byte and every literal segment must
+// still match exactly.
+func matchesGeneratedModifierTemplate(pattern, key string) bool {
+	patternRest := pattern
+	keyRest := key
+	for {
+		start := strings.IndexByte(patternRest, '$')
+		if start < 0 {
+			return keyRest == patternRest
+		}
+		if !strings.HasPrefix(keyRest, patternRest[:start]) {
+			return false
+		}
+		keyRest = keyRest[start:]
+		patternRest = patternRest[start+1:]
+		end := strings.IndexByte(patternRest, '$')
+		if end < 0 {
+			return false
+		}
+		patternRest = patternRest[end+1:]
+		next := strings.IndexByte(patternRest, '$')
+		literal := patternRest
+		if next >= 0 {
+			literal = patternRest[:next]
+		}
+		if literal == "" {
+			return false
+		}
+		valueEnd := strings.Index(keyRest, literal)
+		if valueEnd <= 0 {
+			return false
+		}
+		keyRest = keyRest[valueEnd:]
+	}
+}
+
 // LookupModifier checks if a modifier tag is valid and returns its use areas.
 // An empty UseAreas means that current vanilla format sources prove the name,
 // but modifiers.log did not publish an area contract for it.
@@ -148,6 +229,15 @@ func LookupModifier(key string) ModifierLookup {
 	}
 	if info, ok := engineModifiers[key]; ok {
 		return ModifierLookup{Found: true, UseAreas: info.UseAreas, Source: info.Source}
+	}
+	for _, template := range generatedModifierTemplates {
+		if matchesGeneratedModifierTemplate(template.Pattern, key) {
+			return ModifierLookup{
+				Found:    true,
+				UseAreas: template.Info.UseAreas,
+				Source:   template.Info.Source + "_template",
+			}
+		}
 	}
 	return ModifierLookup{Found: false}
 }

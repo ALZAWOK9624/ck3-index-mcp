@@ -3,6 +3,8 @@ package mcpserver
 import (
 	"context"
 	"strings"
+
+	"ck3-index/internal/indexer"
 )
 
 type workspaceCapability struct {
@@ -39,6 +41,26 @@ func workspaceCapabilities(ctx context.Context, runtime *Runtime, requestedDomai
 	if err != nil {
 		return nil, err
 	}
+	bootstrapConfig := len(runtime.Config.Sources) == 0
+	var refresh indexer.RefreshStatus
+	if bootstrapConfig {
+		// Capability discovery is intentionally available before init/first
+		// scan. With no loaded source configuration there is no project state
+		// to probe yet, but the full-refresh mode remains discoverable.
+		refresh = indexer.RefreshStatus{
+			Status:            "full_scan_required",
+			Index:             state,
+			EngineRules:       indexer.RefreshEngineStatus{Available: true, Current: true},
+			NeedsFullScan:     true,
+			FullScanAvailable: true,
+		}
+	} else {
+		refresh, err = runtime.DB.RefreshStatus(ctx, runtime.Config)
+		if err != nil {
+			return nil, err
+		}
+	}
+	refreshActivity := currentRefreshActivity(runtime)
 	indexAvailable := state.Ready()
 	indexReason := ""
 	if !indexAvailable {
@@ -55,6 +77,35 @@ func workspaceCapabilities(ctx context.Context, runtime *Runtime, requestedDomai
 	if !gisAvailable {
 		gisReason = "a published map database with verified GIS analysis is required"
 	}
+	filesAvailable := true
+	filesReason := ""
+	switch {
+	case refreshActivity.Active:
+		filesAvailable = false
+		filesReason = "another refresh is already running for this index"
+	case !state.Ready():
+		filesAvailable = false
+		filesReason = "a ready published index generation is required"
+	case !refresh.Project.Refreshable:
+		filesAvailable = false
+		filesReason = "the configured project source is not accessible"
+	case refresh.NeedsFullScan:
+		filesAvailable = false
+		filesReason = "a full scan is required before incremental refresh"
+	}
+	fullAvailable := true
+	fullReason := ""
+	switch {
+	case refreshActivity.Active:
+		fullAvailable = false
+		fullReason = "another refresh is already running for this index"
+	case !bootstrapConfig && !refresh.Project.Refreshable:
+		fullAvailable = false
+		fullReason = "the configured project source is not accessible"
+	case !refresh.EngineRules.Available && strings.TrimSpace(runtime.Config.EngineLogs) != "":
+		fullAvailable = false
+		fullReason = "the configured engine rule bundle is unavailable"
+	}
 	items := []workspaceCapability{
 		{ID: "semantic_search", Domain: "semantic", Source: "sqlite_index", Tools: []string{"ck3_search", "ck3_inspect"}, Inputs: []string{"query or exact id"}, Outputs: []string{"ranked evidence and resolved objects"}, Maturity: "stable", RequiresReadyIndex: true, SideEffect: "none", Cost: "low", Profile: "default", Available: indexAvailable, Reason: indexReason},
 		{ID: "workspace_overview", Domain: "workspace", Source: "sqlite_index", Tools: []string{"ck3_workspace"}, Modes: []string{"overview", "object_types", "on_action_evidence"}, Inputs: []string{"operation"}, Outputs: []string{"workspace structure and evidence"}, Maturity: "stable", RequiresReadyIndex: true, SideEffect: "none", Cost: "low", Profile: "default", Available: indexAvailable, Reason: indexReason},
@@ -68,8 +119,8 @@ func workspaceCapabilities(ctx context.Context, runtime *Runtime, requestedDomai
 		{ID: "packaging", Domain: "packaging", Source: "artifact_builder", Tools: []string{"ck3_package"}, Inputs: []string{"metadata and complete file contents"}, Outputs: []string{"validated portable artifact"}, Maturity: "stable", RequiresReadyIndex: false, SideEffect: "temporary artifact only", Cost: "medium", Profile: "default", Available: true},
 		{ID: "index_refresh", Domain: "workspace", Source: "transactional_indexer", Tools: []string{"ck3_refresh"}, Modes: []string{"status", "files", "full"}, Inputs: []string{"optional project-relative paths"}, Outputs: []string{"index readiness and refresh deltas"}, Maturity: "beta", RequiresReadyIndex: false, SideEffect: "updates rebuildable index cache only", Cost: "high", SupportsCancellation: true, Profile: "default", Available: true, ModeDetails: []workspaceCapabilityMode{
 			{ID: "status", Available: true},
-			{ID: "files", Available: true},
-			{ID: "full", Available: true},
+			{ID: "files", Available: filesAvailable, Reason: filesReason},
+			{ID: "full", Available: fullAvailable, Reason: fullReason},
 		}},
 	}
 	domain := strings.ToLower(strings.TrimSpace(requestedDomain))

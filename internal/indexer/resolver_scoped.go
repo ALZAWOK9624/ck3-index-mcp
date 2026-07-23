@@ -4,16 +4,18 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 )
 
 type scopedResolver struct {
-	tx        *sql.Tx
-	objCache  map[string]bool
-	locCache  map[string]bool
-	resCache  map[string]bool
-	missCache map[string]bool
+	tx               *sql.Tx
+	objCache         map[string]bool
+	locCache         map[string]bool
+	resCache         map[string]bool
+	missCache        map[string]bool
+	gameLocFileCache map[string]map[string]bool
 }
 
 // affectedTypedMarker is an internal bookkeeping prefix. It uses NUL because
@@ -224,12 +226,33 @@ func scopedValidatorCandidatesFit(ctx context.Context, tx *sql.Tx, projectRank i
 	return true, nil
 }
 
-func (r scopedResolver) resolved(ctx context.Context, kind, name string) (bool, error) {
+func (r *scopedResolver) resolved(ctx context.Context, kind, name string) (bool, error) {
+	if isNullObjectReference(kind, name) {
+		return true, nil
+	}
 	switch kind {
 	case "localization":
-		return r.exists(ctx, r.locCache, "loc:"+name, `SELECT 1 FROM localization l JOIN files f ON f.id=l.file_id WHERE l.key=? AND f.overridden=0 LIMIT 1`, name)
+		if isPlaceholderLocalizationKey(name) {
+			return true, nil
+		}
+		ok, err := r.exists(ctx, r.locCache, "loc:"+name, `SELECT 1
+			WHERE EXISTS (
+				SELECT 1 FROM localization l JOIN files f ON f.id=l.file_id
+				WHERE l.key=? AND f.overridden=0
+			) OR EXISTS (
+				SELECT 1
+				FROM refs gr
+				JOIN files gf ON gf.id=gr.file_id
+				JOIN source_layers sl ON lower(sl.name)=lower(gf.source_name)
+				WHERE gr.ref_kind='localization' AND gr.ref_name=? AND sl.role=?
+			)
+			LIMIT 1`, name, name, SourceRoleGame)
+		if err != nil || ok {
+			return ok, err
+		}
+		return r.gameSourceReferencesLocalization(ctx, name)
 	case "resource":
-		return r.exists(ctx, r.resCache, "res:"+name, `SELECT 1 FROM resources rs JOIN files f ON f.id=rs.file_id WHERE rs.resource_path=? AND f.overridden=0 LIMIT 1`, name)
+		return r.resourceResolved(ctx, name)
 	case "sound":
 		return IsSound(name), nil
 	case "iterator":
@@ -271,7 +294,118 @@ func (r scopedResolver) resolved(ctx context.Context, kind, name string) (bool, 
 	}
 }
 
-func (r scopedResolver) exists(ctx context.Context, cache map[string]bool, key, query string, args ...any) (bool, error) {
+func (r *scopedResolver) gameSourceReferencesLocalization(ctx context.Context, name string) (bool, error) {
+	cacheKey := "game-loc:" + name
+	if ok, seen := r.missCache[cacheKey]; seen {
+		return ok, nil
+	}
+	projectName, err := sourceNameForRole(ctx, r.tx, SourceRoleProject)
+	if err != nil {
+		return false, err
+	}
+	gameName, err := sourceNameForRole(ctx, r.tx, SourceRoleGame)
+	if err != nil {
+		return false, err
+	}
+	if projectName == "" || gameName == "" {
+		r.missCache[cacheKey] = false
+		return false, nil
+	}
+	rows, err := r.tx.QueryContext(ctx, `SELECT DISTINCT gf.path,gf.rel_path,gf.source_name,gf.source_rank
+		FROM refs pr
+		JOIN files pf ON pf.id=pr.file_id
+		JOIN files gf ON gf.rel_path=pf.rel_path AND gf.source_name=? AND gf.overridden<>0
+		WHERE pr.ref_kind='localization' AND pr.ref_name=?
+			AND pf.source_name=? AND pf.overridden=0 AND gf.kind='script'`,
+		gameName, name, projectName)
+	if err != nil {
+		return false, err
+	}
+	type gameFile struct {
+		path, rel, source string
+		rank              int
+	}
+	var files []gameFile
+	for rows.Next() {
+		var file gameFile
+		if err := rows.Scan(&file.path, &file.rel, &file.source, &file.rank); err != nil {
+			rows.Close()
+			return false, err
+		}
+		files = append(files, file)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return false, err
+	}
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+	if r.gameLocFileCache == nil {
+		r.gameLocFileCache = map[string]map[string]bool{}
+	}
+	for _, file := range files {
+		names, cached := r.gameLocFileCache[file.path]
+		if !cached {
+			names, err = localizationReferencesInScriptFile(file.path, file.rel, file.source, file.rank)
+			if err != nil {
+				return false, err
+			}
+			r.gameLocFileCache[file.path] = names
+		}
+		if names[name] {
+			r.missCache[cacheKey] = true
+			return true, nil
+		}
+	}
+	r.missCache[cacheKey] = false
+	return false, nil
+}
+
+func (r *scopedResolver) resourceResolved(ctx context.Context, name string) (bool, error) {
+	key := "res:" + name
+	if ok, seen := r.resCache[key]; seen {
+		return ok, nil
+	}
+	normalized := normalizeResourceLookupPath(name)
+	if normalized == "" {
+		r.resCache[key] = false
+		return false, nil
+	}
+	patterns := []string{normalized}
+	ext := filepath.Ext(normalized)
+	switch {
+	case ext != "" && !strings.Contains(normalized, "/"):
+		patterns = append(patterns, "%/"+escapeSQLLike(normalized))
+	case ext != "":
+		patterns = append(patterns, "%/"+escapeSQLLike(normalized))
+	case strings.Contains(normalized, "/"):
+		patterns = append(patterns, escapeSQLLike(normalized)+"%", "%/"+escapeSQLLike(normalized)+"%")
+	default:
+		patterns = append(patterns, escapeSQLLike(normalized)+".%", "%/"+escapeSQLLike(normalized)+".%")
+	}
+	clauses := make([]string, 0, len(patterns))
+	args := make([]any, 0, len(patterns))
+	for index, pattern := range patterns {
+		if index == 0 {
+			clauses = append(clauses, "lower(rs.resource_path)=?")
+		} else {
+			clauses = append(clauses, "lower(rs.resource_path) LIKE ? ESCAPE '!'")
+		}
+		args = append(args, strings.ToLower(pattern))
+	}
+	query := `SELECT 1 FROM resources rs JOIN files f ON f.id=rs.file_id
+		WHERE f.overridden=0 AND (` + strings.Join(clauses, " OR ") + `) LIMIT 1`
+	return r.exists(ctx, r.resCache, key, query, args...)
+}
+
+func escapeSQLLike(value string) string {
+	value = strings.ReplaceAll(value, "!", "!!")
+	value = strings.ReplaceAll(value, "%", "!%")
+	return strings.ReplaceAll(value, "_", "!_")
+}
+
+func (r *scopedResolver) exists(ctx context.Context, cache map[string]bool, key, query string, args ...any) (bool, error) {
 	if ok, seen := cache[key]; seen {
 		return ok, nil
 	}

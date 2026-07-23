@@ -11,7 +11,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"ck3-index/internal/buildinfo"
 	"ck3-index/internal/indexer"
@@ -37,7 +40,7 @@ func TestServeMCPProtocolContract(t *testing.T) {
 		t.Fatalf("response count = %d, want 5: %s", len(responses), out.String())
 	}
 
-	initialize := responses[0]["result"].(map[string]any)
+	initialize := responseByID(t, responses, "1")["result"].(map[string]any)
 	if initialize["protocolVersion"] != latestMCPProtocolVersion {
 		t.Fatalf("negotiated protocol version = %v, want %s", initialize["protocolVersion"], latestMCPProtocolVersion)
 	}
@@ -50,10 +53,11 @@ func TestServeMCPProtocolContract(t *testing.T) {
 	if toolCapabilities["listChanged"] != false {
 		t.Fatalf("static registry must advertise listChanged=false: %+v", toolCapabilities)
 	}
-	if _, ok := responses[1]["result"].(map[string]any); !ok {
-		t.Fatalf("ping did not return an empty object: %+v", responses[1])
+	ping := responseByID(t, responses, "2")
+	if _, ok := ping["result"].(map[string]any); !ok {
+		t.Fatalf("ping did not return an empty object: %+v", ping)
 	}
-	listed := responses[2]["result"].(map[string]any)["tools"].([]any)
+	listed := responseByID(t, responses, "3")["result"].(map[string]any)["tools"].([]any)
 	if len(listed) != 30 {
 		t.Fatalf("standard tools/list count = %d, want 30", len(listed))
 	}
@@ -64,14 +68,15 @@ func TestServeMCPProtocolContract(t *testing.T) {
 		}
 	}
 
-	argumentError := responses[3]["result"].(map[string]any)
-	if argumentError["isError"] != true || responses[3]["error"] != nil {
-		t.Fatalf("known-tool argument failure must be CallToolResult isError=true: %+v", responses[3])
+	argumentResponse := responseByID(t, responses, "4")
+	argumentError := argumentResponse["result"].(map[string]any)
+	if argumentError["isError"] != true || argumentResponse["error"] != nil {
+		t.Fatalf("known-tool argument failure must be CallToolResult isError=true: %+v", argumentResponse)
 	}
 	if _, ok := argumentError["structuredContent"].(map[string]any); !ok {
 		t.Fatalf("tool error lacks structuredContent: %+v", argumentError)
 	}
-	unknownError := responses[4]["error"].(map[string]any)
+	unknownError := responseByID(t, responses, "5")["error"].(map[string]any)
 	if int(unknownError["code"].(float64)) != rpcInvalidParams {
 		t.Fatalf("unknown tool error code = %v, want %d", unknownError["code"], rpcInvalidParams)
 	}
@@ -84,10 +89,39 @@ func TestHealthReportIncludesBinaryVersion(t *testing.T) {
 	}
 }
 
+func TestServeMCPBootstrapsMissingDatabase(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "cache", "new.sqlite")
+	var out bytes.Buffer
+	if err := Serve(
+		context.Background(),
+		emptyMCPConfig(dbPath),
+		dbPath,
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}`+"\n"),
+		&out,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("missing database was not bootstrapped: %v", err)
+	}
+	db, err := indexer.OpenReadOnly(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	state, err := db.IndexState(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != "initializing" || state.Ready() {
+		t.Fatalf("bootstrapped index state = %+v, want initializing", state)
+	}
+}
+
 func TestServeMCPNegotiatesSupportedAndUnknownProtocolVersions(t *testing.T) {
 	dbPath := createProtocolTestDB(t)
 	requests := strings.Join([]string{
-		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"contract-test","version":"1"}}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2099-01-01"}}`,
 		`{"jsonrpc":"2.0","id":3,"method":"initialize","params":{}}`,
 	}, "\n") + "\n"
@@ -107,11 +141,60 @@ func TestServeMCPNegotiatesSupportedAndUnknownProtocolVersions(t *testing.T) {
 	}
 }
 
+func TestServeMCPInitializeRequiresCapabilitiesAndClientInfo(t *testing.T) {
+	dbPath := createProtocolTestDB(t)
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"","version":"1"}}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"initialize","params":{"protocolVersion":"2099-01-01","capabilities":{},"clientInfo":{"name":"strict-test","version":"1"}}}`,
+	}, "\n") + "\n"
+	var out bytes.Buffer
+	if err := Serve(context.Background(), emptyMCPConfig(dbPath), dbPath, strings.NewReader(input), &out); err != nil {
+		t.Fatal(err)
+	}
+	responses := decodeResponseLines(t, out.String())
+	if len(responses) != 4 {
+		t.Fatalf("response count = %d, want 4: %s", len(responses), out.String())
+	}
+	for index := 0; index < 3; index++ {
+		if code := int(responses[index]["error"].(map[string]any)["code"].(float64)); code != rpcInvalidParams {
+			t.Fatalf("initialize response %d code = %d, want %d", index+1, code, rpcInvalidParams)
+		}
+	}
+	if got := responses[3]["result"].(map[string]any)["protocolVersion"]; got != latestMCPProtocolVersion {
+		t.Fatalf("unknown version negotiation = %v, want %s", got, latestMCPProtocolVersion)
+	}
+}
+
+func TestServeMCPRejectsReusedNormalizedRequestIDs(t *testing.T) {
+	dbPath := createProtocolTestDB(t)
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":"a","method":"ping"}`,
+		`{"jsonrpc":"2.0","id":"\u0061","method":"ping"}`,
+		`{"jsonrpc":"2.0","id":7,"method":"ping"}`,
+		`{"jsonrpc":"2.0","id":7,"method":"ping"}`,
+	}, "\n") + "\n"
+	var out bytes.Buffer
+	if err := Serve(context.Background(), emptyMCPConfig(dbPath), dbPath, strings.NewReader(input), &out); err != nil {
+		t.Fatal(err)
+	}
+	responses := decodeResponseLines(t, out.String())
+	if len(responses) != 4 {
+		t.Fatalf("response count = %d, want 4: %s", len(responses), out.String())
+	}
+	for _, index := range []int{1, 3} {
+		if code := int(responses[index]["error"].(map[string]any)["code"].(float64)); code != rpcInvalidRequest {
+			t.Fatalf("duplicate response %d = %+v", index, responses[index])
+		}
+	}
+}
+
 func TestServeMCPRequiresInitializedNotificationBeforeTools(t *testing.T) {
 	dbPath := createProtocolTestDB(t)
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`,
-		`{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"contract-test","version":"1"}}}`,
 		`{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`,
 		`{"jsonrpc":"2.0","id":4,"method":"tools/list","params":{}}`,
@@ -140,7 +223,7 @@ func TestServeMCPRequiresInitializedNotificationBeforeTools(t *testing.T) {
 func TestServeMCPCancellationNotificationReachesActiveToolWithoutBlockingReader(t *testing.T) {
 	dbPath := createProtocolTestDB(t)
 	input := strings.Join([]string{
-		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"contract-test","version":"1"}}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`,
 		`{"jsonrpc":"2.0","id":"slow","method":"tools/call","params":{"name":"ck3_health","arguments":{}}}`,
 		`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"slow"}}`,
@@ -155,15 +238,194 @@ func TestServeMCPCancellationNotificationReachesActiveToolWithoutBlockingReader(
 		t.Fatal(err)
 	}
 	responses := decodeResponseLines(t, out.String())
-	if len(responses) != 3 {
-		t.Fatalf("response count = %d, want initialize, cancelled tool, and ping: %s", len(responses), out.String())
+	if len(responses) != 2 {
+		t.Fatalf("response count = %d, want initialize and ping only after cancellation: %s", len(responses), out.String())
 	}
-	tool := responses[1]["result"].(map[string]any)
-	if tool["cancelled"] != true {
-		t.Fatalf("cancellation did not reach active tool context: %+v", tool)
+	if _, ok := responses[1]["result"].(map[string]any); !ok {
+		t.Fatalf("ping was not read while tool request was active: %+v", responses[1])
 	}
-	if _, ok := responses[2]["result"].(map[string]any); !ok {
-		t.Fatalf("ping was not read while tool request was active: %+v", responses[2])
+}
+
+type synchronizedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (buffer *synchronizedBuffer) Write(data []byte) (int, error) {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.buf.Write(data)
+}
+
+func (buffer *synchronizedBuffer) String() string {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.buf.String()
+}
+
+func TestFastResponsesAreNotBlockedByEarlierSlowTool(t *testing.T) {
+	dbPath := createProtocolTestDB(t)
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"ordering-test","version":"1"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`,
+		`{"jsonrpc":"2.0","id":"slow","method":"tools/call","params":{"name":"ck3_health","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":"ping","method":"ping","params":{}}`,
+		`{"jsonrpc":"2.0","id":"fast","method":"tools/call","params":{"name":"ck3_search","arguments":{"query":"x"}}}`,
+	}, "\n") + "\n"
+	slowStarted := make(chan struct{})
+	fastFinished := make(chan struct{})
+	releaseSlow := make(chan struct{})
+	caller := func(_ context.Context, _ *indexer.DB, _ indexer.Config, raw json.RawMessage) (any, error) {
+		var call callToolParams
+		if err := json.Unmarshal(raw, &call); err != nil {
+			return nil, err
+		}
+		if call.Name == "ck3_health" {
+			close(slowStarted)
+			<-releaseSlow
+			return map[string]any{"kind": "slow"}, nil
+		}
+		close(fastFinished)
+		return map[string]any{"kind": "fast"}, nil
+	}
+	var out synchronizedBuffer
+	done := make(chan error, 1)
+	go func() {
+		done <- serveWithToolCaller(context.Background(), emptyMCPConfig(dbPath), dbPath, strings.NewReader(input), &out, caller)
+	}()
+	select {
+	case <-slowStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("slow tool did not start")
+	}
+	select {
+	case <-fastFinished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("fast tool did not finish")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		current := out.String()
+		if strings.Contains(current, `"id":"ping"`) && strings.Contains(current, `"id":"fast"`) {
+			if strings.Contains(current, `"id":"slow"`) {
+				t.Fatalf("slow response was written before release: %s", current)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("fast responses remained blocked behind slow request: %s", current)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(releaseSlow)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not finish after releasing slow tool")
+	}
+	responses := decodeResponseLines(t, out.String())
+	ids := make([]string, 0, len(responses))
+	for _, response := range responses {
+		ids = append(ids, fmt.Sprint(response["id"]))
+	}
+	if strings.Join(ids, ",") != "1,ping,fast,slow" {
+		t.Fatalf("response order = %v, want initialize,ping,fast,slow", ids)
+	}
+}
+
+func TestToolConcurrencyIsBounded(t *testing.T) {
+	tests := []struct {
+		name       string
+		tool       string
+		requests   int
+		wantActive int32
+		wantBusy   int
+	}{
+		{name: "global", tool: "ck3_search", requests: maxMCPTasks + 3, wantActive: maxMCPTasks, wantBusy: 3},
+		{name: "heavy", tool: "map_render", requests: maxMCPHeavyTasks + 2, wantActive: maxMCPHeavyTasks, wantBusy: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dbPath := createProtocolTestDB(t)
+			lines := []string{
+				`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"limit-test","version":"1"}}}`,
+				`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`,
+			}
+			for index := 0; index < tt.requests; index++ {
+				lines = append(lines, fmt.Sprintf(
+					`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":%q,"arguments":{}}}`,
+					index+2,
+					tt.tool,
+				))
+			}
+			input := strings.Join(lines, "\n") + "\n"
+			release := make(chan struct{})
+			var active atomic.Int32
+			var maximum atomic.Int32
+			caller := func(_ context.Context, _ *indexer.DB, _ indexer.Config, _ json.RawMessage) (any, error) {
+				current := active.Add(1)
+				for {
+					seen := maximum.Load()
+					if current <= seen || maximum.CompareAndSwap(seen, current) {
+						break
+					}
+				}
+				<-release
+				active.Add(-1)
+				return map[string]any{"ok": true}, nil
+			}
+			var out synchronizedBuffer
+			done := make(chan error, 1)
+			go func() {
+				done <- serveWithToolCaller(context.Background(), emptyMCPConfig(dbPath), dbPath, strings.NewReader(input), &out, caller)
+			}()
+			deadline := time.Now().Add(2 * time.Second)
+			for maximum.Load() < tt.wantActive && time.Now().Before(deadline) {
+				time.Sleep(5 * time.Millisecond)
+			}
+			if got := maximum.Load(); got != tt.wantActive {
+				close(release)
+				<-done
+				t.Fatalf("maximum active tools = %d, want %d", got, tt.wantActive)
+			}
+			// Keep admitted calls blocked until the reader has submitted every
+			// request and the limiter has emitted all deterministic rejections.
+			// Under -race, releasing as soon as maximum reaches the cap can let
+			// one worker finish before the final buffered request is consumed.
+			busyDeadline := time.Now().Add(2 * time.Second)
+			for strings.Count(out.String(), `"code":"SERVER_BUSY"`) < tt.wantBusy && time.Now().Before(busyDeadline) {
+				time.Sleep(5 * time.Millisecond)
+			}
+			if got := strings.Count(out.String(), `"code":"SERVER_BUSY"`); got != tt.wantBusy {
+				close(release)
+				<-done
+				t.Fatalf("SERVER_BUSY responses before release = %d, want %d: %s", got, tt.wantBusy, out.String())
+			}
+			close(release)
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("server did not finish bounded tasks")
+			}
+			responses := decodeResponseLines(t, out.String())
+			busy := 0
+			for _, response := range responses {
+				result, _ := response["result"].(map[string]any)
+				structured, _ := result["structuredContent"].(map[string]any)
+				if structured["code"] == ErrorServerBusy {
+					busy++
+				}
+			}
+			if busy != tt.wantBusy {
+				t.Fatalf("SERVER_BUSY responses = %d, want %d: %s", busy, tt.wantBusy, out.String())
+			}
+		})
 	}
 }
 
@@ -188,14 +450,17 @@ func TestServeMCPRejectsInvalidRequestIDTypes(t *testing.T) {
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":true,"method":"ping"}`,
 		`{"jsonrpc":"2.0","id":{"bad":1},"method":"ping"}`,
+		`{"jsonrpc":"2.0","id":null,"method":"ping"}`,
+		`{"jsonrpc":"2.0","id":1.5,"method":"ping"}`,
+		`{"jsonrpc":"2.0","id":1e3,"method":"ping"}`,
 	}, "\n") + "\n"
 	var out bytes.Buffer
 	if err := Serve(context.Background(), emptyMCPConfig(dbPath), dbPath, strings.NewReader(input), &out); err != nil {
 		t.Fatal(err)
 	}
 	responses := decodeResponseLines(t, out.String())
-	if len(responses) != 2 {
-		t.Fatalf("response count = %d, want 2", len(responses))
+	if len(responses) != 5 {
+		t.Fatalf("response count = %d, want 5", len(responses))
 	}
 	for _, response := range responses {
 		if response["id"] != nil || int(response["error"].(map[string]any)["code"].(float64)) != rpcInvalidRequest {
@@ -357,8 +622,8 @@ func TestNextActionsUseCanonicalToolsAndExplicitArguments(t *testing.T) {
 		Intent:  "fixture",
 		Summary: "fixture",
 		NextQueries: []indexer.LLMNextQuery{
-			{Tool: "query_rules", ID: "trait", Reason: "fixture"},
-			{Tool: "explain_diagnostic", ID: "scope_mismatch", Reason: "fixture"},
+			{Tool: "ck3_search", ID: "trait", Reason: "fixture"},
+			{Tool: "ck3_inspect", ID: "event:fixture.1", Reason: "fixture"},
 			{Tool: "map_building_candidates", ID: "k_example", Reason: "fixture"},
 		},
 	}, "private")
@@ -378,12 +643,12 @@ func TestNextActionsUseCanonicalToolsAndExplicitArguments(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := actions[0]
-	if first["tool"] != "ck3_prepare_edit" {
-		t.Fatalf("legacy next action was not canonicalized: %+v", first)
+	if first["tool"] != "ck3_search" {
+		t.Fatalf("first canonical next action is incorrect: %+v", first)
 	}
 	firstArgs := first["arguments"].(map[string]any)
-	if firstArgs["operation"] != "rules" || firstArgs["id"] != "trait" {
-		t.Fatalf("canonical prepare arguments are incomplete: %+v", firstArgs)
+	if firstArgs["query"] != "trait" {
+		t.Fatalf("canonical search arguments are incomplete: %+v", firstArgs)
 	}
 	if _, legacyID := first["id"]; legacyID {
 		t.Fatalf("canonical next action retained legacy top-level id: %+v", first)
@@ -393,8 +658,8 @@ func TestNextActionsUseCanonicalToolsAndExplicitArguments(t *testing.T) {
 	}
 	second := actions[1]
 	secondArgs := second["arguments"].(map[string]any)
-	if second["tool"] != "ck3_diagnostics" || secondArgs["operation"] != "explain" || secondArgs["code"] != "scope_mismatch" {
-		t.Fatalf("canonical diagnostic arguments are incomplete: %+v", second)
+	if second["tool"] != "ck3_inspect" || secondArgs["id"] != "event:fixture.1" {
+		t.Fatalf("canonical inspect arguments are incomplete: %+v", second)
 	}
 	third := actions[2]
 	thirdArgs := third["arguments"].(map[string]any)
@@ -854,7 +1119,7 @@ func TestCompactMapRenderResultOmitsBulkMetricTables(t *testing.T) {
 	}
 }
 
-func TestLegacyAliasMatchesCanonicalBusinessResult(t *testing.T) {
+func TestRemovedLegacyAliasIsRejected(t *testing.T) {
 	dir := t.TempDir()
 	cfg := writeMCPMapFixture(t, dir)
 	if _, err := indexer.Scan(context.Background(), cfg); err != nil {
@@ -865,16 +1130,13 @@ func TestLegacyAliasMatchesCanonicalBusinessResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	canonical := callToolForTest(t, db, cfg, "ck3_inspect", map[string]any{"id": "c_c114", "operation": "definition", "limit": 3})
-	legacy := callToolForTest(t, db, cfg, "query_object", map[string]any{"id": "c_c114", "limit": 3})
-	canonicalJSON, _ := json.Marshal(canonical["structuredContent"])
-	legacyJSON, _ := json.Marshal(legacy["structuredContent"])
-	if !bytes.Equal(canonicalJSON, legacyJSON) {
-		t.Fatalf("legacy/canonical business results differ:\ncanonical=%s\nlegacy=%s", canonicalJSON, legacyJSON)
+	raw, err := json.Marshal(map[string]any{"name": "query_object", "arguments": map[string]any{"id": "c_c114"}})
+	if err != nil {
+		t.Fatal(err)
 	}
-	meta := legacy["_meta"].(map[string]any)
-	if meta["replacement"] != "ck3_inspect" {
-		t.Fatalf("legacy replacement metadata = %+v", meta)
+	_, err = callMCPTool(context.Background(), db, cfg, raw)
+	if err == nil || !strings.Contains(err.Error(), "unknown tool") {
+		t.Fatalf("removed legacy alias must be rejected, got %v", err)
 	}
 }
 
@@ -939,6 +1201,17 @@ func decodeResponseLines(t *testing.T, output string) []map[string]any {
 		responses = append(responses, response)
 	}
 	return responses
+}
+
+func responseByID(t *testing.T, responses []map[string]any, id string) map[string]any {
+	t.Helper()
+	for _, response := range responses {
+		if fmt.Sprint(response["id"]) == id {
+			return response
+		}
+	}
+	t.Fatalf("response id %s was not found in %+v", id, responses)
+	return nil
 }
 
 func containsString(items []string, wanted string) bool {

@@ -22,17 +22,11 @@ func TestToolRegistryContract(t *testing.T) {
 	if len(definitions) != 30 {
 		t.Fatalf("standard registry count = %d, want 30", len(definitions))
 	}
-	if len(legacyAliases) != 28 {
-		t.Fatalf("legacy alias count = %d, want 28", len(legacyAliases))
-	}
-	if got := len(mcpToolsForProfile(ProfileStandard)); got != 30 {
-		t.Fatalf("standard tools/list count = %d, want 30", got)
-	}
-	if got := len(mcpToolsForProfile(ProfileExpert)); got != 58 {
-		t.Fatalf("expert tools/list count = %d, want 58", got)
+	if got := len(mcpTools()); got != 30 {
+		t.Fatalf("tools/list count = %d, want 30", got)
 	}
 
-	seen := make(map[string]struct{}, len(definitions)+len(legacyAliases))
+	seen := make(map[string]struct{}, len(definitions))
 	for _, definition := range definitions {
 		if strings.TrimSpace(definition.Name) == "" || strings.TrimSpace(definition.Title) == "" {
 			t.Fatal("registry contains a tool without a name or title")
@@ -61,21 +55,122 @@ func TestToolRegistryContract(t *testing.T) {
 			t.Fatalf("tool %q annotations are not read-only/closed-world", definition.Name)
 		}
 	}
-	for _, alias := range legacyAliases {
-		if _, exists := seen[alias.Name]; exists {
-			t.Fatalf("legacy alias collides with canonical tool %q", alias.Name)
+}
+
+func TestPriorityToolsPublishPreciseOutputSchemas(t *testing.T) {
+	for _, name := range []string{"ck3_search", "ck3_workspace", "ck3_preflight", "ck3_refresh"} {
+		definition, ok := findCanonicalTool(name)
+		if !ok {
+			t.Fatalf("%s is missing", name)
 		}
-		seen[alias.Name] = struct{}{}
-		if _, ok := findCanonicalTool(alias.Canonical); !ok {
-			t.Fatalf("legacy alias %q targets missing canonical tool %q", alias.Name, alias.Canonical)
+		alternatives, ok := definition.OutputSchema["oneOf"].([]any)
+		if !ok || len(alternatives) < 2 {
+			t.Fatalf("%s output schema is not a precise success/error union: %+v", name, definition.OutputSchema)
 		}
+		errorSchema := alternatives[len(alternatives)-1].(map[string]any)
+		assertClosedSchemaMatchesType(t, name+" error", errorSchema, reflect.TypeOf(struct {
+			Code      string         `json:"code"`
+			Category  string         `json:"category"`
+			Message   string         `json:"message"`
+			Retryable bool           `json:"retryable"`
+			Field     string         `json:"field"`
+			Details   map[string]any `json:"details"`
+			Recovery  map[string]any `json:"recovery"`
+		}{}), nil)
 	}
+
+	refresh, _ := findCanonicalTool("ck3_refresh")
+	refreshSuccess := refresh.OutputSchema["oneOf"].([]any)[0].(map[string]any)
+	refreshStats := refreshSuccess["properties"].(map[string]any)["refresh"].(map[string]any)
+	assertClosedSchemaMatchesType(t, "refresh scan stats", refreshStats, reflect.TypeOf(indexer.ScanStats{}), nil)
+
+	search, _ := findCanonicalTool("ck3_search")
+	searchSuccess := search.OutputSchema["oneOf"].([]any)[0].(map[string]any)
+	topologyNullable := searchSuccess["properties"].(map[string]any)["topology"].(map[string]any)
+	topology := topologyNullable["oneOf"].([]any)[0].(map[string]any)
+	topologyProperties := topology["properties"].(map[string]any)
+	assertClosedSchemaMatchesType(t, "search topology", topology, reflect.TypeOf(indexer.LLMTopology{}), nil)
+	assertClosedSchemaMatchesType(t, "search topology node", topologyProperties["nodes"].(map[string]any)["items"].(map[string]any), reflect.TypeOf(indexer.LLMTopologyNode{}), nil)
+	assertClosedSchemaMatchesType(t, "search topology edge", topologyProperties["edges"].(map[string]any)["items"].(map[string]any), reflect.TypeOf(indexer.LLMTopologyEdge{}), nil)
+	assertClosedSchemaMatchesType(t, "search topology path", topologyProperties["paths_from_center"].(map[string]any)["items"].(map[string]any), reflect.TypeOf(indexer.LLMTopologyPath{}), nil)
+
+	workspace, _ := findCanonicalTool("ck3_workspace")
+	capabilities := workspace.OutputSchema["oneOf"].([]any)[1].(map[string]any)
+	capability := capabilities["properties"].(map[string]any)["capabilities"].(map[string]any)["items"].(map[string]any)
+	assertClosedSchemaMatchesType(t, "workspace capability", capability, reflect.TypeOf(workspaceCapability{}), nil)
+	mode := capability["properties"].(map[string]any)["mode_details"].(map[string]any)["items"].(map[string]any)
+	assertClosedSchemaMatchesType(t, "workspace capability mode", mode, reflect.TypeOf(workspaceCapabilityMode{}), nil)
+}
+
+func TestPriorityToolRepresentativeOutputsMatchPublishedSchemas(t *testing.T) {
+	search, _ := findCanonicalTool("ck3_search")
+	searchValue := indexer.LLMResult{
+		Query:   "event:test.1",
+		Intent:  "event_chain",
+		Summary: "bounded topology",
+		Evidence: []indexer.LLMEvidence{{
+			Kind: "object", Type: "event", Name: "test.1", Line: 3,
+		}},
+		Topology: &indexer.LLMTopology{
+			Center: "event:test.1", Direction: "callees", IncludeOnActions: true, MaxDepth: 2,
+			Nodes: []indexer.LLMTopologyNode{{
+				ID: "event:test.1", Type: "event", Name: "test.1", Defined: true, Distance: 0,
+			}},
+			Edges: []indexer.LLMTopologyEdge{{
+				From: "event:test.1", To: "event:test.2", Resolution: "unresolved",
+			}},
+			PathsFromCenter: []indexer.LLMTopologyPath{{To: "event:test.2", Nodes: []string{"event:test.1", "event:test.2"}}},
+		},
+		NextQueries: []indexer.LLMNextQuery{{Tool: "object", ID: "event:test.1"}},
+	}
+	searchSuccess := search.OutputSchema["oneOf"].([]any)[0].(map[string]any)
+	topologySchema := searchSuccess["properties"].(map[string]any)["topology"].(map[string]any)["oneOf"].([]any)[0].(map[string]any)
+	assertDecodedValueMatchesSchema(t, "representative search topology", searchValue.Topology, topologySchema)
+	assertToolValueMatchesOutputSchema(t, search, searchValue)
+
+	refresh, _ := findCanonicalTool("ck3_refresh")
+	refreshValue := map[string]any{
+		"operation": "files",
+		"refresh_status": indexer.RefreshStatus{
+			Status: "ready",
+			Index: indexer.IndexState{
+				Generation: 2,
+				Revision:   "revision",
+				Status:     "ready",
+			},
+			Project:           indexer.RefreshProjectStatus{Configured: true, Accessible: true, Writable: true, Refreshable: true, Private: true},
+			EngineRules:       indexer.RefreshEngineStatus{Available: true, Current: true},
+			NeedsFullScan:     false,
+			FullScanAvailable: true,
+		},
+		"is_scanning":     false,
+		"status":          "ready",
+		"index":           indexer.IndexState{Generation: 2, Revision: "revision", Status: "ready"},
+		"scan_generation": 2,
+		"needs_full_scan": false,
+		"refresh": indexer.ScanStats{
+			Database: "", Files: 1, BySource: map[string]int{"project": 1},
+			ChangedFiles: 1, PathOutcomes: []indexer.RefreshPathOutcome{{Path: "events/test.txt", Status: "updated"}},
+		},
+		"changed_files":             1,
+		"removed_files":             0,
+		"missing_files":             []string{},
+		"path_outcomes":             []indexer.RefreshPathOutcome{{Path: "events/test.txt", Status: "updated"}},
+		"changed_symbols":           []string{"event:test.1"},
+		"changed_symbols_truncated": false,
+		"diagnostic_delta":          &indexer.DiagnosticDelta{},
+	}
+	assertToolValueMatchesOutputSchema(t, refresh, refreshValue)
+
+	errorValue := map[string]any{
+		"code": ErrorIndexStale, "category": "index_state", "message": "stale",
+		"retryable": true, "field": "", "details": nil, "recovery": map[string]any{"guidance": "refresh"},
+	}
+	assertDecodedValueMatchesSchema(t, "structured tool error", errorValue, toolErrorOutputSchema())
 }
 
 func TestToolsListGoldens(t *testing.T) {
-	assertCatalogGolden(t, "legacy_tools_list.golden.sha256", legacyToolCatalog())
-	assertCatalogGolden(t, "standard_tools_list.golden.sha256", mcpToolsForProfile(ProfileStandard))
-	assertCatalogGolden(t, "expert_tools_list.golden.sha256", mcpToolsForProfile(ProfileExpert))
+	assertCatalogGolden(t, "standard_tools_list.golden.sha256", mcpTools())
 }
 
 func TestCanonicalLimitSchemasAreUniform(t *testing.T) {
@@ -386,6 +481,39 @@ func assertClosedSchemaMatchesType(t *testing.T, label string, schema map[string
 	}
 }
 
+func assertToolValueMatchesOutputSchema(t *testing.T, definition *ToolDefinition, value any) {
+	t.Helper()
+	_, structured, err := encodeStructuredValue(value)
+	if err != nil {
+		t.Fatalf("encode %s representative output: %v", definition.Name, err)
+	}
+	assertDecodedValueMatchesSchema(t, definition.Name+" representative output", structured, definition.OutputSchema)
+}
+
+func assertDecodedValueMatchesSchema(t *testing.T, label string, value any, schema map[string]any) {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal %s: %v", label, err)
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.UseNumber()
+	var decoded any
+	if err := decoder.Decode(&decoded); err != nil {
+		t.Fatalf("decode %s: %v", label, err)
+	}
+	if err := validateDecodedProperty(label, decoded, schema); err != nil {
+		var alternativeErrors []string
+		if alternatives, ok := schema["oneOf"].([]any); ok {
+			for index, raw := range alternatives {
+				alternative, _ := raw.(map[string]any)
+				alternativeErrors = append(alternativeErrors, fmt.Sprintf("%d=%v", index, validateDecodedProperty(label, decoded, alternative)))
+			}
+		}
+		t.Fatalf("%s does not match output schema: %v alternatives=[%s]\nvalue=%s", label, err, strings.Join(alternativeErrors, "; "), data)
+	}
+}
+
 func assertCatalogGolden(t *testing.T, filename string, catalog any) {
 	t.Helper()
 	data, err := json.Marshal(catalog)
@@ -446,34 +574,6 @@ func TestEveryCallableToolHasSuccessAndMalformedArgumentCases(t *testing.T) {
 		"map_province_mapping":    {"source": "project", "target": "active", "limit": 2},
 		"map_migration_snapshot":  {"project": "project", "base": "base"},
 		"map_province_migration":  {"snapshot_id": snapshot.SnapshotID, "target": "target", "output_name": "contract_fork"},
-		"query_object":            {"id": "c_c114", "limit": 2},
-		"query_object_types":      {"limit": 2},
-		"find_refs":               {"id": "c_c114", "limit": 2},
-		"query_loc":               {"id": "c_c114", "limit": 2},
-		"query_resource":          {"id": "gfx/interface/contract.dds", "limit": 2},
-		"query_examples":          {"id": "landed_title", "limit": 2},
-		"query_rules":             {"id": "landed_title", "limit": 2},
-		"query_patterns":          {"id": "landed_title", "limit": 2},
-		"architecture_overview":   {"limit": 2},
-		"dependency_graph":        {"id": "c_c114", "depth": 1, "limit": 2},
-		"validate_project":        {"limit": 2},
-		"health_check":            {"limit": 2},
-		"explain_diagnostic":      {"id": "missing_object_reference", "limit": 2},
-		"inspect_object":          {"id": "c_c114", "limit": 2},
-		"prepare_edit":            {"id": "c_c114", "limit": 2},
-		"preflight_code":          {"id": "c_c114", "limit": 2},
-		"preflight_patch":         {"files": patchFiles, "limit": 2},
-		"impact_patch":            {"files": patchFiles, "limit": 2},
-		"preflight_dirty":         {"limit": 2},
-		"diagnose_key":            {"id": "c_c114", "limit": 2},
-		"lookup_scope":            {"id": "has_trait", "limit": 2},
-		"lookup_datatype":         {"id": "character", "limit": 2},
-		"lookup_shape":            {"id": "has_trait"},
-		"lookup_define":           {"id": "contract_define"},
-		"lookup_on_action":        {"id": "on_birth_child"},
-		"lookup_iterator":         {"id": "any_courtier"},
-		"lookup_example":          {"id": "add_gold"},
-		"lookup_modifier":         {"id": "monthly_prestige"},
 		"map_province_info":       {"id": "1", "year": 6253, "limit": 2},
 		"map_physical_context":    {"target_type": "region", "target": "region:test_region", "operation": "oceanography", "include_adjacent_water": true, "limit": 2},
 		"map_neighbors":           {"id": "1", "radius": 1, "year": 6253, "limit": 2},
@@ -487,13 +587,8 @@ func TestEveryCallableToolHasSuccessAndMalformedArgumentCases(t *testing.T) {
 		"map_route":               {"from": "1", "to": "2", "mode": "land", "year": 6253, "limit": 2},
 		"map_render":              {"target": "k_k11", "year": 6253, "width": 400, "layers": []map[string]any{{"type": "borders", "level": "county"}}},
 	}
-	if len(successArguments) != 58 {
-		t.Fatalf("success case count = %d, want 58 callable canonical/legacy names", len(successArguments))
-	}
-
-	legacyNames := map[string]bool{}
-	for _, alias := range legacyAliases {
-		legacyNames[alias.Name] = true
+	if len(successArguments) != 30 {
+		t.Fatalf("success case count = %d, want 30 canonical names", len(successArguments))
 	}
 	for name, args := range successArguments {
 		name, args := name, args
@@ -505,13 +600,8 @@ func TestEveryCallableToolHasSuccessAndMalformedArgumentCases(t *testing.T) {
 			if _, ok := result["structuredContent"].(map[string]any); !ok {
 				t.Fatalf("success contract has no structuredContent: %+v", result)
 			}
-			meta, hasMeta := result["_meta"].(map[string]any)
-			if legacyNames[name] {
-				if !hasMeta || meta["deprecated_tool"] != name {
-					t.Fatalf("legacy result has no deprecation metadata: %+v", result)
-				}
-			} else if hasMeta {
-				t.Fatalf("canonical result unexpectedly marked deprecated: %+v", meta)
+			if _, hasMeta := result["_meta"]; hasMeta {
+				t.Fatalf("canonical result unexpectedly has compatibility metadata: %+v", result)
 			}
 		})
 		t.Run(name+"/malformed_arguments", func(t *testing.T) {

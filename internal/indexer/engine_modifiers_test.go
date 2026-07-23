@@ -18,4 +18,16 @@ func TestEngineModifiersUseCurrentLogAndVanillaFormats(t *testing.T) {
 	if got := LookupModifier("ck3_index_not_a_real_modifier"); got.Found {
 		t.Fatalf("unknown modifier was accepted: %+v", got)
 	}
+	if got := LookupModifier("magic_focused_ai_rationality"); !got.Found || got.Source != "engine_log_template" {
+		t.Fatalf("generated vassal-stance modifier was not matched: %+v", got)
+	}
+	if got := LookupModifier("world_ga_aironoi_development_growth"); !got.Found {
+		t.Fatalf("generated geographical-region modifier was not matched: %+v", got)
+	}
+	if got := LookupModifier("k10_archers_damage_add"); !got.Found {
+		t.Fatalf("generated men-at-arms modifier was not matched: %+v", got)
+	}
+	if got := LookupModifier("garrison_size_mult"); got.Found {
+		t.Fatalf("obsolete static modifier was accepted as a generated template: %+v", got)
+	}
 }

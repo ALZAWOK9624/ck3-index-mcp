@@ -2,6 +2,7 @@ package indexer
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -12,9 +13,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ck3-index/internal/script"
@@ -32,6 +35,14 @@ type ScanStats struct {
 	ObjectFields int    `json:"object_fields"`
 	Diagnostics  int    `json:"diagnostics"`
 	Overridden   int    `json:"overridden"`
+	FilesRead    int64  `json:"files_read"`
+	FilesHashed  int64  `json:"files_hashed"`
+	FilesParsed  int64  `json:"files_parsed"`
+	BytesRead    int64  `json:"bytes_read"`
+	BytesHashed  int64  `json:"bytes_hashed"`
+	// PeakQueuedResults measures the highest observed occupancy of the compact
+	// result channel, not the number of live worker ASTs.
+	PeakQueuedResults int `json:"peak_queued_results"`
 	// Noop reports that the previously published semantic generation was
 	// already current. File mtime metadata may have been refreshed, but no
 	// global resolver, validator, map, engine, FTS, or overview work ran.
@@ -67,16 +78,11 @@ type RefreshPathOutcome struct {
 }
 
 type scanWriter struct {
+	tx         *sql.Tx
 	fileStmt   *sql.Stmt
-	objStmt    *sql.Stmt
-	refStmt    *sql.Stmt
 	diagStmt   *sql.Stmt
-	locStmt    *sql.Stmt
 	resStmt    *sql.Stmt
 	schemaStmt *sql.Stmt
-	fieldStmt  *sql.Stmt
-	scopeStmt  *sql.Stmt
-	varStmt    *sql.Stmt
 }
 
 type fileRecord struct {
@@ -96,7 +102,7 @@ type fileRecord struct {
 	OverrideRule     string
 }
 
-const indexRuleVersion = "2026-07-22-v0.2.31-ck3-1.19-static-audit"
+const indexRuleVersion = "2026-07-24-v0.5.0-diagnostic-provenance-2"
 
 // Keep ordinary full scans well below SQLite's variable limit when they take
 // the scoped resolver/validator path. Larger edits remain correct by falling
@@ -112,6 +118,15 @@ func Scan(ctx context.Context, cfg Config) (ScanStats, error) {
 	if err != nil {
 		return ScanStats{}, err
 	}
+	dbPath, err := ConfiguredDatabasePath(normalized)
+	if err != nil {
+		return ScanStats{}, err
+	}
+	lock, err := acquirePublicationLock(ctx, dbPath)
+	if err != nil {
+		return ScanStats{}, err
+	}
+	defer lock.Close()
 	return scanWithMode(ctx, normalized, normalized.ForceClean)
 }
 
@@ -127,9 +142,13 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanS
 	if err != nil {
 		return ScanStats{}, err
 	}
-	if err := ConfigureEngineRules(cfg.EngineLogs); err != nil {
+	engineLoadStart := time.Now()
+	engineBundle, err := LoadEngineBundle(ctx, cfg.EngineLogs)
+	if err != nil {
 		return ScanStats{}, err
 	}
+	engineLoadMillis := time.Since(engineLoadStart).Milliseconds()
+	ConfigureEngineRulesFromBundle(engineBundle)
 	dbPath, err := ConfiguredDatabasePath(cfg)
 	if err != nil {
 		return ScanStats{}, err
@@ -149,16 +168,8 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanS
 	// This database is a rebuildable cache. Scans do large write batches, so
 	// avoid growing a huge WAL file that can make commit/checkpoint look hung.
 	fmt.Fprintln(os.Stderr, "[scan] preparing sqlite cache")
-	for _, p := range []string{
-		`PRAGMA busy_timeout=60000`,
-		`PRAGMA journal_mode=WAL`,
-		`PRAGMA synchronous=OFF`,
-		`PRAGMA temp_store=MEMORY`,
-		`PRAGMA cache_size=-200000`,
-	} {
-		if _, err := db.sql.ExecContext(ctx, p); err != nil {
-			return ScanStats{}, err
-		}
+	if _, err := db.sql.ExecContext(ctx, `PRAGMA journal_mode=WAL`); err != nil {
+		return ScanStats{}, err
 	}
 	if _, err := db.CheckpointWAL(ctx, "PASSIVE"); err != nil {
 		fmt.Fprintf(os.Stderr, "[scan] WAL checkpoint deferred before scan: %v\n", err)
@@ -188,7 +199,9 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanS
 		}
 	}
 	stats = ScanStats{Database: dbPath, BySource: map[string]int{}, TimingsMillis: map[string]int64{}}
+	stats.TimingsMillis["load_engine_bundle"] = engineLoadMillis
 
+	existingLoadStart := time.Now()
 	existing := map[string]fileRecord{}
 	if !forceClean {
 		rows, err := db.sql.QueryContext(ctx, `SELECT id, source_name, source_rank, path, rel_path, kind, mtime, file_size, sha256, overridden,
@@ -217,6 +230,7 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanS
 			forceClean = true
 		}
 	}
+	stats.TimingsMillis["load_existing_index"] = time.Since(existingLoadStart).Milliseconds()
 	publishedState := IndexState{}
 	cachedEngineFingerprint := ""
 	cachedRuleVersion := ""
@@ -236,13 +250,15 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanS
 			}
 		}
 	}
-	engineFingerprint, err := engineDataFingerprint(cfg.EngineLogs)
+	engineFingerprint := engineBundle.Fingerprint
+	engineDataDirty := forceClean || !publishedState.Ready() || engineFingerprint != cachedEngineFingerprint
+
+	writerConn, err := db.scanWriteConnection(ctx)
 	if err != nil {
 		return ScanStats{}, err
 	}
-	engineDataDirty := forceClean || !publishedState.Ready() || engineFingerprint != cachedEngineFingerprint
-
-	tx, err := db.sql.BeginTx(ctx, nil)
+	defer writerConn.Close()
+	tx, err := writerConn.BeginTx(ctx, nil)
 	if err != nil {
 		return ScanStats{}, err
 	}
@@ -308,6 +324,7 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanS
 	}
 
 	// Collect file jobs first, then parse them concurrently.
+	walkStart := time.Now()
 	var jobs []fileJob
 	for _, src := range cfg.Sources {
 		if src.Name == "" || src.Path == "" {
@@ -323,7 +340,7 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanS
 			}
 			rel = filepath.ToSlash(rel)
 			if d.IsDir() {
-				if shouldPruneSourceDir(rel) {
+				if shouldPruneSourceDirForSource(rel, src.ResourceOnly) {
 					return filepath.SkipDir
 				}
 				return nil
@@ -332,7 +349,7 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanS
 				return fmt.Errorf("source %q contains symbolic link at %s", src.Name, rel)
 			}
 			kind := classifyRel(rel)
-			if kind == "" {
+			if kind == "" || (src.ResourceOnly && kind != "resource") {
 				return nil
 			}
 			jobs = append(jobs, fileJob{
@@ -348,6 +365,7 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanS
 			return ScanStats{}, fmt.Errorf("scan source %q: %w", src.Name, err)
 		}
 	}
+	stats.TimingsMillis["walk_sources"] = time.Since(walkStart).Milliseconds()
 
 	// Override pass: files with the same rel_path across sources.
 	// The source with the lowest rank (highest priority) wins; others
@@ -393,8 +411,6 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanS
 	// has already returned.
 	workerCtx, cancelWorkers := context.WithCancel(ctx)
 	defer cancelWorkers()
-	jobsCh := make(chan fileJob, 256)
-	resCh := make(chan fileResult, 256)
 	workers := runtime.GOMAXPROCS(0)
 	if workers < 1 {
 		workers = 1
@@ -402,12 +418,18 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanS
 	if workers > 16 {
 		workers = 16
 	}
+	// Bound parsed output to a small multiple of active workers. Workers
+	// extract compact rows and release ASTs before enqueueing, so a slow SQLite
+	// writer cannot retain hundreds of full parse trees.
+	jobsCh := make(chan fileJob, workers*2)
+	resCh := make(chan fileResult, workers*2)
+	var peakQueuedResults atomic.Int64
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			parseFileWorker(workerCtx, jobsCh, resCh)
+			parseFileWorker(workerCtx, jobsCh, resCh, &peakQueuedResults)
 		}()
 	}
 	go func() {
@@ -427,73 +449,14 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanS
 
 	progressEvery := 2000
 	processed := 0
+	var workTotals fileWorkTotals
+	var sqliteWriteTotal time.Duration
 
-	// Prepared statements: avoid re-parsing the same SQL once per row.
-	fileStmt, err := tx.PrepareContext(ctx, `INSERT INTO files(source_name,source_rank,path,rel_path,kind,mtime,file_size,sha256,overridden,
-		override_reason,override_by_source,override_by_rank,override_rule) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+	writer, closeWriter, err := prepareScanWriter(ctx, tx)
 	if err != nil {
 		return ScanStats{}, err
 	}
-	defer fileStmt.Close()
-	objStmt, err := tx.PrepareContext(ctx, `INSERT INTO objects(object_type,name,value,file_id,node_local_id,source_name,source_rank,path,line,col,end_line,end_col) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
-	if err != nil {
-		return ScanStats{}, err
-	}
-	defer objStmt.Close()
-	refStmt, err := tx.PrepareContext(ctx, `INSERT INTO refs(from_object_type,from_object_name,ref_kind,ref_name,file_id,node_local_id,line,col,raw,resolved,
-		relation,phase,confidence,resolution_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-	if err != nil {
-		return ScanStats{}, err
-	}
-	defer refStmt.Close()
-	diagStmt, err := tx.PrepareContext(ctx, `INSERT INTO diagnostics(source,severity,code,message,file_id,path,line,col) VALUES(?,?,?,?,?,?,?,?)`)
-	if err != nil {
-		return ScanStats{}, err
-	}
-	defer diagStmt.Close()
-	locStmt, err := tx.PrepareContext(ctx, `INSERT INTO localization(key,language,value,file_id,source_name,source_rank,path,line,replace_dir) VALUES(?,?,?,?,?,?,?,?,?)`)
-	if err != nil {
-		return ScanStats{}, err
-	}
-	defer locStmt.Close()
-	resStmt, err := tx.PrepareContext(ctx, `INSERT INTO resources(resource_path,kind,file_id,source_name,source_rank,path) VALUES(?,?,?,?,?,?)`)
-	if err != nil {
-		return ScanStats{}, err
-	}
-	defer resStmt.Close()
-	schemaStmt, err := tx.PrepareContext(ctx, `INSERT INTO schema_fields(object_type,field,file_id,source_name,source_rank,path,line,raw) VALUES(?,?,?,?,?,?,?,?)`)
-	if err != nil {
-		return ScanStats{}, err
-	}
-	defer schemaStmt.Close()
-	fieldStmt, err := tx.PrepareContext(ctx, `INSERT INTO object_fields(object_type,object_name,field,value_shape,date_key,file_id,source_name,source_rank,path,line,raw) VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
-	if err != nil {
-		return ScanStats{}, err
-	}
-	defer fieldStmt.Close()
-
-	scopeStmt, err := tx.PrepareContext(ctx, `INSERT INTO saved_scopes(file_id,scope_name) VALUES(?,?)`)
-	if err != nil {
-		return ScanStats{}, err
-	}
-	defer scopeStmt.Close()
-	varStmt, err := tx.PrepareContext(ctx, `INSERT INTO variables(file_id,var_name) VALUES(?,?)`)
-	if err != nil {
-		return ScanStats{}, err
-	}
-	defer varStmt.Close()
-	writer := scanWriter{
-		fileStmt:   fileStmt,
-		objStmt:    objStmt,
-		refStmt:    refStmt,
-		diagStmt:   diagStmt,
-		locStmt:    locStmt,
-		resStmt:    resStmt,
-		schemaStmt: schemaStmt,
-		fieldStmt:  fieldStmt,
-		scopeStmt:  scopeStmt,
-		varStmt:    varStmt,
-	}
+	defer closeWriter()
 
 	for {
 		var res fileResult
@@ -507,6 +470,7 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanS
 			}
 		}
 		processed++
+		workTotals.add(&stats, res.work)
 		if processed%progressEvery == 0 {
 			fmt.Fprintf(os.Stderr, "[scan] %d/%d files indexed\n", processed, len(jobs))
 		}
@@ -518,13 +482,16 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanS
 			return ScanStats{}, fmt.Errorf("read source file %s: %w", res.job.rel, res.err)
 		}
 		if res.skip {
+			writeStart := time.Now()
 			if err := refreshSkippedFileMetadata(ctx, tx, res); err != nil {
 				return ScanStats{}, err
 			}
+			sqliteWriteTotal += time.Since(writeStart)
 			continue
 		}
 		fileChanges = true
 		if res.info == nil {
+			writeStart := time.Now()
 			if res.job.prev.ID != 0 {
 				if err := trackOldFile(res.job.prev.ID); err != nil {
 					return ScanStats{}, err
@@ -533,9 +500,11 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanS
 					return ScanStats{}, err
 				}
 			}
+			sqliteWriteTotal += time.Since(writeStart)
 			continue
 		}
 		if res.overridden {
+			writeStart := time.Now()
 			if res.job.prev.ID != 0 {
 				if err := trackOldFile(res.job.prev.ID); err != nil {
 					return ScanStats{}, err
@@ -544,12 +513,14 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanS
 					return ScanStats{}, err
 				}
 			}
-			if _, err := fileStmt.ExecContext(ctx, src.Name, src.Rank, res.job.path, res.job.rel, res.job.kind, res.info.ModTime().UnixNano(), res.info.Size(), res.sum, 1,
+			if _, err := writer.fileStmt.ExecContext(ctx, src.Name, src.Rank, res.job.path, res.job.rel, res.job.kind, res.info.ModTime().UnixNano(), res.info.Size(), res.sum, 1,
 				res.job.overrideReason, res.job.overrideBySource, res.job.overrideByRank, res.job.overrideRule); err != nil {
 				return ScanStats{}, err
 			}
+			sqliteWriteTotal += time.Since(writeStart)
 			continue
 		}
+		writeStart := time.Now()
 		if res.job.prev.ID != 0 {
 			if err := trackOldFile(res.job.prev.ID); err != nil {
 				return ScanStats{}, err
@@ -565,9 +536,13 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanS
 		if err := trackNewFile(rec.ID); err != nil {
 			return ScanStats{}, err
 		}
+		sqliteWriteTotal += time.Since(writeStart)
 	}
 
 parsedFilesComplete:
+	stats.PeakQueuedResults = int(peakQueuedResults.Load())
+	workTotals.applyTimings(&stats)
+	stats.TimingsMillis["sqlite_write"] = sqliteWriteTotal.Milliseconds()
 	fmt.Fprintf(os.Stderr, "[scan] all %d files indexed, finalizing\n", processed)
 
 	for path, ex := range existing {
@@ -598,8 +573,14 @@ parsedFilesComplete:
 			return ScanStats{}, err
 		}
 		if mapCurrent {
-			if err := refreshScanStatsTotals(ctx, tx, &stats); err != nil {
+			loaded, err := loadScanStatsTotals(ctx, tx, &stats)
+			if err != nil {
 				return ScanStats{}, err
+			}
+			if !loaded {
+				if err := refreshScanStatsTotals(ctx, tx, &stats); err != nil {
+					return ScanStats{}, err
+				}
 			}
 			if err := tx.Commit(); err != nil {
 				return ScanStats{}, err
@@ -648,7 +629,7 @@ parsedFilesComplete:
 		fmt.Fprintln(os.Stderr, "[scan] sqlite indexes ready")
 	}
 	stageStart = time.Now()
-	tx2, err := db.sql.BeginTx(ctx, nil)
+	tx2, err := writerConn.BeginTx(ctx, nil)
 	if err != nil {
 		return ScanStats{}, err
 	}
@@ -678,6 +659,21 @@ parsedFilesComplete:
 				return ScanStats{}, err
 			}
 		}
+		if err := refreshGovernmentRegistrationDiagnostics(ctx, tx, project.Rank); err != nil {
+			return ScanStats{}, err
+		}
+		if err := refreshGovernmentFallbackDiagnostics(ctx, tx); err != nil {
+			return ScanStats{}, err
+		}
+		if err := refreshGovernmentMechanicDefaultDiagnostics(ctx, tx); err != nil {
+			return ScanStats{}, err
+		}
+		if err := refreshCourtTypeDefaultDiagnostics(ctx, tx); err != nil {
+			return ScanStats{}, err
+		}
+		if err := refreshErrorLogContractDiagnostics(ctx, tx, project.Rank); err != nil {
+			return ScanStats{}, err
+		}
 		stats.TimingsMillis["validator"] = time.Since(stageStart).Milliseconds()
 		stats.TimingsMillis["validator_scoped"] = stats.TimingsMillis["validator"]
 	} else {
@@ -697,10 +693,14 @@ parsedFilesComplete:
 		if err := loadAllResources(ctx, tx, resources); err != nil {
 			return ScanStats{}, err
 		}
+		evidence, err := loadReferenceResolutionEvidence(ctx, tx, locKeys, resources)
+		if err != nil {
+			return ScanStats{}, err
+		}
 		stats.TimingsMillis["load_symbols"] = time.Since(stageStart).Milliseconds()
 		fmt.Fprintln(os.Stderr, "[scan] resolving references")
 		stageStart = time.Now()
-		if err := refreshRefsResolvedGo(ctx, tx, objectNames, locKeys, resources); err != nil {
+		if err := refreshRefsResolvedGo(ctx, tx, objectNames, locKeys, evidence); err != nil {
 			return ScanStats{}, err
 		}
 		stats.TimingsMillis["resolve_refs"] = time.Since(stageStart).Milliseconds()
@@ -711,10 +711,25 @@ parsedFilesComplete:
 		if _, err := tx.ExecContext(ctx, `DELETE FROM diagnostics WHERE source='validator'`); err != nil {
 			return ScanStats{}, err
 		}
-		if err := addValidationDiagnostics(ctx, tx, project.Rank, locKeys, resources, objectNames); err != nil {
+		if err := addValidationDiagnostics(ctx, tx, project.Rank, locKeys, objectNames, evidence); err != nil {
 			return ScanStats{}, err
 		}
 		if err := refreshTitleIntegrityDiagnostics(ctx, tx); err != nil {
+			return ScanStats{}, err
+		}
+		if err := refreshGovernmentRegistrationDiagnostics(ctx, tx, project.Rank); err != nil {
+			return ScanStats{}, err
+		}
+		if err := refreshGovernmentFallbackDiagnostics(ctx, tx); err != nil {
+			return ScanStats{}, err
+		}
+		if err := refreshGovernmentMechanicDefaultDiagnostics(ctx, tx); err != nil {
+			return ScanStats{}, err
+		}
+		if err := refreshCourtTypeDefaultDiagnostics(ctx, tx); err != nil {
+			return ScanStats{}, err
+		}
+		if err := refreshErrorLogContractDiagnostics(ctx, tx, project.Rank); err != nil {
 			return ScanStats{}, err
 		}
 		stats.TimingsMillis["validator"] = time.Since(stageStart).Milliseconds()
@@ -746,7 +761,7 @@ parsedFilesComplete:
 	stageStart = time.Now()
 	if engineDataDirty {
 		fmt.Fprintln(os.Stderr, "[scan] ingesting changed engine logs")
-		if err := rebuildEngineData(ctx, tx, cfg.EngineLogs); err != nil {
+		if err := rebuildEngineDataFromBundle(ctx, tx, engineBundle); err != nil {
 			return ScanStats{}, err
 		}
 		if err := storeEngineDataFingerprint(ctx, tx, engineFingerprint); err != nil {
@@ -792,8 +807,17 @@ parsedFilesComplete:
 			return ScanStats{}, err
 		}
 	}
-	if err := refreshScanStatsTotals(ctx, tx, &stats); err != nil {
-		return ScanStats{}, err
+	if forceClean {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM diagnostics`).Scan(&stats.Diagnostics); err != nil {
+			return ScanStats{}, fmt.Errorf("count indexed diagnostics: %w", err)
+		}
+		if err := storeScanStatsTotals(ctx, tx, &stats); err != nil {
+			return ScanStats{}, err
+		}
+	} else {
+		if err := refreshScanStatsTotals(ctx, tx, &stats); err != nil {
+			return ScanStats{}, err
+		}
 	}
 	stats.TimingsMillis["count_diagnostics"] = time.Since(stageStart).Milliseconds()
 	stageStart = time.Now()
@@ -819,7 +843,7 @@ parsedFilesComplete:
 		fmt.Fprintf(os.Stderr, "[scan] cache has %d free pages; deferred VACUUM to explicit maintenance\n", freePages)
 	}
 	stats.TimingsMillis["checkpoint_wal"] = time.Since(stageStart).Milliseconds()
-	for _, key := range []string{"commit_indexed_rows", "build_indexes", "begin_finalize_tx", "load_symbols", "resolve_refs", "resolve_refs_scoped", "validator", "validator_scoped", "map_context", "map_context_rebuild", "map_context_reused", "semantic_fts", "semantic_fts_rebuild", "semantic_fts_scoped", "count_diagnostics", "commit_finalize", "checkpoint_wal"} {
+	for _, key := range []string{"load_engine_bundle", "load_existing_index", "walk_sources", "hash_files_wall", "parse_files_wall", "read_hash_worker_cpu_total", "parse_worker_cpu_total", "lint_worker_cpu_total", "extract_worker_cpu_total", "sqlite_write", "commit_indexed_rows", "build_indexes", "begin_finalize_tx", "load_symbols", "resolve_refs", "resolve_refs_scoped", "validator", "validator_scoped", "map_context", "map_context_rebuild", "map_context_reused", "semantic_fts", "semantic_fts_rebuild", "semantic_fts_scoped", "count_diagnostics", "commit_finalize", "checkpoint_wal"} {
 		if ms, ok := stats.TimingsMillis[key]; ok {
 			fmt.Fprintf(os.Stderr, "[scan] timing %s=%dms\n", key, ms)
 		}
@@ -829,25 +853,65 @@ parsedFilesComplete:
 }
 
 func refreshScanStatsTotals(ctx context.Context, tx *sql.Tx, stats *ScanStats) error {
-	counts := []struct {
-		table string
-		value *int
-	}{
-		{"nodes", &stats.Nodes},
-		{"objects", &stats.Objects},
-		{"refs", &stats.References},
-		{"localization", &stats.Localization},
-		{"resources", &stats.Resources},
-		{"schema_fields", &stats.SchemaFields},
-		{"object_fields", &stats.ObjectFields},
-		{"diagnostics", &stats.Diagnostics},
-	}
-	for _, count := range counts {
+	for _, count := range scanStatsCountFields(stats) {
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+count.table).Scan(count.value); err != nil {
 			return fmt.Errorf("count indexed %s: %w", count.table, err)
 		}
 	}
+	return storeScanStatsTotals(ctx, tx, stats)
+}
+
+type scanStatsCountField struct {
+	table string
+	key   string
+	value *int
+}
+
+func scanStatsCountFields(stats *ScanStats) []scanStatsCountField {
+	return []scanStatsCountField{
+		{table: "nodes", key: "scan_count_nodes", value: &stats.Nodes},
+		{table: "objects", key: "scan_count_objects", value: &stats.Objects},
+		{table: "refs", key: "scan_count_refs", value: &stats.References},
+		{table: "localization", key: "scan_count_localization", value: &stats.Localization},
+		{table: "resources", key: "scan_count_resources", value: &stats.Resources},
+		{table: "schema_fields", key: "scan_count_schema_fields", value: &stats.SchemaFields},
+		{table: "object_fields", key: "scan_count_object_fields", value: &stats.ObjectFields},
+		{table: "diagnostics", key: "scan_count_diagnostics", value: &stats.Diagnostics},
+	}
+}
+
+func storeScanStatsTotals(ctx context.Context, tx *sql.Tx, stats *ScanStats) error {
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO meta(key,value) VALUES(?,?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, count := range scanStatsCountFields(stats) {
+		if _, err := stmt.ExecContext(ctx, count.key, strconv.Itoa(*count.value)); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func loadScanStatsTotals(ctx context.Context, tx *sql.Tx, stats *ScanStats) (bool, error) {
+	for _, count := range scanStatsCountFields(stats) {
+		var raw string
+		err := tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key=?`, count.key).Scan(&raw)
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 0 {
+			return false, nil
+		}
+		*count.value = value
+	}
+	return true, nil
 }
 
 func deleteFileRecords(ctx context.Context, tx *sql.Tx, fileID int64) error {
@@ -892,7 +956,7 @@ func writeFileResult(ctx context.Context, w scanWriter, res fileResult, stats *S
 	rec := fileRecord{ID: fid, SourceName: src.Name, SourceRank: src.Rank, Path: res.job.path, RelPath: res.job.rel, Kind: res.job.kind, MTime: res.info.ModTime().UnixNano(), Size: res.info.Size(), SHA: res.sum}
 	switch res.job.kind {
 	case "script":
-		for _, pe := range res.parsed.Errors {
+		for _, pe := range res.parseErrors {
 			if _, err := w.diagStmt.ExecContext(ctx, "parser", "error", "parse_error", pe.Message, rec.ID, rec.Path, pe.Line, pe.Col); err != nil {
 				return fileRecord{}, err
 			}
@@ -906,46 +970,54 @@ func writeFileResult(ctx context.Context, w scanWriter, res fileResult, stats *S
 			}
 			stats.Diagnostics++
 		}
-		for _, s := range res.savedScopes {
-			if _, err := w.scopeStmt.ExecContext(ctx, rec.ID, s); err != nil {
-				return fileRecord{}, err
-			}
+		if err := insertSavedScopes(ctx, w.tx, rec.ID, res.savedScopes); err != nil {
+			return fileRecord{}, err
 		}
-		for _, v := range res.variables {
-			if _, err := w.varStmt.ExecContext(ctx, rec.ID, v); err != nil {
-				return fileRecord{}, err
-			}
+		if err := insertVariables(ctx, w.tx, rec.ID, res.variables); err != nil {
+			return fileRecord{}, err
 		}
-		objs := extractObjects(rec, res.parsed.Nodes)
-		for _, obj := range objs {
-			if _, err := w.objStmt.ExecContext(ctx, obj.Type, obj.Name, obj.Value, obj.FileID, obj.NodeID, obj.SourceName, obj.SourceRank, obj.Path, obj.Line, obj.Col, obj.EndLine, obj.EndCol); err != nil {
-				return fileRecord{}, err
-			}
-			stats.Objects++
+		for index := range res.objects {
+			res.objects[index].FileID = rec.ID
 		}
-		refs := extractRefs(rec, res.parsed.Nodes, objs)
-		for _, ref := range refs {
-			if _, err := w.refStmt.ExecContext(ctx, ref.FromType, ref.FromName, ref.Kind, ref.Name, ref.FileID, ref.NodeID, ref.Line, ref.Col, ref.Raw, ref.Resolved,
-				ref.Relation, ref.Phase, ref.Confidence, ref.ResolutionReason); err != nil {
-				return fileRecord{}, err
-			}
-			stats.References++
+		if err := insertObjectRows(ctx, w.tx, res.objects); err != nil {
+			return fileRecord{}, err
 		}
-		fields := extractObjectFields(rec, res.parsed.Nodes, objs)
-		for _, field := range fields {
-			if _, err := w.fieldStmt.ExecContext(ctx, field.Type, field.ObjectName, field.Field, field.Shape, field.DateKey, field.FileID, field.SourceName, field.SourceRank, field.Path, field.Line, field.Raw); err != nil {
-				return fileRecord{}, err
-			}
-			stats.ObjectFields++
+		stats.Objects += len(res.objects)
+		for index := range res.refs {
+			res.refs[index].FileID = rec.ID
 		}
+		if err := insertReferenceRows(ctx, w.tx, res.refs); err != nil {
+			return fileRecord{}, err
+		}
+		stats.References += len(res.refs)
+		for index := range res.objectFields {
+			res.objectFields[index].FileID = rec.ID
+		}
+		if err := insertObjectFieldRows(ctx, w.tx, res.objectFields); err != nil {
+			return fileRecord{}, err
+		}
+		stats.ObjectFields += len(res.objectFields)
 	case "localization":
+		for _, d := range res.ctxDiags {
+			if _, err := w.diagStmt.ExecContext(ctx, "parser", d.severity, d.code, d.msg, rec.ID, rec.Path, d.line, d.col); err != nil {
+				return fileRecord{}, err
+			}
+			stats.Diagnostics++
+		}
 		for _, e := range res.locs {
 			locKeys[e.key] = true
-			if _, err := w.locStmt.ExecContext(ctx, e.key, e.lang, e.val, rec.ID, rec.SourceName, rec.SourceRank, rec.Path, e.line, e.replace); err != nil {
-				return fileRecord{}, err
-			}
-			stats.Localization++
 		}
+		if err := insertLocalizationRows(ctx, w.tx, rec, res.locs); err != nil {
+			return fileRecord{}, err
+		}
+		stats.Localization += len(res.locs)
+		for index := range res.refs {
+			res.refs[index].FileID = rec.ID
+		}
+		if err := insertReferenceRows(ctx, w.tx, res.refs); err != nil {
+			return fileRecord{}, err
+		}
+		stats.References += len(res.refs)
 	case "resource":
 		rp := normalizeResource(rec.RelPath)
 		if _, err := w.resStmt.ExecContext(ctx, rp, strings.TrimPrefix(strings.ToLower(filepath.Ext(rp)), "."), rec.ID, rec.SourceName, rec.SourceRank, rec.Path); err != nil {
@@ -1038,10 +1110,272 @@ func loadAllResources(ctx context.Context, tx *sql.Tx, seen map[string]bool) err
 	return rows.Err()
 }
 
+// loadGameLocalizationReferences records keys that CK3's own script/GUI
+// references even when their text is supplied by the executable, a DLC
+// archive, or another runtime localization provider. The game layer is
+// deliberately not filtered by override state: a mod commonly carries a
+// copied vanilla GUI file, and the superseded vanilla copy is still valid
+// provenance that the identifier is engine-owned rather than a mod typo.
+func loadGameLocalizationReferences(ctx context.Context, tx *sql.Tx, indexedLocKeys map[string]bool) (map[string]bool, error) {
+	projectName, err := sourceNameForRole(ctx, tx, SourceRoleProject)
+	if err != nil {
+		return nil, err
+	}
+	gameName, err := sourceNameForRole(ctx, tx, SourceRoleGame)
+	if err != nil {
+		return nil, err
+	}
+	if projectName == "" || gameName == "" {
+		return map[string]bool{}, nil
+	}
+	needed := map[string]bool{}
+	neededRows, err := tx.QueryContext(ctx, `SELECT DISTINCT pr.ref_name
+		FROM refs pr
+		JOIN files pf ON pf.id=pr.file_id AND pf.overridden=0
+		WHERE pr.ref_kind='localization' AND pf.source_name=?`, projectName)
+	if err != nil {
+		return nil, err
+	}
+	for neededRows.Next() {
+		var key string
+		if err := neededRows.Scan(&key); err != nil {
+			neededRows.Close()
+			return nil, err
+		}
+		if !indexedLocKeys[key] && !isPlaceholderLocalizationKey(key) {
+			needed[key] = true
+		}
+	}
+	if err := neededRows.Err(); err != nil {
+		neededRows.Close()
+		return nil, err
+	}
+	if err := neededRows.Close(); err != nil {
+		return nil, err
+	}
+	if len(needed) == 0 {
+		return map[string]bool{}, nil
+	}
+
+	seen := map[string]bool{}
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT r.ref_name
+		FROM refs r
+		JOIN files f ON f.id=r.file_id
+		WHERE r.ref_kind='localization' AND f.source_name=?`, gameName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		if needed[key] {
+			seen[key] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	// Normal scans intentionally keep overridden files metadata-only. Recover
+	// just the localization provenance needed by active project consumers from
+	// same-path game files, instead of globally parsing every overridden layer.
+	type gameFile struct {
+		path, rel, source string
+		rank              int
+	}
+	gameRows, err := tx.QueryContext(ctx, `SELECT DISTINCT pr.ref_name,gf.path,gf.rel_path,gf.source_name,gf.source_rank
+		FROM refs pr
+		JOIN files pf ON pf.id=pr.file_id
+		JOIN files gf ON gf.rel_path=pf.rel_path AND gf.source_name=? AND gf.overridden<>0
+		WHERE pr.ref_kind='localization' AND pf.source_name=? AND pf.overridden=0 AND gf.kind='script'`,
+		gameName, projectName)
+	if err != nil {
+		return nil, err
+	}
+	var files []gameFile
+	fileSeen := map[string]bool{}
+	for gameRows.Next() {
+		var key string
+		var file gameFile
+		if err := gameRows.Scan(&key, &file.path, &file.rel, &file.source, &file.rank); err != nil {
+			gameRows.Close()
+			return nil, err
+		}
+		if needed[key] && !fileSeen[file.path] {
+			fileSeen[file.path] = true
+			files = append(files, file)
+		}
+	}
+	if err := gameRows.Err(); err != nil {
+		gameRows.Close()
+		return nil, err
+	}
+	if err := gameRows.Close(); err != nil {
+		return nil, err
+	}
+	for _, file := range files {
+		names, err := localizationReferencesInScriptFile(file.path, file.rel, file.source, file.rank)
+		if err != nil {
+			return nil, err
+		}
+		for name := range names {
+			if needed[name] {
+				seen[name] = true
+			}
+		}
+	}
+	return seen, nil
+}
+
+func sourceNameForRole(ctx context.Context, tx *sql.Tx, role SourceRole) (string, error) {
+	var name string
+	err := tx.QueryRowContext(ctx, `SELECT name FROM source_layers WHERE role=? ORDER BY rank LIMIT 1`, role).Scan(&name)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return name, err
+}
+
+func localizationReferencesInScriptFile(path, rel, source string, rank int) (map[string]bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var parsed script.File
+	if strings.HasSuffix(strings.ToLower(rel), ".gui") {
+		parsed = script.ParseGUI(string(data))
+	} else {
+		parsed = script.Parse(string(data))
+	}
+	rec := fileRecord{Path: path, RelPath: rel, SourceName: source, SourceRank: rank, Kind: "script"}
+	objects := extractObjects(rec, parsed.Nodes)
+	names := map[string]bool{}
+	for _, ref := range extractRefs(rec, parsed.Nodes, objects) {
+		if ref.Kind == "localization" {
+			names[ref.Name] = true
+		}
+	}
+	return names, nil
+}
+
+func isPlaceholderLocalizationKey(name string) bool {
+	return strings.TrimSpace(strings.Trim(name, `"`)) == "..."
+}
+
+func isNullObjectReference(kind, name string) bool {
+	return kind == "title" && strings.TrimSpace(strings.Trim(name, `"`)) == "0"
+}
+
+type resourceLookup struct {
+	exact     map[string]bool
+	basenames map[string]bool
+	stems     map[string]bool
+	sorted    []string
+}
+
+type referenceResolutionEvidence struct {
+	gameLocalization map[string]bool
+	resources        resourceLookup
+}
+
+func loadReferenceResolutionEvidence(ctx context.Context, tx *sql.Tx, locKeys, resources map[string]bool) (referenceResolutionEvidence, error) {
+	gameLocalization, err := loadGameLocalizationReferences(ctx, tx, locKeys)
+	if err != nil {
+		return referenceResolutionEvidence{}, err
+	}
+	return referenceResolutionEvidence{
+		gameLocalization: gameLocalization,
+		resources:        newResourceLookup(resources),
+	}, nil
+}
+
+func newResourceLookup(paths map[string]bool) resourceLookup {
+	lookup := resourceLookup{
+		exact:     make(map[string]bool, len(paths)),
+		basenames: map[string]bool{},
+		stems:     map[string]bool{},
+		sorted:    make([]string, 0, len(paths)),
+	}
+	for path := range paths {
+		normalized := normalizeResourceLookupPath(path)
+		if normalized == "" {
+			continue
+		}
+		lookup.exact[normalized] = true
+		lookup.sorted = append(lookup.sorted, normalized)
+		base := filepath.Base(normalized)
+		lookup.basenames[base] = true
+		if ext := filepath.Ext(base); ext != "" {
+			lookup.stems[strings.TrimSuffix(base, ext)] = true
+		}
+	}
+	sort.Strings(lookup.sorted)
+	return lookup
+}
+
+func normalizeResourceLookupPath(name string) string {
+	name = strings.TrimSpace(strings.Trim(name, `"`))
+	name = strings.TrimPrefix(collapseResourceSlashes(filepathSlash(name)), "./")
+	return strings.ToLower(name)
+}
+
+func collapseResourceSlashes(path string) string {
+	for strings.Contains(path, "//") {
+		path = strings.ReplaceAll(path, "//", "/")
+	}
+	return path
+}
+
+// resolved accepts the three path forms CK3 data actually uses:
+// source-root paths, layer-relative suffixes/bare filenames, and extensionless
+// directory or filename prefixes from graphic defines.
+func (lookup resourceLookup) resolved(name string) bool {
+	normalized := normalizeResourceLookupPath(name)
+	if normalized == "" {
+		return false
+	}
+	if lookup.exact[normalized] {
+		return true
+	}
+	ext := filepath.Ext(normalized)
+	if ext != "" {
+		if !strings.Contains(normalized, "/") && lookup.basenames[normalized] {
+			return true
+		}
+		suffix := "/" + normalized
+		for _, path := range lookup.sorted {
+			if strings.HasSuffix(path, suffix) {
+				return true
+			}
+		}
+		return false
+	}
+	if !strings.Contains(normalized, "/") && lookup.stems[normalized] {
+		return true
+	}
+	index := sort.SearchStrings(lookup.sorted, normalized)
+	if index < len(lookup.sorted) && strings.HasPrefix(lookup.sorted[index], normalized) {
+		return true
+	}
+	suffixPrefix := "/" + normalized
+	for _, path := range lookup.sorted {
+		if at := strings.LastIndex(path, suffixPrefix); at >= 0 && strings.HasPrefix(path[at+1:], normalized) {
+			return true
+		}
+	}
+	return false
+}
+
 // refreshRefsResolvedGo resolves refs in Go using the objects map rather than
 // an SQL EXISTS subquery. This avoids needing the objects index during a
 // clean scan, where indexes are built only after the bulk insert.
-func refreshRefsResolvedGo(ctx context.Context, tx *sql.Tx, objectNames map[string]bool, locKeys map[string]bool, resPaths map[string]bool) error {
+func refreshRefsResolvedGo(ctx context.Context, tx *sql.Tx, objectNames map[string]bool, locKeys map[string]bool, evidence referenceResolutionEvidence) error {
 	rows, err := tx.QueryContext(ctx, `SELECT id, ref_kind, ref_name, resolved, resolution_reason FROM refs`)
 	if err != nil {
 		return err
@@ -1064,9 +1398,9 @@ func refreshRefsResolvedGo(ctx context.Context, tx *sql.Tx, objectNames map[stri
 		res := false
 		switch kind {
 		case "localization":
-			res = locKeys[name]
+			res = locKeys[name] || evidence.gameLocalization[name] || isPlaceholderLocalizationKey(name)
 		case "resource":
-			res = resPaths[name]
+			res = evidence.resources.resolved(name)
 		case "sound":
 			res = IsSound(name)
 		case "iterator":
@@ -1078,7 +1412,7 @@ func refreshRefsResolvedGo(ctx context.Context, tx *sql.Tx, objectNames map[stri
 		case "flag", "global_var", "variable", "character_flag":
 			res = true
 		default:
-			res = objectNames[kind+":"+name] || objectNames[name]
+			res = isNullObjectReference(kind, name) || objectNames[kind+":"+name] || objectNames[name]
 		}
 		reason := referenceResolutionReason(kind, res)
 		if (current != 0) == res && currentReason == reason {
@@ -1183,12 +1517,19 @@ var ck3LoadRoots = map[string]bool{
 // backup/tools/docs folders may themselves contain common/ or history/ trees,
 // but those nested trees are not CK3 load roots and must not enter the index.
 func shouldPruneSourceDir(rel string) bool {
+	return shouldPruneSourceDirForSource(rel, false)
+}
+
+func shouldPruneSourceDirForSource(rel string, resourceOnly bool) bool {
 	p := strings.Trim(filepath.ToSlash(strings.ToLower(rel)), "/")
 	if p == "" || p == "." {
 		return false
 	}
 	parts := strings.Split(p, "/")
 	if len(parts) == 1 {
+		if resourceOnly {
+			return !map[string]bool{"gfx": true, "map_data": true, "sound": true}[parts[0]]
+		}
 		return !ck3LoadRoots[parts[0]]
 	}
 	return strings.HasPrefix(parts[len(parts)-1], ".")
@@ -1304,6 +1645,41 @@ type locEntry struct {
 	replace        int
 }
 
+var localizationGlobalVariableRef = regexp.MustCompile(`(?i)GetGlobalVariable\(\s*['"]([^'"]+)['"]\s*\)`)
+var localizationScopedVariableRef = regexp.MustCompile(`(?i)\.Var\(\s*['"]([^'"]+)['"]\s*\)`)
+
+// Localization executes a bounded set of data functions at runtime. Literal
+// GetGlobalVariable/Var names are real reads and must participate in the
+// variable write-only analysis just like script-side var:name references.
+func extractLocalizationRuntimeRefs(entries []locEntry) []refRow {
+	var out []refRow
+	seen := map[string]bool{}
+	appendMatches := func(entry locEntry, kind, relation string, expression *regexp.Regexp) {
+		for _, match := range expression.FindAllStringSubmatch(entry.val, -1) {
+			if len(match) < 2 || strings.TrimSpace(match[1]) == "" {
+				continue
+			}
+			name := strings.TrimSpace(match[1])
+			fingerprint := kind + "\x00" + name + "\x00" + entry.key
+			if seen[fingerprint] {
+				continue
+			}
+			seen[fingerprint] = true
+			out = append(out, refRow{
+				FromType: "localization", FromName: entry.key,
+				Kind: kind, Name: name, Raw: match[0],
+				Relation: relation, Phase: "localization", Confidence: "exact",
+				Line: entry.line, Col: 1,
+			})
+		}
+	}
+	for _, entry := range entries {
+		appendMatches(entry, "global_var", "localization_read", localizationGlobalVariableRef)
+		appendMatches(entry, "variable", "localization_read", localizationScopedVariableRef)
+	}
+	return out
+}
+
 type schemaEntry struct {
 	typ, field string
 	line       int
@@ -1316,13 +1692,70 @@ type fileResult struct {
 	sum           string
 	skip          bool
 	overridden    bool
-	parsed        script.File
+	parseErrors   []script.ParseError
+	objects       []objectRow
+	refs          []refRow
+	objectFields  []objectFieldRow
 	locs          []locEntry
 	schemaEntries []schemaEntry
 	ctxDiags      []ctxDiag
 	savedScopes   []string
 	variables     []string
+	work          fileWorkMetrics
 	err           error
+}
+
+type fileWorkMetrics struct {
+	filesRead, filesHashed, filesParsed int64
+	bytesRead, bytesHashed              int64
+	readHashCPU, parseCPU               time.Duration
+	lintCPU, extractCPU                 time.Duration
+	hashStarted, hashFinished           time.Time
+	parseStarted, parseFinished         time.Time
+}
+
+type fileWorkTotals struct {
+	readHashCPU, parseCPU    time.Duration
+	lintCPU, extractCPU      time.Duration
+	hashStarted, hashEnded   time.Time
+	parseStarted, parseEnded time.Time
+}
+
+func (totals *fileWorkTotals) add(stats *ScanStats, work fileWorkMetrics) {
+	stats.FilesRead += work.filesRead
+	stats.FilesHashed += work.filesHashed
+	stats.FilesParsed += work.filesParsed
+	stats.BytesRead += work.bytesRead
+	stats.BytesHashed += work.bytesHashed
+	totals.readHashCPU += work.readHashCPU
+	totals.parseCPU += work.parseCPU
+	totals.lintCPU += work.lintCPU
+	totals.extractCPU += work.extractCPU
+	if !work.hashStarted.IsZero() && (totals.hashStarted.IsZero() || work.hashStarted.Before(totals.hashStarted)) {
+		totals.hashStarted = work.hashStarted
+	}
+	if work.hashFinished.After(totals.hashEnded) {
+		totals.hashEnded = work.hashFinished
+	}
+	if !work.parseStarted.IsZero() && (totals.parseStarted.IsZero() || work.parseStarted.Before(totals.parseStarted)) {
+		totals.parseStarted = work.parseStarted
+	}
+	if work.parseFinished.After(totals.parseEnded) {
+		totals.parseEnded = work.parseFinished
+	}
+}
+
+func (totals *fileWorkTotals) applyTimings(stats *ScanStats) {
+	stats.TimingsMillis["read_hash_worker_cpu_total"] = totals.readHashCPU.Milliseconds()
+	stats.TimingsMillis["parse_worker_cpu_total"] = totals.parseCPU.Milliseconds()
+	stats.TimingsMillis["lint_worker_cpu_total"] = totals.lintCPU.Milliseconds()
+	stats.TimingsMillis["extract_worker_cpu_total"] = totals.extractCPU.Milliseconds()
+	if !totals.hashStarted.IsZero() {
+		stats.TimingsMillis["hash_files_wall"] = totals.hashEnded.Sub(totals.hashStarted).Milliseconds()
+	}
+	if !totals.parseStarted.IsZero() {
+		stats.TimingsMillis["parse_files_wall"] = totals.parseEnded.Sub(totals.parseStarted).Milliseconds()
+	}
 }
 
 type ctxDiag struct {
@@ -1333,7 +1766,7 @@ type ctxDiag struct {
 // parseFileWorker reads, hashes, and parses one file off the channel,
 // returning a result that the main goroutine inserts into the database.
 // Keeping parsing parallel but DB writes serial avoids SQLite contention.
-func parseFileWorker(ctx context.Context, jobs <-chan fileJob, res chan<- fileResult) {
+func parseFileWorker(ctx context.Context, jobs <-chan fileJob, res chan<- fileResult, peak *atomic.Int64) {
 	for {
 		var job fileJob
 		var open bool
@@ -1350,6 +1783,15 @@ func parseFileWorker(ctx context.Context, jobs <-chan fileJob, res chan<- fileRe
 		case <-ctx.Done():
 			return
 		case res <- result:
+			updateAtomicMax(peak, int64(len(res)))
+		}
+	}
+}
+
+func updateAtomicMax(value *atomic.Int64, candidate int64) {
+	for current := value.Load(); candidate > current; current = value.Load() {
+		if value.CompareAndSwap(current, candidate) {
+			return
 		}
 	}
 }
@@ -1386,30 +1828,52 @@ func checkScriptContext(nodes []*script.Node, relPath string) []ctxDiag {
 }
 
 func parseOneFile(j fileJob) fileResult {
+	result := fileResult{job: j}
+	recordHashWork := func(start time.Time, size int64) {
+		result.work.filesRead = 1
+		result.work.filesHashed = 1
+		result.work.bytesRead = size
+		result.work.bytesHashed = size
+		result.work.hashStarted = start
+		result.work.hashFinished = time.Now()
+		result.work.readHashCPU += result.work.hashFinished.Sub(start)
+	}
 	// Overridden files are metadata-only on the normal scan path. This keeps
 	// incremental scans fast; deeper override analysis belongs in validation.
 	if j.overridden {
 		info, err := sourceRegularFileInfo(j.path)
 		if err != nil {
-			return fileResult{job: j, overridden: true, err: err}
+			result.overridden = true
+			result.err = err
+			return result
 		}
+		result.info = info
+		hashStart := time.Now()
 		sum, err := shaFile(j.path)
+		recordHashWork(hashStart, info.Size())
 		if err != nil {
-			return fileResult{job: j, overridden: true, err: err}
+			result.overridden = true
+			result.err = err
+			return result
 		}
+		result.sum = sum
 		if j.prev.ID != 0 && sum != "" && sum == j.prev.SHA && j.prev.Overridden &&
 			j.prev.SourceName == j.src.Name && j.prev.SourceRank == j.src.Rank && j.prev.Kind == j.kind &&
 			j.prev.OverrideReason == j.overrideReason && j.prev.OverrideBySource == j.overrideBySource &&
 			j.prev.OverrideByRank == j.overrideByRank && j.prev.OverrideRule == j.overrideRule {
-			return fileResult{job: j, info: info, sum: sum, skip: true}
+			result.skip = true
+			return result
 		}
-		return fileResult{job: j, info: info, sum: sum, overridden: true}
+		result.overridden = true
+		return result
 	}
 
 	info, err := sourceRegularFileInfo(j.path)
 	if err != nil {
-		return fileResult{job: j, err: err}
+		result.err = err
+		return result
 	}
+	result.info = info
 	// Incremental fast path: text is always hashed for correctness. Large
 	// binary resources may trust nanosecond mtime plus size, avoiding repeated
 	// reads of map rasters while still detecting ordinary same-second edits.
@@ -1417,56 +1881,117 @@ func parseOneFile(j fileJob) fileResult {
 		j.prev.SourceName == j.src.Name && j.prev.SourceRank == j.src.Rank &&
 		j.prev.MTime == info.ModTime().UnixNano() && j.prev.Size == info.Size() && j.prev.Kind == j.kind {
 		if j.kind != "script" && j.kind != "localization" && j.kind != "schema" {
-			return fileResult{job: j, info: info, sum: j.prev.SHA, skip: true}
+			result.sum = j.prev.SHA
+			result.skip = true
+			return result
 		}
 	}
+	if j.kind == "resource" {
+		hashStart := time.Now()
+		sum, err := shaFile(j.path)
+		recordHashWork(hashStart, info.Size())
+		if err != nil {
+			result.err = err
+			return result
+		}
+		result.sum = sum
+		if !j.forceParse && j.prev.ID != 0 && j.prev.SHA != "" && !j.prev.Overridden &&
+			j.prev.SourceName == j.src.Name && j.prev.SourceRank == j.src.Rank &&
+			j.prev.Kind == j.kind && sum == j.prev.SHA {
+			result.skip = true
+		}
+		return result
+	}
+	hashStart := time.Now()
 	data, err := os.ReadFile(j.path)
 	if err != nil {
-		return fileResult{job: j, info: info, err: err}
+		recordHashWork(hashStart, 0)
+		result.err = err
+		return result
 	}
 	h := sha256.Sum256(data)
 	sum := hex.EncodeToString(h[:])
+	recordHashWork(hashStart, int64(len(data)))
+	result.sum = sum
 	if !j.forceParse && j.prev.ID != 0 && j.prev.SHA != "" && !j.prev.Overridden &&
 		j.prev.SourceName == j.src.Name && j.prev.SourceRank == j.src.Rank &&
 		j.prev.Kind == j.kind && sum == j.prev.SHA {
-		return fileResult{job: j, info: info, sum: sum, skip: true}
+		result.skip = true
+		return result
 	}
-	r := fileResult{job: j, info: info, sum: sum}
+	parseStart := time.Now()
+	result.work.filesParsed = 1
+	result.work.parseStarted = parseStart
 	switch j.kind {
 	case "script":
+		var parsed script.File
 		isGUI := strings.HasSuffix(strings.ToLower(j.rel), ".gui")
 		if isGUI {
-			r.parsed = script.ParseGUI(string(data))
+			parsed = script.ParseGUI(string(data))
 		} else {
-			r.parsed = script.Parse(string(data))
-			r.ctxDiags = checkScriptContext(r.parsed.Nodes, j.rel)
+			parsed = script.Parse(string(data))
 		}
-		r.ctxDiags = append(r.ctxDiags, checkScriptLint(r.parsed.Nodes, j.rel, j.src.Name)...)
+		result.work.parseFinished = time.Now()
+		result.work.parseCPU += result.work.parseFinished.Sub(parseStart)
+		result.parseErrors = parsed.Errors
+		lintStart := time.Now()
 		if !isGUI {
-			r.ctxDiags = append(r.ctxDiags, checkScopeTracker(r.parsed.Nodes, j.rel)...)
-			r.savedScopes = collectSavedScopes(r.parsed.Nodes)
-			r.variables = collectVariables(r.parsed.Nodes)
+			result.ctxDiags = checkScriptContext(parsed.Nodes, j.rel)
+			result.ctxDiags = append(result.ctxDiags, checkRuntimeContracts(parsed.Nodes, j.rel)...)
+		}
+		result.ctxDiags = append(result.ctxDiags, checkScriptLint(parsed.Nodes, j.rel, j.src.Role)...)
+		if !isGUI {
+			result.ctxDiags = append(result.ctxDiags, checkScopeTracker(parsed.Nodes, j.rel)...)
+			result.savedScopes = collectSavedScopes(parsed.Nodes)
+			result.variables = collectVariables(parsed.Nodes)
 		}
 		// M20: scripted effect recursion check needs the effect's name.
 		if strings.Contains(j.rel, "scripted_effects") {
-			for _, n := range r.parsed.Nodes {
+			for _, n := range parsed.Nodes {
 				if n.Kind == "block" && n.Key != "" {
-					r.ctxDiags = append(r.ctxDiags, checkScriptEffectRecursion(r.parsed.Nodes, j.rel, n.Key)...)
+					result.ctxDiags = append(result.ctxDiags, checkScriptEffectRecursion(n.Children, j.rel, n.Key)...)
 				}
 			}
 		}
+		result.work.lintCPU += time.Since(lintStart)
+		analysisRecord := fileRecord{
+			SourceName: j.src.Name,
+			SourceRank: j.src.Rank,
+			Path:       j.path,
+			RelPath:    j.rel,
+			Kind:       j.kind,
+		}
+		extractStart := time.Now()
+		result.objects = extractObjects(analysisRecord, parsed.Nodes)
+		result.refs = extractRefs(analysisRecord, parsed.Nodes, result.objects)
+		result.objectFields = extractObjectFields(analysisRecord, parsed.Nodes, result.objects)
+		result.work.extractCPU += time.Since(extractStart)
 	case "localization":
-		r.locs, r.err = parseLocBytes(j.rel, data)
+		result.locs, result.err = parseLocBytes(j.rel, data)
+		if result.err == nil {
+			result.refs = extractLocalizationRuntimeRefs(result.locs)
+		}
+		result.work.parseFinished = time.Now()
+		result.work.parseCPU += result.work.parseFinished.Sub(parseStart)
+		lintStart := time.Now()
+		result.ctxDiags = checkLocalizationSyntax(j.rel, data)
+		result.work.lintCPU += time.Since(lintStart)
 	case "schema":
-		r.schemaEntries, r.err = parseSchemaBytes(j.rel, data)
+		result.schemaEntries, result.err = parseSchemaBytes(j.rel, data)
+		result.work.parseFinished = time.Now()
+		result.work.parseCPU += result.work.parseFinished.Sub(parseStart)
+	default:
+		result.work.filesParsed = 0
+		result.work.parseStarted = time.Time{}
+		result.work.parseFinished = time.Time{}
 	}
-	return r
+	return result
 }
 
 const (
-	localizationScannerInitialBuffer = 1 << 20
+	localizationScannerInitialBuffer = 64 << 10
 	localizationScannerMaxToken      = 16 << 20
-	schemaScannerInitialBuffer       = 1 << 20
+	schemaScannerInitialBuffer       = 64 << 10
 	schemaScannerMaxToken            = 4 << 20
 )
 
@@ -1477,7 +2002,7 @@ func parseLocBytes(rel string, data []byte) ([]locEntry, error) {
 		replace = 1
 	}
 	var out []locEntry
-	sc := bufio.NewScanner(strings.NewReader(string(data)))
+	sc := bufio.NewScanner(bytes.NewReader(data))
 	sc.Buffer(make([]byte, localizationScannerInitialBuffer), localizationScannerMaxToken)
 	line := 0
 	for sc.Scan() {
@@ -1507,7 +2032,7 @@ func parseSchemaBytes(rel string, data []byte) ([]schemaEntry, error) {
 	}
 	var out []schemaEntry
 	seen := map[string]bool{}
-	sc := bufio.NewScanner(strings.NewReader(string(data)))
+	sc := bufio.NewScanner(bytes.NewReader(data))
 	sc.Buffer(make([]byte, schemaScannerInitialBuffer), schemaScannerMaxToken)
 	line := 0
 	for sc.Scan() {
@@ -1639,7 +2164,7 @@ func extractObjects(rec fileRecord, nodes []*script.Node) []objectRow {
 	})
 	if strings.Contains(rel, "/events/") || strings.HasPrefix(rel, "events/") {
 		for _, n := range nodes {
-			if n.Kind == "block" && strings.Contains(n.Key, ".") {
+			if isEventDefinitionNode(n) {
 				out = append(out, obj(rec, "event", n.Key, n))
 			}
 		}
@@ -1769,6 +2294,34 @@ func extractObjects(rec fileRecord, nodes []*script.Node) []objectRow {
 		}
 	}
 	return out
+}
+
+var eventDefinitionFields = map[string]bool{
+	"type": true, "title": true, "desc": true, "theme": true,
+	"hidden": true, "trigger": true, "immediate": true, "after": true,
+	"option": true, "left_portrait": true, "right_portrait": true,
+	"lower_left_portrait": true, "override_background": true,
+	"override_icon": true, "window": true, "picture": true,
+	"is_triggered_only": true, "weight_multiplier": true,
+	"cooldown": true, "major": true, "major_trigger": true,
+}
+
+// Numeric namespace IDs are canonical, but CK3 also accepts named event IDs
+// used by existing tools and mods. A dotted helper block is not an event merely
+// because of its name: it must expose at least one direct event contract field.
+func isEventDefinitionNode(n *script.Node) bool {
+	if n == nil || n.Kind != "block" || n.Operator != "=" || !strings.Contains(n.Key, ".") {
+		return false
+	}
+	if isNumericEventID(n) {
+		return true
+	}
+	for _, child := range n.Children {
+		if eventDefinitionFields[strings.ToLower(strings.TrimSpace(child.Key))] {
+			return true
+		}
+	}
+	return false
 }
 
 func obj(rec fileRecord, typ, name string, n *script.Node) objectRow {
@@ -2378,9 +2931,14 @@ var eventVariableRelations = map[string]string{
 	"set_local_variable":          "set_local_variable",
 	"set_dead_character_variable": "set_dead_character_variable",
 	"has_variable":                "read_variable",
+	"has_global_variable":         "read_variable",
+	"has_global_var":              "read_variable",
 	"change_variable":             "change_variable",
+	"change_global_variable":      "change_variable",
 	"remove_variable":             "remove_variable",
+	"remove_global_variable":      "remove_variable",
 	"clamp_variable":              "clamp_variable",
+	"clamp_global_variable":       "clamp_variable",
 	"clear_variable":              "clear_variable",
 }
 
@@ -2411,7 +2969,7 @@ func namedRuntimeValue(n *script.Node, fieldNames ...string) string {
 // variables and flags are runtime symbols, not independently loadable CK3
 // definitions.
 func eventLogicRefs(rec fileRecord, n *script.Node, current objectRow, nodesByID map[int64]*script.Node) []refRow {
-	if current.Type != "event" && current.Type != "on_action" {
+	if current.Type == "" {
 		return nil
 	}
 	key := strings.ToLower(strings.TrimSpace(n.Key))
@@ -2501,6 +3059,9 @@ func eventSemanticRefs(rec fileRecord, n *script.Node, current objectRow, nodesB
 		return nil
 	}
 	parentKey := strings.ToLower(strings.TrimSpace(parent.Key))
+	if current.Type == "event" && key == "name" && parentKey == "option" && n.Value != "" {
+		return add("localization", n.Value, "option_name")
+	}
 	if key == "id" && (parentKey == "trigger_event" || parentKey == "fire_event") {
 		return add("event", n.Value, parentKey)
 	}
@@ -2798,6 +3359,11 @@ func extractRefs(rec fileRecord, nodes []*script.Node, objs []objectRow) []refRo
 		for _, raw := range raws {
 			if raw == "" {
 				continue
+			}
+			if strings.HasPrefix(raw, "var:") {
+				if name := semanticTarget(strings.TrimPrefix(raw, "var:")); name != "" {
+					out = append(out, refRow{FromType: current.Type, FromName: current.Name, Kind: "variable", Name: name, Raw: raw, Relation: "read_variable", Phase: eventSemanticPhase(n, nodesByID), Confidence: "exact", FileID: rec.ID, NodeID: n.ID, Line: n.Line, Col: n.Col})
+				}
 			}
 			if isCultureTraditionFile {
 				if path, ok := cultureTraditionLayerResource(n, nodesByID, raw); ok {
@@ -3168,7 +3734,7 @@ func insertResource(ctx context.Context, tx *sql.Tx, rec fileRecord, res string)
 }
 
 func normalizeResource(s string) string {
-	s = filepath.ToSlash(strings.Trim(s, `"`))
+	s = collapseResourceSlashes(filepath.ToSlash(strings.Trim(s, `"`)))
 	if i := strings.Index(s, "gfx/"); i >= 0 {
 		return s[i:]
 	}
@@ -3183,7 +3749,7 @@ func insertDiag(ctx context.Context, tx *sql.Tx, source, severity, code, msg str
 		source, severity, code, msg, fileID, path, line, col)
 }
 
-func addValidationDiagnostics(ctx context.Context, tx *sql.Tx, projectRank int, locSeen, resSeen, objSeen map[string]bool) error {
+func addValidationDiagnostics(ctx context.Context, tx *sql.Tx, projectRank int, locSeen, objSeen map[string]bool, evidence referenceResolutionEvidence) error {
 	rows, err := tx.QueryContext(ctx, `SELECT r.ref_kind,r.ref_name,r.file_id,r.line,r.col,f.path,f.source_rank
 		FROM refs r JOIN files f ON f.id=r.file_id`)
 	if err != nil {
@@ -3202,11 +3768,11 @@ func addValidationDiagnostics(ctx context.Context, tx *sql.Tx, projectRank int, 
 		}
 		switch kind {
 		case "localization":
-			if !locSeen[name] {
+			if !locSeen[name] && !evidence.gameLocalization[name] && !isPlaceholderLocalizationKey(name) {
 				insertDiag(ctx, tx, "validator", "warning", "missing_localization", fmt.Sprintf("localization key %q was referenced but not indexed", name), fileID, path, line, col)
 			}
 		case "resource":
-			if !resSeen[name] {
+			if !evidence.resources.resolved(name) {
 				code, severity := resourceDiagnostic(name)
 				insertDiag(ctx, tx, "validator", severity, code, fmt.Sprintf("resource %q was referenced but not indexed", name), fileID, path, line, col)
 			}
@@ -3225,7 +3791,7 @@ func addValidationDiagnostics(ctx context.Context, tx *sql.Tx, projectRank int, 
 			// Mods define their own @names; game-engine defines use NAI|xxx format.
 			// Skip validation — too many false positives from mod-custom defines.
 		default:
-			if isObjectRefKind(kind) && !objSeen[kind+":"+name] && !objSeen[name] {
+			if isObjectRefKind(kind) && !isNullObjectReference(kind, name) && !objSeen[kind+":"+name] && !objSeen[name] {
 				insertDiag(ctx, tx, "validator", "warning", "missing_object_reference", fmt.Sprintf("%s %q was referenced but not indexed", kind, name), fileID, path, line, col)
 			}
 		}

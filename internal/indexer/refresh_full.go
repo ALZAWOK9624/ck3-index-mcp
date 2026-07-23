@@ -12,58 +12,31 @@ import (
 	"time"
 )
 
-// publishedIndexTables is the complete semantic snapshot published by a full
-// scan. Keep this alongside DB.reset: staged publication copies these tables
-// inside one transaction instead of replacing the SQLite file underneath
-// long-lived MCP read-only connections.
-var publishedIndexTables = []string{
-	"meta",
-	"source_layers",
-	"files",
-	"nodes",
-	"objects",
-	"object_defs",
-	"refs",
-	"localization",
-	"resources",
-	"schema_fields",
-	"object_fields",
-	"diagnostics",
-	"saved_scopes",
-	"variables",
-	"map_provinces",
-	"map_province_geometry",
-	"map_physical_rasters",
-	"map_province_physical",
-	"map_physical_water_body_provinces",
-	"map_physical_water_bodies",
-	"map_major_river_edges",
-	"map_surface_rasters",
-	"map_surface_materials",
-	"map_province_materials",
-	"map_object_instances",
-	"map_adjacencies",
-	"map_strategic_adjacencies",
-	"map_water_body_shores",
-	"map_water_body_provinces",
-	"map_water_bodies",
-	"map_title_adjacencies",
-	"map_titles",
-	"map_title_provinces",
-	"map_integrity_issues",
-	"map_province_history",
-	"map_title_history",
-	"map_characters",
-	"map_character_history",
-	"map_holy_sites",
-	"map_holy_site_faiths",
-	"map_province_regions",
-	"engine_datatypes",
-	"engine_scope_rules",
-	"search_fts",
+const stagedFullScanSchema = "staged_full_scan"
+
+// ErrConflictingGeneration is returned when a staged full scan was built from
+// a publication base that is no longer current. Callers may retry from a fresh
+// base; the live index is left untouched.
+var ErrConflictingGeneration = errors.New("the published index generation changed during staged refresh")
+
+type PublicationBase struct {
+	Generation int64
+	Revision   string
+	Status     string
 }
 
-const stagedFullScanSchema = "staged_full_scan"
+type PublicationConflictError struct {
+	Base    PublicationBase
+	Current PublicationBase
+}
+
+func (e *PublicationConflictError) Error() string {
+	return ErrConflictingGeneration.Error()
+}
+
+func (e *PublicationConflictError) Unwrap() error {
+	return ErrConflictingGeneration
+}
 
 // stagedFullScanFailure keeps ephemeral staging paths out of the MCP-facing
 // error text while retaining the original cause for cancellation and durable
@@ -101,8 +74,18 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 	if err != nil {
 		return ScanStats{}, err
 	}
+	lock, err := acquirePublicationLock(ctx, dbPath)
+	if err != nil {
+		recordStagedFullScanFailure(normalized, err)
+		return ScanStats{}, err
+	}
+	defer lock.Close()
 	if err := ctx.Err(); err != nil {
 		recordStagedFullScanFailure(normalized, err)
+		return ScanStats{}, err
+	}
+	base, err := readPublicationBase(ctx, dbPath)
+	if err != nil {
 		return ScanStats{}, err
 	}
 	stagePath, err := stagedFullScanPath(dbPath)
@@ -116,7 +99,7 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 	stageConfig := normalized
 	stageConfig.Database = stagePath
 	stageConfig.ForceClean = true
-	stats, err := Scan(ctx, stageConfig)
+	stats, err := scanWithMode(ctx, stageConfig, true)
 	if err != nil {
 		err = sanitizeStagedFullScanFailure(err)
 		recordStagedFullScanFailure(normalized, err)
@@ -126,15 +109,40 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 		recordStagedFullScanFailure(normalized, err)
 		return ScanStats{}, err
 	}
-	if err := publishStagedFullScan(ctx, normalized, stagePath); err != nil {
+	publishStart := time.Now()
+	if err := publishStagedFullScan(ctx, normalized, stagePath, base); err != nil {
 		err = sanitizeStagedFullScanFailure(err)
 		recordStagedFullScanFailure(normalized, err)
 		return ScanStats{}, err
 	}
+	if stats.TimingsMillis == nil {
+		stats.TimingsMillis = map[string]int64{}
+	}
+	stats.TimingsMillis["publish_staged"] = time.Since(publishStart).Milliseconds()
 	// The staging location is an implementation detail and must never become
 	// the apparent published database in refresh output.
 	stats.Database = dbPath
 	return stats, nil
+}
+
+func readPublicationBase(ctx context.Context, dbPath string) (PublicationBase, error) {
+	db, err := Open(dbPath)
+	if err != nil {
+		return PublicationBase{}, err
+	}
+	defer db.Close()
+	if err := db.ensureSchema(ctx); err != nil {
+		return PublicationBase{}, err
+	}
+	state, err := db.IndexState(ctx)
+	if err != nil {
+		return PublicationBase{}, err
+	}
+	return publicationBaseFromState(state), nil
+}
+
+func publicationBaseFromState(state IndexState) PublicationBase {
+	return PublicationBase{Generation: state.Generation, Revision: state.Revision, Status: state.Status}
 }
 
 func stagedFullScanPath(dbPath string) (string, error) {
@@ -189,7 +197,7 @@ func recordStagedFullScanFailure(cfg Config, scanErr error) {
 	db.recordScanFailure(context.Background(), scanErr)
 }
 
-func publishStagedFullScan(ctx context.Context, cfg Config, stagePath string) error {
+func publishStagedFullScan(ctx context.Context, cfg Config, stagePath string, base PublicationBase) error {
 	dbPath, err := ConfiguredDatabasePath(cfg)
 	if err != nil {
 		return err
@@ -215,10 +223,6 @@ func publishStagedFullScan(ctx context.Context, cfg Config, stagePath string) er
 	if err := db.ensureSchema(ctx); err != nil {
 		return err
 	}
-	previous, err := db.IndexState(ctx)
-	if err != nil {
-		return err
-	}
 
 	// ATTACH is connection-local in SQLite. Pin both attachment and transaction
 	// to one connection so a pooled database/sql connection cannot lose sight
@@ -238,55 +242,72 @@ func publishStagedFullScan(ctx context.Context, cfg Config, stagePath string) er
 		_, _ = conn.ExecContext(context.Background(), `DETACH DATABASE `+stagedFullScanSchema)
 	}()
 
-	tx, err := conn.BeginTx(ctx, nil)
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+		}
+	}()
+	currentState, err := readIndexState(ctx, conn)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	current := publicationBaseFromState(currentState)
+	if current != base {
+		return &PublicationConflictError{Base: base, Current: current}
+	}
 	for _, table := range publishedIndexTables {
-		if err := verifyStagedTable(ctx, tx, table); err != nil {
+		if err := verifyStagedTable(ctx, conn, table); err != nil {
 			return err
 		}
 	}
 	for _, table := range publishedIndexTables {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM `+qualifiedSQLiteIdentifier("main", table)); err != nil {
+		if _, err := conn.ExecContext(ctx, `DELETE FROM `+qualifiedSQLiteIdentifier("main", table)); err != nil {
 			return fmt.Errorf("clear published table %s: %w", table, err)
 		}
 	}
 	for _, table := range publishedIndexTables {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO `+qualifiedSQLiteIdentifier("main", table)+` SELECT * FROM `+qualifiedSQLiteIdentifier(stagedFullScanSchema, table)); err != nil {
+		if _, err := conn.ExecContext(ctx, `INSERT INTO `+qualifiedSQLiteIdentifier("main", table)+` SELECT * FROM `+qualifiedSQLiteIdentifier(stagedFullScanSchema, table)); err != nil {
 			return fmt.Errorf("copy staged table %s: %w", table, err)
 		}
 	}
 
-	nextGeneration := previous.Generation + 1
+	nextGeneration := current.Generation + 1
 	if nextGeneration < 1 {
 		nextGeneration = 1
 	}
-	if err := ensureScanRevision(ctx, tx); err != nil {
+	if err := ensureScanRevision(ctx, conn); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('scan_generation',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, strconv.FormatInt(nextGeneration, 10)); err != nil {
+	if _, err := conn.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('scan_generation',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, strconv.FormatInt(nextGeneration, 10)); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('scan_committed_at',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	if _, err := conn.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('scan_committed_at',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('scan_status','ready') ON CONFLICT(key) DO UPDATE SET value=excluded.value`); err != nil {
+	if _, err := conn.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('scan_status','ready') ON CONFLICT(key) DO UPDATE SET value=excluded.value`); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM meta WHERE key IN ('last_scan_error_code','last_scan_error_at')`); err != nil {
+	if _, err := conn.ExecContext(ctx, `DELETE FROM meta WHERE key IN ('last_scan_error_code','last_scan_error_at')`); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
 		return err
 	}
+	committed = true
 	return nil
 }
 
-func verifyStagedTable(ctx context.Context, tx *sql.Tx, table string) error {
+type stagedTableQueryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func verifyStagedTable(ctx context.Context, queryer stagedTableQueryer, table string) error {
 	var count int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+stagedFullScanSchema+`.sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
+	if err := queryer.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+stagedFullScanSchema+`.sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
 		return err
 	}
 	if count != 1 {

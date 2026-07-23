@@ -85,8 +85,8 @@ func (db *DB) RefreshStatus(ctx context.Context, cfg Config) (RefreshStatus, err
 		if version != indexRuleVersion {
 			status.NeedsFullScan = true
 		}
-		currentFingerprint, fingerprintErr := engineDataFingerprint(normalized.EngineLogs)
-		if fingerprintErr != nil {
+		bundle, bundleErr := loadCachedEngineBundle(ctx, normalized.EngineLogs)
+		if bundleErr != nil {
 			status.EngineRules.Available = false
 			status.EngineRules.Current = false
 			status.NeedsFullScan = true
@@ -95,7 +95,7 @@ func (db *DB) RefreshStatus(ctx context.Context, cfg Config) (RefreshStatus, err
 			if cacheErr != nil {
 				return RefreshStatus{}, cacheErr
 			}
-			status.EngineRules.Current = cachedFingerprint == currentFingerprint
+			status.EngineRules.Current = cachedFingerprint == bundle.Fingerprint
 			if !status.EngineRules.Current {
 				status.NeedsFullScan = true
 			}

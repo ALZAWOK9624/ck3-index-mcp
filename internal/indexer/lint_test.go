@@ -12,7 +12,7 @@ func lintTestDiagnostics(t *testing.T, source, path string) []ctxDiag {
 	if len(parsed.Errors) != 0 {
 		t.Fatalf("parse errors: %+v", parsed.Errors)
 	}
-	return checkScriptLint(parsed.Nodes, path, "test")
+	return checkScriptLint(parsed.Nodes, path, SourceRoleProject)
 }
 
 func lintCodeCount(diagnostics []ctxDiag, code string) int {
@@ -162,5 +162,66 @@ func TestLintDoesNotGuessSavedScopeLifetime(t *testing.T) {
 	diagnostics := lintTestDiagnostics(t, source, "events/test.txt")
 	if got := lintCodeCount(diagnostics, "scope_never_saved"); got != 0 {
 		t.Fatalf("scope_never_saved = %d, want 0; diagnostics=%+v", got, diagnostics)
+	}
+}
+
+func TestScriptedEffectRecursionIsScopedToItsOwnDefinition(t *testing.T) {
+	parsed := script.Parse(`first_effect = {
+	second_effect = yes
+}
+second_effect = {
+	first_effect = yes
+}
+self_recursive_effect = {
+	if = {
+		limit = { always = yes }
+		self_recursive_effect = yes
+	}
+}`)
+	if len(parsed.Errors) != 0 {
+		t.Fatalf("parse errors: %+v", parsed.Errors)
+	}
+	counts := map[string]int{}
+	for _, definition := range parsed.Nodes {
+		if definition.Kind != "block" {
+			continue
+		}
+		counts[definition.Key] = lintCodeCount(
+			checkScriptEffectRecursion(definition.Children, "common/scripted_effects/test.txt", definition.Key),
+			"scripted_effect_recursion",
+		)
+	}
+	if counts["first_effect"] != 0 || counts["second_effect"] != 0 {
+		t.Fatalf("cross-effect calls were reported as recursion: %+v", counts)
+	}
+	if counts["self_recursive_effect"] != 1 {
+		t.Fatalf("self recursion count = %d, want 1", counts["self_recursive_effect"])
+	}
+	for _, diagnostic := range checkScriptEffectRecursion(parsed.Nodes[2].Children, "common/scripted_effects/test.txt", "self_recursive_effect") {
+		if diagnostic.code == "scripted_effect_recursion" && diagnostic.severity != "warning" {
+			t.Fatalf("finite recursion risk must not be a categorical error: %+v", diagnostic)
+		}
+	}
+}
+
+func TestOnActionAndIteratorLintRespectSourceRole(t *testing.T) {
+	onAction := script.Parse(`on_birth = { effect = { add_gold = 1 } }`)
+	if got := lintCodeCount(checkScriptLint(onAction.Nodes, "common/on_action/test.txt", SourceRoleGame), "on_action_direct_override"); got != 0 {
+		t.Fatalf("vanilla source reported as overriding itself: %d", got)
+	}
+	if got := lintCodeCount(checkScriptLint(onAction.Nodes, "common/on_action/test.txt", SourceRoleDependency), "on_action_direct_override"); got != 1 {
+		t.Fatalf("dependency vanilla on_action override warning=%d, want 1", got)
+	}
+	custom := script.Parse(`custom_mod_on_action = { effect = { add_gold = 1 } }`)
+	if got := lintCodeCount(checkScriptLint(custom.Nodes, "common/on_action/test.txt", SourceRoleDependency), "on_action_direct_override"); got != 0 {
+		t.Fatalf("custom on_action was mistaken for vanilla: %d", got)
+	}
+
+	nested := script.Parse(`every_vassal = { every_child = { add_gold = 1 } }`)
+	if got := lintCodeCount(checkScriptLint(nested.Nodes, "events/test.txt", SourceRoleGame), "nested_iterator"); got != 0 {
+		t.Fatalf("vanilla iterator heuristic leaked into project diagnostics: %d", got)
+	}
+	if got := lintCodeCount(checkScriptLint(nested.Nodes, "events/test.txt", SourceRoleProject), "nested_iterator"); got != 1 {
+		t.Fatalf("project nested iterator advisory=%d, want 1", got)
 	}
 }

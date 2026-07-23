@@ -1,12 +1,9 @@
 package indexer
 
 import (
-	"bufio"
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -43,68 +40,28 @@ var engineScopeLogSpecs = []engineScopeLogSpec{
 }
 
 func ConfigureEngineRules(logs string) error {
-	rules := map[string]map[string][]string{}
-	ruleOutputs := map[string]map[string][]string{}
-	targetOutputs := map[string][]string{}
-	if strings.TrimSpace(logs) == "" {
-		engineScopeRegistry.Lock()
+	bundle, err := LoadEngineBundle(context.Background(), logs)
+	if err != nil {
+		return err
+	}
+	ConfigureEngineRulesFromBundle(bundle)
+	return nil
+}
+
+func ConfigureEngineRulesFromBundle(bundle *EngineBundle) {
+	engineScopeRegistry.Lock()
+	defer engineScopeRegistry.Unlock()
+	if bundle == nil || bundle.Fingerprint == noEngineDataFingerprint {
 		engineScopeRegistry.rules = nil
 		engineScopeRegistry.ruleOutputs = nil
 		engineScopeRegistry.targetOutputs = nil
 		engineScopeRegistry.modifiers = nil
-		engineScopeRegistry.Unlock()
-		return nil
+		return
 	}
-	for _, spec := range engineScopeLogSpecs {
-		blocks, err := readDocBlocks(filepath.Join(logs, spec.name))
-		if err != nil {
-			if spec.optional && os.IsNotExist(err) {
-				continue
-			}
-			return err
-		}
-		for _, lines := range blocks {
-			if len(lines) == 0 {
-				continue
-			}
-			name := engineRuleName(lines[0])
-			for _, line := range lines[1:] {
-				if value, ok := inputScopeLine(line); ok {
-					m := rules[strings.ToLower(name)]
-					if m == nil {
-						m = map[string][]string{}
-						rules[strings.ToLower(name)] = m
-					}
-					m[spec.kind] = splitScopesWithNone(value, spec.kind == "on_action")
-				}
-			}
-			for _, line := range lines[1:] {
-				if value, ok := outputScopeLine(line); ok {
-					m := ruleOutputs[strings.ToLower(name)]
-					if m == nil {
-						m = map[string][]string{}
-						ruleOutputs[strings.ToLower(name)] = m
-					}
-					m[spec.kind] = splitScopes(value)
-					if spec.kind == "target" {
-						targetOutputs[strings.ToLower(name)] = m[spec.kind]
-					}
-					break
-				}
-			}
-		}
-	}
-	modifierData, err := readEngineModifiers(filepath.Join(logs, "modifiers.log"))
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	engineScopeRegistry.Lock()
-	engineScopeRegistry.rules = rules
-	engineScopeRegistry.ruleOutputs = ruleOutputs
-	engineScopeRegistry.targetOutputs = targetOutputs
-	engineScopeRegistry.modifiers = modifierData
-	engineScopeRegistry.Unlock()
-	return nil
+	engineScopeRegistry.rules = bundle.ScopeRules
+	engineScopeRegistry.ruleOutputs = bundle.RuleOutputs
+	engineScopeRegistry.targetOutputs = bundle.Targets
+	engineScopeRegistry.modifiers = bundle.Modifiers
 }
 
 func engineRuleName(head string) string {
@@ -266,48 +223,51 @@ type ScopeEvidence struct {
 }
 
 func rebuildEngineData(ctx context.Context, tx *sql.Tx, logs string) error {
+	bundle, err := LoadEngineBundle(ctx, logs)
+	if err != nil {
+		return err
+	}
+	return rebuildEngineDataFromBundle(ctx, tx, bundle)
+}
+
+func rebuildEngineDataFromBundle(ctx context.Context, tx *sql.Tx, bundle *EngineBundle) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM engine_datatypes; DELETE FROM engine_scope_rules`); err != nil {
 		return err
 	}
-	if strings.TrimSpace(logs) == "" {
+	if bundle == nil || bundle.Fingerprint == noEngineDataFingerprint {
 		return nil
 	}
-	if err := ingestDatatypes(ctx, tx, filepath.Join(logs, "data_types")); err != nil {
+	datatypeStmt, err := tx.PrepareContext(ctx, `INSERT OR REPLACE INTO engine_datatypes(name,signature,description,definition_type,return_type,category,source_path) VALUES(?,?,?,?,?,?,?)`)
+	if err != nil {
 		return err
 	}
-	for _, spec := range engineScopeLogSpecs {
-		if err := ingestScopeLog(ctx, tx, filepath.Join(logs, spec.name), spec.kind, spec.optional); err != nil {
+	defer datatypeStmt.Close()
+	for _, datatype := range bundle.Datatypes {
+		if _, err := datatypeStmt.ExecContext(ctx, datatype.Name, datatype.Signature, datatype.Description, datatype.DefinitionType, datatype.ReturnType, datatype.Category, datatype.Source); err != nil {
 			return err
 		}
 	}
-
-	return nil
-}
-
-func readEngineModifiers(path string) (map[string]ModifierInfo, error) {
-	data, err := os.ReadFile(path)
+	scopeStmt, err := tx.PrepareContext(ctx, `INSERT OR REPLACE INTO engine_scope_rules(name,rule_kind,input_scopes,output_scopes,description,source_path) VALUES(?,?,?,?,?,?)`)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	out := map[string]ModifierInfo{}
-	var tag string
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		switch {
-		case strings.HasPrefix(line, "Tag:"):
-			tag = strings.TrimSpace(strings.TrimPrefix(line, "Tag:"))
-		case tag != "" && strings.HasPrefix(line, "Use areas:"):
-			areas := parseModifierUseAreas(strings.TrimSpace(strings.TrimPrefix(line, "Use areas:")))
-			out[tag] = ModifierInfo{UseAreas: areas, Source: "engine_log"}
-			tag = ""
+	defer scopeStmt.Close()
+	for _, row := range bundle.ScopeRows {
+		if _, err := scopeStmt.ExecContext(ctx, row.Key, row.RuleKind, strings.Join(row.InputScopes, " "), strings.Join(row.OutputScopes, " "), row.Description, row.RuleSource); err != nil {
+			return err
 		}
 	}
-	return out, nil
+	return nil
 }
 
 // parseModifierUseAreas understands the punctuation used in the current
 // localized modifiers.log, including "character， province，以及 county".
 func parseModifierUseAreas(raw string) []string {
+	// The current English modifiers.log uses both comma-separated lists and
+	// the natural-language form "character and province". Normalize the
+	// conjunction before splitting, otherwise a live log entry silently
+	// overrides the generated area contract with one unusable area.
+	raw = strings.ReplaceAll(raw, " and ", ",")
 	raw = strings.ReplaceAll(raw, "，", ",")
 	raw = strings.ReplaceAll(raw, "以及", ",")
 	var out []string
@@ -328,137 +288,6 @@ func parseModifierUseAreas(raw string) []string {
 		}
 	}
 	return out
-}
-
-func ingestDatatypes(ctx context.Context, tx *sql.Tx, dir string) error {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return fmt.Errorf("engine data_types unavailable: %w", err)
-	}
-	stmt, err := tx.PrepareContext(ctx, `INSERT OR REPLACE INTO engine_datatypes(name,signature,description,definition_type,return_type,category,source_path) VALUES(?,?,?,?,?,?,?)`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-	for _, ent := range entries {
-		if ent.IsDir() {
-			continue
-		}
-		path := filepath.Join(dir, ent.Name())
-		blocks, err := readDocBlocks(path)
-		if err != nil {
-			return err
-		}
-		cat := strings.TrimSuffix(strings.TrimPrefix(ent.Name(), "data_types_"), filepath.Ext(ent.Name()))
-		for _, lines := range blocks {
-			if len(lines) == 0 {
-				continue
-			}
-			sig := strings.TrimSpace(lines[0])
-			if sig == "" {
-				continue
-			}
-			name := sig
-			if i := strings.Index(name, "("); i >= 0 {
-				name = strings.TrimSpace(name[:i])
-			}
-			info := map[string]string{}
-			var desc []string
-			for _, line := range lines[1:] {
-				if k, v, ok := strings.Cut(line, ":"); ok && (k == "Description" || k == "Definition type" || k == "Return type") {
-					info[k] = strings.TrimSpace(v)
-				} else if strings.TrimSpace(line) != "" {
-					desc = append(desc, strings.TrimSpace(line))
-				}
-			}
-			if info["Description"] == "" {
-				info["Description"] = strings.Join(desc, " ")
-			}
-			if _, err := stmt.ExecContext(ctx, name, sig, info["Description"], info["Definition type"], info["Return type"], cat, filepathSlash(path)); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func ingestScopeLog(ctx context.Context, tx *sql.Tx, path, kind string, optional bool) error {
-	blocks, err := readDocBlocks(path)
-	if err != nil {
-		if optional && os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("engine %s log unavailable: %w", kind, err)
-	}
-	stmt, err := tx.PrepareContext(ctx, `INSERT OR REPLACE INTO engine_scope_rules(name,rule_kind,input_scopes,output_scopes,description,source_path) VALUES(?,?,?,?,?,?)`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-	for _, lines := range blocks {
-		if len(lines) == 0 {
-			continue
-		}
-		head := strings.TrimSpace(lines[0])
-		if head == "" || strings.HasSuffix(head, "Documentation:") {
-			continue
-		}
-		name, desc := head, ""
-		if a, b, ok := strings.Cut(head, " - "); ok {
-			name, desc = strings.TrimSpace(a), strings.TrimSpace(b)
-		}
-		name = strings.TrimSuffix(strings.TrimSpace(name), ":")
-		input, output := "", ""
-		var extra []string
-		for _, line := range lines[1:] {
-			switch {
-			case strings.HasPrefix(line, "Supported Scopes:"), strings.HasPrefix(line, "Input Scopes:"), strings.HasPrefix(line, "Expected Scope:"):
-				input, _ = inputScopeLine(line)
-			case strings.HasPrefix(line, "Output Scopes:"), strings.HasPrefix(line, "Supported Targets:"):
-				output, _ = outputScopeLine(line)
-			default:
-				if strings.TrimSpace(line) != "" && !strings.Contains(line, ": yes") && !strings.Contains(line, ": no") {
-					extra = append(extra, strings.TrimSpace(line))
-				}
-			}
-		}
-		if desc == "" {
-			desc = strings.Join(extra, " ")
-		}
-		if _, err := stmt.ExecContext(ctx, name, kind, input, output, desc, filepathSlash(path)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func readDocBlocks(path string) ([][]string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	var out [][]string
-	var cur []string
-	s := bufio.NewScanner(f)
-	s.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	for s.Scan() {
-		line := strings.TrimSpace(s.Text())
-		if strings.HasPrefix(line, "----------------") {
-			if len(cur) > 0 {
-				out = append(out, cur)
-				cur = nil
-			}
-			continue
-		}
-		if line != "" {
-			cur = append(cur, line)
-		}
-	}
-	if len(cur) > 0 {
-		out = append(out, cur)
-	}
-	return out, s.Err()
 }
 
 func (db *DB) LookupDatatype(ctx context.Context, query string, limit int) ([]DatatypeInfo, error) {

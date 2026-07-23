@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.5.0 - Canonical MCP and diagnostic provenance (2026-07-24)
+
+- Remove the obsolete expert MCP profile and its 28 legacy specialist aliases. All supported capabilities remain available through the 30 canonical tools and their bounded operations.
+- Calibrate resource, localization, event, modifier, and on-action diagnostics against configured CK3 asset layers, reducing false-positive findings while preserving evidence-backed errors and warnings.
+
 - Retire the unprovable `scope_never_saved` heuristic and narrow structural event and trigger-chain linting to evidence-backed CK3 forms.
 
 ## 0.4.0 - Public release (2026-07-19)

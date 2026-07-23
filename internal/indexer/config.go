@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/BurntSushi/toml"
 )
 
 //go:embed default_config.toml
@@ -46,11 +48,12 @@ const (
 )
 
 type Source struct {
-	Name    string
-	Path    string
-	Rank    int
-	Role    SourceRole
-	Private bool
+	Name         string
+	Path         string
+	Rank         int
+	Role         SourceRole
+	Private      bool
+	ResourceOnly bool
 
 	// privateSet lets TOML retain an explicit private=false for a project
 	// source while old configurations continue to receive safe defaults.
@@ -114,7 +117,7 @@ func normalizeSourcesWithProject(sources []Source, requireProject bool) ([]Sourc
 			return nil, fmt.Errorf("source %q has no path", name)
 		}
 		if source.Rank <= 0 {
-			return nil, fmt.Errorf("source %q rank must be a positive integer", name)
+			return nil, fmt.Errorf("source rank must be a positive integer (source %q)", name)
 		}
 		nameKey := strings.ToLower(name)
 		if names[nameKey] {
@@ -145,6 +148,9 @@ func normalizeSourcesWithProject(sources []Source, requireProject bool) ([]Sourc
 		case SourceRoleProject, SourceRoleDependency, SourceRoleGame, SourceRoleReference:
 		default:
 			return nil, fmt.Errorf("source %q has unsupported role %q", name, source.Role)
+		}
+		if source.ResourceOnly && role == SourceRoleProject {
+			return nil, fmt.Errorf("source %q cannot be both project and resource_only", name)
 		}
 		source.Role = role
 		// A role-less source is a legacy configuration, so retain the former
@@ -220,6 +226,9 @@ func PrivateSourceNames(cfg Config) map[string]bool {
 }
 
 func sourceReplacePaths(src Source) ([]string, error) {
+	if src.ResourceOnly {
+		return nil, nil
+	}
 	entries, err := os.ReadDir(src.Path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -334,148 +343,140 @@ func WriteDefaultConfig(path string) error {
 	return os.WriteFile(path, []byte(defaultConfigText), 0644)
 }
 
+type configTOML struct {
+	Database               string       `toml:"database"`
+	EngineLogs             string       `toml:"engine_logs"`
+	ArtifactRoot           string       `toml:"artifact_root"`
+	MigrationSnapshotRoot  string       `toml:"migration_snapshot_root"`
+	ArtifactRetentionHours *int         `toml:"artifact_retention_hours"`
+	GISEnabled             *bool        `toml:"gis_enabled"`
+	GISAnalysis            string       `toml:"gis_analysis"`
+	GISCacheRoot           string       `toml:"gis_cache_root"`
+	GISCacheMaxGiB         *int         `toml:"gis_cache_max_gib"`
+	GISTimeoutSeconds      *int         `toml:"gis_timeout_seconds"`
+	GISSidecarPath         string       `toml:"gis_sidecar_path"`
+	GISSidecarSHA256       string       `toml:"gis_sidecar_sha256"`
+	Sources                []sourceTOML `toml:"source"`
+}
+
+type sourceTOML struct {
+	Name         string `toml:"name"`
+	Path         string `toml:"path"`
+	Rank         any    `toml:"rank"`
+	Role         string `toml:"role"`
+	Private      *bool  `toml:"private"`
+	ResourceOnly bool   `toml:"resource_only"`
+}
+
 func LoadConfig(path string) (Config, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return Config{}, err
 	}
-	f, err := os.Open(absPath)
+	var decoded configTOML
+	metadata, err := toml.DecodeFile(absPath, &decoded)
 	if err != nil {
-		return Config{}, err
+		return Config{}, fmt.Errorf("decode TOML config %s: %w", path, err)
 	}
-	defer f.Close()
-	cfg := Config{
-		ConfigPath: absPath, ArtifactRetentionHours: 168,
-		GISEnabled: true, GISAnalysis: "terrain", GISCacheMaxGiB: 8, GISTimeoutSeconds: 900,
+	if undecoded := metadata.Undecoded(); len(undecoded) > 0 {
+		keys := make([]string, 0, len(undecoded))
+		for _, key := range undecoded {
+			keys = append(keys, key.String())
+		}
+		sort.Strings(keys)
+		return Config{}, fmt.Errorf("unknown configuration field(s): %s", strings.Join(keys, ", "))
 	}
-	databaseConfigured := false
-	var cur *Source
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if line == "[[source]]" {
-			cfg.Sources = append(cfg.Sources, Source{})
-			cur = &cfg.Sources[len(cfg.Sources)-1]
-			continue
-		}
-		k, v, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		key := strings.TrimSpace(k)
-		val := strings.Trim(strings.TrimSpace(v), `"`)
-		if cur == nil {
-			if key == "database" {
-				databaseConfigured = true
-				cfg.Database = filepath.FromSlash(val)
-			} else if key == "engine_logs" {
-				cfg.EngineLogs = resolveConfigPath(filepath.Dir(absPath), val)
-			} else if key == "artifact_root" {
-				cfg.ArtifactRoot = resolveConfigPath(filepath.Dir(absPath), val)
-			} else if key == "migration_snapshot_root" {
-				cfg.MigrationSnapshotRoot = resolveConfigPath(filepath.Dir(absPath), val)
-			} else if key == "artifact_retention_hours" {
-				n, err := strconv.Atoi(val)
-				if err != nil || n <= 0 {
-					return Config{}, fmt.Errorf("artifact_retention_hours must be a positive integer")
-				}
-				cfg.ArtifactRetentionHours = n
-			} else if key == "gis_enabled" {
-				value, err := strconv.ParseBool(val)
-				if err != nil {
-					return Config{}, fmt.Errorf("gis_enabled must be true or false")
-				}
-				cfg.GISEnabled = value
-			} else if key == "gis_analysis" {
-				cfg.GISAnalysis = strings.ToLower(val)
-			} else if key == "gis_cache_root" {
-				cfg.GISCacheRoot = resolveConfigPath(filepath.Dir(absPath), val)
-			} else if key == "gis_cache_max_gib" {
-				n, err := strconv.Atoi(val)
-				if err != nil || n <= 0 {
-					return Config{}, fmt.Errorf("gis_cache_max_gib must be a positive integer")
-				}
-				cfg.GISCacheMaxGiB = n
-			} else if key == "gis_timeout_seconds" {
-				n, err := strconv.Atoi(val)
-				if err != nil || n <= 0 {
-					return Config{}, fmt.Errorf("gis_timeout_seconds must be a positive integer")
-				}
-				cfg.GISTimeoutSeconds = n
-			} else if key == "gis_sidecar_path" {
-				cfg.GISSidecarPath = resolveConfigPath(filepath.Dir(absPath), val)
-			} else if key == "gis_sidecar_sha256" {
-				cfg.GISSidecarSHA256 = strings.ToLower(strings.TrimSpace(val))
-			}
-			continue
-		}
-		switch key {
-		case "name":
-			cur.Name = val
-		case "path":
-			if strings.TrimSpace(val) == "" {
-				return Config{}, fmt.Errorf("source path must not be empty")
-			}
-			cur.Path = resolveConfigPath(filepath.Dir(absPath), val)
-		case "rank":
-			n, err := strconv.Atoi(val)
-			if err != nil || n <= 0 {
-				return Config{}, fmt.Errorf("source rank must be a positive integer, got %q", val)
-			}
-			cur.Rank = n
-		case "role":
-			cur.Role = SourceRole(strings.ToLower(val))
-		case "private":
-			private, err := strconv.ParseBool(val)
-			if err != nil {
-				return Config{}, fmt.Errorf("source private must be true or false")
-			}
-			cur.Private = private
-			cur.privateSet = true
-		}
-	}
-	if err := sc.Err(); err != nil {
-		return Config{}, err
-	}
-	if !databaseConfigured || strings.TrimSpace(cfg.Database) == "" {
+	if strings.TrimSpace(decoded.Database) == "" {
 		return Config{}, fmt.Errorf("database must be explicitly configured in %s", path)
 	}
-	if len(cfg.Sources) == 0 {
+	if len(decoded.Sources) == 0 {
 		return Config{}, fmt.Errorf("no sources configured in %s", path)
 	}
-	// TOML cannot distinguish an omitted bool from false after decoding. Keep
-	// the file-format default conservative for explicitly declared project
-	// sources while allowing programmatic Config callers to use Private=false.
+	baseDir := filepath.Dir(absPath)
+	cfg := Config{
+		ConfigPath:             absPath,
+		Database:               filepath.FromSlash(decoded.Database),
+		EngineLogs:             resolveOptionalConfigPath(baseDir, decoded.EngineLogs),
+		ArtifactRoot:           resolveOptionalConfigPath(baseDir, decoded.ArtifactRoot),
+		MigrationSnapshotRoot:  resolveOptionalConfigPath(baseDir, decoded.MigrationSnapshotRoot),
+		ArtifactRetentionHours: 168,
+		GISEnabled:             true,
+		GISAnalysis:            strings.ToLower(strings.TrimSpace(decoded.GISAnalysis)),
+		GISCacheRoot:           resolveOptionalConfigPath(baseDir, decoded.GISCacheRoot),
+		GISCacheMaxGiB:         8,
+		GISTimeoutSeconds:      900,
+		GISSidecarPath:         resolveOptionalConfigPath(baseDir, decoded.GISSidecarPath),
+		GISSidecarSHA256:       strings.ToLower(strings.TrimSpace(decoded.GISSidecarSHA256)),
+	}
+	if cfg.GISAnalysis == "" {
+		cfg.GISAnalysis = "terrain"
+	}
+	if decoded.ArtifactRetentionHours != nil {
+		if *decoded.ArtifactRetentionHours <= 0 {
+			return Config{}, fmt.Errorf("artifact_retention_hours must be a positive integer")
+		}
+		cfg.ArtifactRetentionHours = *decoded.ArtifactRetentionHours
+	}
+	if decoded.GISEnabled != nil {
+		cfg.GISEnabled = *decoded.GISEnabled
+	}
+	if decoded.GISCacheMaxGiB != nil {
+		if *decoded.GISCacheMaxGiB <= 0 {
+			return Config{}, fmt.Errorf("gis_cache_max_gib must be a positive integer")
+		}
+		cfg.GISCacheMaxGiB = *decoded.GISCacheMaxGiB
+	}
+	if decoded.GISTimeoutSeconds != nil {
+		if *decoded.GISTimeoutSeconds <= 0 {
+			return Config{}, fmt.Errorf("gis_timeout_seconds must be a positive integer")
+		}
+		cfg.GISTimeoutSeconds = *decoded.GISTimeoutSeconds
+	}
+	cfg.Sources = make([]Source, 0, len(decoded.Sources))
+	for _, input := range decoded.Sources {
+		rank, err := strictPositiveSourceRank(input.Rank)
+		if err != nil {
+			return Config{}, err
+		}
+		source := Source{
+			Name:         strings.TrimSpace(input.Name),
+			Path:         resolveOptionalConfigPath(baseDir, input.Path),
+			Rank:         rank,
+			Role:         SourceRole(strings.ToLower(strings.TrimSpace(input.Role))),
+			ResourceOnly: input.ResourceOnly,
+		}
+		if input.Private != nil {
+			source.Private = *input.Private
+			source.privateSet = true
+		}
+		cfg.Sources = append(cfg.Sources, source)
+	}
 	for i := range cfg.Sources {
 		if cfg.Sources[i].Role == SourceRoleProject && !cfg.Sources[i].privateSet {
 			cfg.Sources[i].Private = true
 		}
 	}
-	var normalizeErr error
-	if cfg, normalizeErr = NormalizeConfig(cfg); normalizeErr != nil {
-		return Config{}, normalizeErr
+	if cfg, err = NormalizeConfig(cfg); err != nil {
+		return Config{}, err
 	}
 	if cfg.ArtifactRoot == "" {
-		cfg.ArtifactRoot = resolveConfigPath(filepath.Dir(absPath), "cache/artifacts")
+		cfg.ArtifactRoot = resolveConfigPath(baseDir, "cache/artifacts")
 	}
 	if cfg.MigrationSnapshotRoot == "" {
-		cfg.MigrationSnapshotRoot = resolveConfigPath(filepath.Dir(absPath), "cache/migration-snapshots")
+		cfg.MigrationSnapshotRoot = resolveConfigPath(baseDir, "cache/migration-snapshots")
 	}
 	if cfg.GISAnalysis != "terrain" && cfg.GISAnalysis != "full" {
 		return Config{}, fmt.Errorf("gis_analysis must be terrain or full")
 	}
 	if cfg.GISCacheRoot == "" {
-		cfg.GISCacheRoot = resolveConfigPath(filepath.Dir(absPath), "cache/gis")
+		cfg.GISCacheRoot = resolveConfigPath(baseDir, "cache/gis")
 	}
 	if cfg.GISSidecarPath == "" {
 		name := "whitebox_tools"
 		if runtime.GOOS == "windows" {
 			name += ".exe"
 		}
-		cfg.GISSidecarPath = resolveConfigPath(filepath.Dir(absPath), filepath.ToSlash(filepath.Join("sidecar", name)))
+		cfg.GISSidecarPath = resolveConfigPath(baseDir, filepath.ToSlash(filepath.Join("sidecar", name)))
 	}
 	if value := strings.TrimSpace(os.Getenv("CK3_INDEX_GIS_SIDECAR_PATH")); value != "" {
 		cfg.GISSidecarPath = filepath.Clean(value)
@@ -494,6 +495,21 @@ func LoadConfig(path string) (Config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+func strictPositiveSourceRank(value any) (int, error) {
+	rank, ok := value.(int64)
+	if !ok || rank <= 0 || strconv.IntSize == 32 && rank > int64(^uint(0)>>1) {
+		return 0, fmt.Errorf("source rank must be a positive integer")
+	}
+	return int(rank), nil
+}
+
+func resolveOptionalConfigPath(baseDir, value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	return resolveConfigPath(baseDir, value)
 }
 
 func validateSources(sources []Source) error {

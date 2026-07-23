@@ -71,12 +71,10 @@ def invoke(
     stage: Path,
     platform: str,
     config: Path,
-    profile: str,
     payload: str,
 ) -> list[dict]:
     environment = os.environ.copy()
     environment["CK3_INDEX_CONFIG"] = str(config)
-    environment["CK3_INDEX_MCP_PROFILE"] = profile
     try:
         completed = subprocess.run(
             launcher_command(stage, platform),
@@ -111,6 +109,31 @@ def invoke(
     return responses
 
 
+def responses_by_id(responses: list[dict], expected_ids: set[int]) -> dict[int, dict]:
+    by_id: dict[int, dict] = {}
+    for response in responses:
+        response_id = response.get("id")
+        if type(response_id) is not int or response_id not in expected_ids:
+            raise SmokeError(
+                f"MCP server returned an unexpected response id: {response_id!r}"
+            )
+        if response_id in by_id:
+            raise SmokeError(
+                f"MCP server returned duplicate response id {response_id}"
+            )
+        by_id[response_id] = response
+    missing = expected_ids.difference(by_id)
+    if missing:
+        raise SmokeError(
+                f"MCP server omitted response id(s): {sorted(missing)}"
+        )
+    return by_id
+
+
+def binary_version(plugin_version: str) -> str:
+    return plugin_version.split("+", 1)[0]
+
+
 def validate_standard(
     responses: list[dict],
     version: str,
@@ -118,25 +141,26 @@ def validate_standard(
     expected_standard_tools: int,
 ) -> None:
     if len(responses) != 4:
-        raise SmokeError(f"standard profile returned {len(responses)} responses, expected 4")
-    initialize = responses[0].get("result") or {}
+        raise SmokeError(f"MCP server returned {len(responses)} responses, expected 4")
+    by_id = responses_by_id(responses, {1, 2, 3, 4})
+    initialize = by_id[1].get("result") or {}
     if initialize.get("protocolVersion") != "2025-11-25":
         raise SmokeError("staged server negotiated an unexpected MCP protocol")
     if (initialize.get("serverInfo") or {}).get("version") != version:
         raise SmokeError("staged server version does not match VERSION")
-    tools = (responses[1].get("result") or {}).get("tools") or []
+    tools = (by_id[2].get("result") or {}).get("tools") or []
     if len(tools) != expected_standard_tools:
         raise SmokeError(
-            f"standard profile advertised {len(tools)} tools, expected {expected_standard_tools}"
+            f"MCP server advertised {len(tools)} tools, expected {expected_standard_tools}"
         )
     names = [item.get("name") for item in tools if isinstance(item, dict)]
     if len(names) != len(set(names)):
-        raise SmokeError("standard profile advertises duplicate tool names")
+        raise SmokeError("MCP server advertises duplicate tool names")
     for required in ("ck3_health", "ck3_package", "map_physical_context", "map_route", "map_render"):
         if required not in names:
-            raise SmokeError(f"standard profile is missing canonical tool {required}")
+            raise SmokeError(f"MCP server is missing canonical tool {required}")
 
-    health = responses[2].get("result") or {}
+    health = by_id[3].get("result") or {}
     if health.get("isError"):
         raise SmokeError("staged ck3_health returned isError")
     health_content = health.get("structuredContent") or {}
@@ -144,7 +168,7 @@ def validate_standard(
     if not gis.get("available") or gis.get("sha256") != expected_gis_sha256:
         raise SmokeError("staged ck3_health did not verify the bundled GIS sidecar")
 
-    audit = responses[3].get("result") or {}
+    audit = by_id[4].get("result") or {}
     if audit.get("isError"):
         raise SmokeError("staged map_asset_audit returned isError")
     if (audit.get("structuredContent") or {}).get("intent") != "map_asset_audit":
@@ -160,6 +184,7 @@ def verify(args: argparse.Namespace) -> dict[str, object]:
         (stage / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
     )
     version = str(manifest.get("version") or "")
+    expected_server_version = binary_version(version)
     wbt = json.loads(
         (stage / "third_party" / "whitebox-tools-v2.4.0.json").read_text(
             encoding="utf-8"
@@ -171,58 +196,19 @@ def verify(args: argparse.Namespace) -> dict[str, object]:
         stage,
         args.platform,
         config,
-        "standard",
         request_lines(version),
     )
     validate_standard(
         standard,
-        version,
+        expected_server_version,
         expected_hash,
-        args.expected_standard_tools,
+        args.expected_tools,
     )
-
-    expert_payload = "".join(
-        json.dumps(item, separators=(",", ":")) + "\n"
-        for item in (
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-11-25",
-                    "capabilities": {},
-                    "clientInfo": {
-                        "name": "ck3-index-release-expert",
-                        "version": version,
-                    },
-                },
-            },
-            {
-                "jsonrpc": "2.0",
-                "method": "notifications/initialized",
-                "params": {},
-            },
-            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
-        )
-    )
-    expert = invoke(stage, args.platform, config, "expert", expert_payload)
-    if len(expert) != 2:
-        raise SmokeError("expert profile returned an unexpected response count")
-    initialized = expert[0].get("result") or {}
-    if initialized.get("protocolVersion") != "2025-11-25":
-        raise SmokeError("expert profile negotiated an unexpected MCP protocol")
-    if (initialized.get("serverInfo") or {}).get("version") != version:
-        raise SmokeError("expert profile server version does not match VERSION")
-    tools = (expert[1].get("result") or {}).get("tools") or []
-    if len(tools) != args.expected_expert_tools:
-        raise SmokeError(
-            f"expert profile advertised {len(tools)} tools, expected {args.expected_expert_tools}"
-        )
     return {
         "version": version,
+        "binary_version": expected_server_version,
         "platform": args.platform,
-        "standard_tools": args.expected_standard_tools,
-        "expert_tools": args.expected_expert_tools,
+        "tools": args.expected_tools,
         "gis_sha256": expected_hash,
         "status": "ready",
     }
@@ -233,8 +219,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--stage", required=True)
     parser.add_argument("--platform", required=True, choices=("windows-x64", "linux-x64"))
     parser.add_argument("--config", required=True)
-    parser.add_argument("--expected-standard-tools", type=int, required=True)
-    parser.add_argument("--expected-expert-tools", type=int, required=True)
+    parser.add_argument("--expected-tools", type=int, required=True)
     return parser.parse_args(argv)
 
 

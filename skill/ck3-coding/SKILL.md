@@ -10,9 +10,9 @@ Use this skill for CK3 mod scripting work. Treat `ck3-index` as the first source
 For CK3 semantic questions, do not begin with `rg`. Call `ck3_search`, `ck3_inspect`, `ck3_prepare_edit`, or the relevant map tool first; use `rg` only to inspect the exact text behind indexed evidence. If the MCP tools are not attached to the current session, use the equivalent `ck3-index` CLI command instead of silently falling back to broad text search.
 
 <!-- BEGIN GENERATED MCP TOOLS -->
-## MCP Tools (standard: 30; expert: 58)
+## MCP Tools (30 canonical tools)
 
-The standard profile advertises the canonical tools below. The expert profile also advertises deprecated compatibility names; all legacy names remain callable during the compatibility window.
+ck3-index exposes one canonical MCP tool surface. Each tool uses bounded operations rather than legacy specialist aliases.
 
 ### Core Tools
 
@@ -53,10 +53,6 @@ The standard profile advertises the canonical tools below. The expert profile al
 | `map_build_metric` | Use when an auditable indexed or source-noted map metric must be calculated before rendering. Do not use only an existing recipe list is needed; use map_recipe_catalog instead. Input: a bounded metric specification, values, transforms, and output limits. Returns: metric values, quantiles, outliers, provenance, and warnings. Unlike map_render, it calculates data rather than rendering an atlas image. Build an auditable indexed or source-noted map metric before rendering. Returns values, quantiles, outliers, provenance, and warnings. |
 | `map_route` | Use when a deterministic legal land, sea, or mixed route between two map subjects is needed. Do not use only direct spatial relation is needed; use map_spatial_relation instead. Input: origin, destination, route mode, and bounded routing options. Returns: route points, legs, corridor context, diagnostics, and distance caveats. Unlike map_neighbors, it solves one constrained path rather than listing local adjacency. Resolve CK3 places and calculate a deterministic legal land, sea, or mixed route over indexed province topology. Returns compact route points, legs, corridor context, diagnostics, and pixel-distance caveats. |
 | `map_render` | Use when a read-only CK3 map visualization is needed from indexed map data. Do not use only raw metric data is needed; use map_build_metric instead. Input: a bounded render specification, layers, styling, and optional route context. Returns: structured render metadata and an in-memory PNG artifact. Unlike map_build_metric, it renders a visualization instead of calculating the underlying metric alone. Render a read-only adaptive CK3 atlas with automatic resolution when dimensions are omitted. Returns structured metadata and an in-memory PNG without accepting client file paths. |
-
-### Compatibility
-
-Set `CK3_INDEX_MCP_PROFILE=expert` only when an existing client still discovers legacy specialist names. New prompts and `next_actions` use canonical names.
 <!-- END GENERATED MCP TOOLS -->
 
 ## Workflow
@@ -132,6 +128,9 @@ Set `CK3_INDEX_MCP_PROFILE=expert` only when an existing client still discovers 
 | `scope_mismatch` | warning | Proven trigger/effect scope conflict with a root/current scope trace |
 | `trigger_in_effect` | warning | Trigger used inside an effect block |
 | `missing_localization` | warning | Loc key referenced but not defined |
+| `localization_invalid_character` | error | Localization line contains a replacement character or illegal control byte |
+| `localization_entry_syntax` | error | Localization value has an unterminated quoted entry |
+| `localization_macro_syntax` | error | Localization square brackets or known function-style macro are unbalanced |
 | `missing_object_reference` | warning | Object reference not indexed |
 | `missing_resource` | warning | Gfx/resource path referenced but file not found |
 | `resource_resolution_uncertain` | info | Bare/context-relative resource needs owning-context resolution before it can be called missing |
@@ -140,15 +139,96 @@ Set `CK3_INDEX_MCP_PROFILE=expert` only when an existing client still discovers 
 | `duplicate_title_id` | warning | Same-source active landed-title id is defined more than once; all locations are reported |
 | `duplicate_barony_province` | warning | One active province is assigned to multiple baronies |
 | `invalid_title_hierarchy` | warning | Landed-title parent rank or barony province assignment is invalid |
-| `on_action_direct_override` | warning | Direct effect/trigger block in a vanilla on_action |
+| `on_action_direct_override` | warning | Project/dependency directly overrides a known vanilla on_action effect/trigger block; this is an overwrite-risk review, not an illegal-field claim |
+| `unsupported_event_field` | error | CK3 1.19 event field such as direct `is_triggered_only` that the event loader does not accept |
+| `event_option_selection_conflict` | warning | Event option declares both `ai_chance` and `ai_will_select`, which are competing AI-selection grammars |
+| `invalid_script_value_field` | error | Script-value block, such as CB `ai_score`, using scripted-modifier syntax like `base` |
+| `unknown_modifier_field` | error | Modifier container contains a tag absent from the current CK3 1.19 modifier contract |
+| `invalid_modifier_context` | error | Known modifier tag is used on an incompatible receiver, such as scheme-only data in `character_modifier` |
+| `illegal_modifier_container` | error | Obsolete or unsupported modifier container, such as building `country_modifier` |
+| `unknown_modifier_definition` | error | `common/modifier_definition_formats` attempts to create a modifier type not defined by the engine |
+| `duplicate_on_action_field` | error | Named on_action declares `trigger` or `effect` more than once |
+| `illegal_field_context` | error | A covered runtime container contains a direct field outside its CK3 contract |
+| `invalid_government_rule_context` | error | Government field is placed inside the `government_rules` enum container instead of the government object |
+| `unregistered_government_type` | error | Project government ID is missing from `NGovernment.GOVERNMENT_TYPES` |
+| `opinion_modifier_time_conflict` | error | Opinion modifier combines `monthly_change` with fixed `days`/`months`/`years` duration |
+| `opinion_modifier_mode_conflict` | error | Opinion modifier enables both `decaying` and `growing` |
+| `opinion_modifier_invalid_delay` | error | Opinion modifier uses a delay field without `decaying = yes` |
+| `opinion_modifier_missing_duration` | error | Opinion modifier enables decaying/growing without `monthly_change` or a fixed duration |
+| `opinion_modifier_invalid_value` | error | Opinion modifier uses a negative literal `monthly_change` |
+| `unknown_scripted_relation_modifier` | error | Scripted relation uses a missing or generated modifier that is not valid in the relation modifier block |
+| `scripted_relation_flag_limit` | error | Scripted relation declares more than CK3's 32 supported flags |
+| `religion_doctrine_order` | error | Religion-level doctrine appears after the `faiths` block |
+| `name_list_probability_sum` | error | Culture name-list ancestry probabilities for one sex exceed 100 |
+| `activity_duplicate_category` | error | Activity option category name is repeated within one activity type |
+| `activity_duplicate_option` | error | Activity option name is repeated within one category |
+| `activity_duplicate_phase` | error | Activity phase name is repeated within one activity type |
+| `activity_missing_phase` | error | Activity type has no active phase |
+| `situation_missing_phase` | error | Situation has no active phase under `phases` |
+| `situation_takeover_conflict` | error | Situation future phase combines mutually exclusive `takeover_points` and `takeover_duration` |
+| `law_succession_field_context` | error | Succession field is incompatible with `order_of_succession` or another succession field |
+| `government_missing_fallback` | error | No active government has a positive fallback priority |
+| `government_missing_mechanic_default` | error | Mechanic-type government family has no default government |
+| `government_duplicate_mechanic_default` | error | Mechanic-type government family has more than one default government |
+| `council_task_clone_context` | error | Council task clone redefines fields other than position or omits position |
+| `council_task_field_context` | error | Council task field conflicts with its task type or progress mode |
+| `house_relation_missing_level` | error | House relation has no relationship level |
+| `flavorization_missing_domicile_type` | error | Domicile flavourization lacks its domicile database key |
+| `trait_genetic_inheritance_conflict` | error | Trait combines `genetic = yes` with manual inheritance chances |
+| `lease_contract_value_range` | error | Lease share or UI maximum is outside 0..100 |
+| `lease_contract_hierarchy_context` | error | Lease uses `lease_liege` without a hierarchy |
+| `lease_contract_enum` | error | Lease enum value is outside the documented choices |
+| `subject_contract_contribution_range` | error | Subject-contract literal contribution is outside 0..1 |
+| `subject_contract_enum` | error | Subject-contract display mode is invalid |
+| `accolade_name_option_count` | error | Accolade name `num_options` does not match its option blocks |
+| `culture_era_year` | error | Culture era year is missing or negative |
+| `ai_war_stance_side` | error | War stance side is not attacker or defender |
+| `ai_war_stance_behaviour_attribute` | error | War stance has no enabled stronger/weaker/desperate behaviour attribute |
+| `ai_war_stance_behaviour_field` | error | War stance behaviour container has an illegal field |
+| `ai_war_stance_objective_field` | error | War stance objective name or enemy-unit objective field is invalid |
+| `ai_war_stance_objective_context` | error | Object-style war objective is used outside enemy_unit_province |
+| `ai_war_stance_objective_priority` | error | War stance priority is missing or outside integer range 0..1000 |
+| `ai_war_stance_area_enum` | error | War stance enemy-unit area is outside the documented enum |
+| `ai_war_stance_area_overlap` | error | War stance enemy-unit areas overlap |
+| `house_unity_stage_points` | error | House-unity stage points are missing, nonpositive, or noninteger |
+| `story_cycle_duration_missing` | error | Story-cycle effect group has no duration unit |
+| `story_cycle_duration_conflict` | error | Story-cycle effect group mixes duration units |
+| `story_cycle_chance_range` | error | Story-cycle literal chance is outside 0..100 |
+| `story_cycle_triggered_effect_shape` | error | Story-cycle triggered effect has no effect block |
+| `activity_ai_tier_missing` | error | Activity AI tier interval block is incomplete |
+| `activity_intent_default_invalid` | error | Activity default/player intent is not listed in intents |
+| `decision_ai_interval_missing` | error | Decision has no AI interval and is not an AI goal |
+| `decision_picture_missing` | error | Decision has no direct picture block containing a resource reference |
+| `decision_ai_tier_missing` | error | Decision AI tier interval block is incomplete |
+| `interaction_ai_tier_missing` | error | Character interaction AI frequency tier block is incomplete |
+| `great_project_ai_tier_missing` | error | Great-project AI tier interval block is incomplete |
+| `struggle_missing_future_phase` | error | Non-ending struggle phase has no future phase |
+| `struggle_invalid_duration` | error | Struggle phase duration is nonpositive or invalid |
+| `struggle_phase_reference` | error | Struggle start/future phase references an undeclared phase |
+| `struggle_ending_phase_fields` | error | Ending struggle phase contains fields the engine ignores there |
+| `court_type_duplicate_default` | error | More than one active court type is marked default |
+| `trait_opinion_gender_conflict` | error | Triggered trait opinion enables both `male_only` and `female_only` |
+| `trait_track_duplicate_name` | error | Trait track name is repeated within one trait |
+| `trait_track_xp_range` | error | Literal trait track XP threshold is outside 0..100 |
+| `trait_track_xp_order` | error | Literal trait track XP thresholds are not ascending |
+| `innovation_asset_display_missing` | error | Innovation asset has neither `name` nor `icon` |
+| `event_transition_invalid_duration` | error | Event transition duration is zero or negative |
+| `event_2d_invalid_duration` | error | Event 2D effect duration is negative |
+| `event_theme_missing_required_field` | error | Event theme lacks direct `background`, `icon`, or `sound` |
+| `house_aspiration_missing_level` | error | House aspiration has no level block |
+| `dynasty_perk_trait_chance` | error | Dynasty perk traits block has no nonzero literal AI chance |
+| `struggle_missing_phase_list` | error | Struggle has no phase list |
+| `struggle_missing_start_phase` | error | Struggle has no initial `start_phase` |
+| `struggle_missing_ending_decision` | error | No struggle phase defines an ending decision |
 | `missing_trigger_else` | warning | `trigger_if` / `trigger_else_if` chain without a terminal `trigger_else` |
 | `event_no_option` | warning | Visible numeric event definition without an option block |
-| `nested_iterator` | warning | Iterator inside another iterator, likely expensive or suspicious |
-| `gui_layout_misuse` | warning | `parentanchor` inside `hbox`/`vbox`; usually use `expand={}` instead |
+| `nested_iterator` | warning | Project code nests iterators; advisory performance review only, not CK3 illegality |
 | `gui_crash_risk` | error | Known crash pattern in GUI |
-| `missing_event_loc` | warning | Event/decision without localization references |
+| `missing_event_loc` | warning | Visible event lacks usable title/description/option localization, or a decision lacks explicit/implicit localization; hidden events and `<id>`/`<id>_desc` decision keys are understood |
 | `variable_never_set` | warning | Variable referenced but never `set_variable` in active files |
 | `lios_partial_override` | warning | File overrides upstream but defines fewer objects |
+| `history_character_name_localization_missing` | warning | Direct unquoted character-history name has no active localization value |
+| `variable_write_only` | warning | Project variable is set but has no indexed read across active source layers or literal localization runtime expressions |
 
 ## Generation Rules
 
@@ -207,6 +287,7 @@ ck3-index mcp                           # Start MCP server over stdio
 - Do not treat compiled rule seeds as engine authority. Confirm risky edits with local CK3 `.info` files, vanilla examples, active-workspace examples, and indexed project evidence.
 - Local wiki notes: `docs/CK3_EXPERIENCE_NOTES.md` summarizes workflow hints from the local CK3 modding wiki. Treat them as generation guidance, not engine authority.
 - Regenerate rule data only from a matching current CK3 log bundle and game tree. `event_scopes.log`, `event_targets.log`, `triggers.log`, `effects.log`, `on_actions.log`, and `modifiers.log` supply engine-log evidence; `common/defines/`, `common/on_action/`, `common/modifier_definition_formats/`, and `sound/GUIDs.txt` supply the matching vanilla-source evidence.
+- Runtime field contracts are documented in `docs/CK3_RUNTIME_FIELD_CONTRACTS.md`. Treat `.info` files as non-exhaustive hints, combine them with vanilla instances and engine logs, and keep cross-file checks such as government registration in the full-scan path. The modifier receiver area is the object that receives the modifier; selector metadata such as `name`, `parameter`, `terrain`, `object`, `target`, and `holding` is not itself a numeric modifier tag.
 
   ```text
   python tools/extract_engine_scopes.py --logs <logs> --scope-output internal/indexer/scope_data.gen.go --targets-output internal/indexer/scope_transitions.gen.go

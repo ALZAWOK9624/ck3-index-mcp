@@ -51,6 +51,14 @@ func TestFullScanReusesPublishedIndexWhenInputsAreUnchanged(t *testing.T) {
 	if _, ok := stats.TimingsMillis["reuse_published_index"]; !ok {
 		t.Fatalf("no-op scan did not report reuse timing: %+v", stats.TimingsMillis)
 	}
+	if stats.FilesRead != 1 || stats.FilesHashed != 1 || stats.FilesParsed != 0 || stats.BytesRead == 0 || stats.BytesHashed != stats.BytesRead {
+		t.Fatalf("unexpected no-op scan work counters: %+v", stats)
+	}
+	for _, key := range []string{"load_engine_bundle", "load_existing_index", "walk_sources", "hash_files_wall", "read_hash_worker_cpu_total", "sqlite_write"} {
+		if _, ok := stats.TimingsMillis[key]; !ok {
+			t.Fatalf("no-op scan omitted %s timing: %+v", key, stats.TimingsMillis)
+		}
+	}
 	for _, key := range []string{"load_symbols", "resolve_refs", "validator", "map_context", "semantic_fts"} {
 		if _, ok := stats.TimingsMillis[key]; ok {
 			t.Fatalf("no-op scan unexpectedly ran %s: %+v", key, stats.TimingsMillis)
@@ -67,6 +75,15 @@ func TestFullScanReusesPublishedIndexWhenInputsAreUnchanged(t *testing.T) {
 	}
 	if !samePublishedIndexState(before, after) || before.CommittedAt != after.CommittedAt {
 		t.Fatalf("no-op scan advanced the published index: before=%+v after=%+v", before, after)
+	}
+	for _, key := range []string{"scan_count_objects", "scan_count_refs", "scan_count_localization", "scan_count_resources", "scan_count_object_fields", "scan_count_diagnostics"} {
+		value, err := db.metaValue(ctx, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if value == "" {
+			t.Fatalf("published count cache %s is empty", key)
+		}
 	}
 }
 

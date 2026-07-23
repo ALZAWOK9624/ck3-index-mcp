@@ -16,6 +16,14 @@ assert SPEC is not None and SPEC.loader is not None
 release = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(release)
 
+SMOKE_SCRIPT = Path(__file__).with_name("verify_release_mcp.py")
+SMOKE_SPEC = importlib.util.spec_from_file_location(
+    "verify_release_mcp", SMOKE_SCRIPT
+)
+assert SMOKE_SPEC is not None and SMOKE_SPEC.loader is not None
+smoke = importlib.util.module_from_spec(SMOKE_SPEC)
+SMOKE_SPEC.loader.exec_module(smoke)
+
 
 def write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -23,6 +31,64 @@ def write_json(path: Path, value: object) -> None:
 
 
 class ReleaseBundleTests(unittest.TestCase):
+    def test_mcp_smoke_matches_out_of_order_responses_by_id(self) -> None:
+        version = "1.2.3"
+        gis_hash = "a" * 64
+        required_tools = (
+            "ck3_health",
+            "ck3_package",
+            "map_physical_context",
+            "map_route",
+            "map_render",
+        )
+        responses = [
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "result": {
+                    "structuredContent": {"intent": "map_asset_audit"}
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "result": {
+                    "structuredContent": {
+                        "gis": {"available": True, "sha256": gis_hash}
+                    }
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "protocolVersion": "2025-11-25",
+                    "serverInfo": {"version": version},
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {
+                    "tools": [{"name": name} for name in required_tools]
+                },
+            },
+        ]
+
+        smoke.validate_standard(
+            responses, version, gis_hash, len(required_tools)
+        )
+
+    def test_mcp_smoke_rejects_duplicate_response_ids(self) -> None:
+        with self.assertRaisesRegex(smoke.SmokeError, "duplicate response id"):
+            smoke.responses_by_id([{"id": 1}, {"id": 1}], {1, 2})
+
+    def test_mcp_smoke_separates_cachebuster_and_binary_versions(self) -> None:
+        self.assertEqual(
+            smoke.binary_version("0.5.0+codex.20260724120000"), "0.5.0"
+        )
+        self.assertEqual(smoke.binary_version("0.5.0-rc.1"), "0.5.0-rc.1")
+
     def test_archive_is_deterministic_and_rooted(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

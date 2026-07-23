@@ -4,7 +4,7 @@
 > 日期：2026-07-14
 > 目标版本：`0.3.0`
 > 审查时基线：`0.2.2`、41 个 MCP 工具
-> 当前实现：`0.3.0`，standard 暴露 21 个 canonical 工具，expert 暴露 49 个名称
+> 当前实现：`0.5.0`，只公开一套 canonical MCP 工具；历史 expert profile 与 28 个旧别名已在用户审批后移除。
 > 审批结论：批准 A–G 与 I；H 暂缓。Phase 0–4 已完成，取消与并发仍等待单独审批。
 
 ## 1. 执行摘要
@@ -287,7 +287,7 @@ CK3_INDEX_MCP_PROFILE=expert     # 列 canonical + 旧低层工具
 - 旧名称通过 `legacy.go` 转换参数后调用 canonical handler，不保留两套业务逻辑。
 - legacy 调用结果在 `_meta.deprecated_tool` 标记旧名称与替代名称。
 - `NextQueries` 统一由注册表 canonical 名称生成，不再在 indexer 业务代码散落字符串。
-- 是否在 `0.5.0` 删除旧别名必须再次审批，不能由本方案自动授权。
+- `0.5.0`：用户已明确批准删除 expert profile 与旧别名；规范工具及其受限 operation 继续提供全部实际能力。
 
 ## 8. 输入契约
 

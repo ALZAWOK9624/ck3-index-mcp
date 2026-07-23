@@ -1,0 +1,171 @@
+{
+  "schema_version": 2,
+  "suite_id": "ck3-index-agent-tool-selection-v2",
+  "cases": [
+    {
+      "id": "cancelled_refresh_stops",
+      "task": "全量刷新被调用方取消后，代理必须停止，不能在同一计划里静默重试。",
+      "why_this_path": "OPERATION_CANCELLED 表示用户或上游已经撤销本次昂贵操作；自动重试会违背取消语义。",
+      "acceptable_first_tools": [
+        "ck3_refresh"
+      ],
+      "required_evidence": [
+        "cancellation_acknowledged"
+      ],
+      "forbidden_tools": [],
+      "max_calls": 2,
+      "allowed_alternatives": [],
+      "success_conditions": [
+        "no_retry_after_cancel"
+      ],
+      "recovery": [
+        {
+          "after_code": "OPERATION_CANCELLED",
+          "stop": true
+        }
+      ]
+    },
+    {
+      "id": "gis_unavailable_stops",
+      "task": "请求物理地理证据但本机没有可用 GIS 缓存时，代理应报告能力边界并停止。",
+      "why_this_path": "GIS_UNAVAILABLE 是能力缺失，不是换一个同类重型地图工具即可修复的瞬时失败。",
+      "acceptable_first_tools": [
+        "map_physical_context"
+      ],
+      "required_evidence": [
+        "gis_unavailable"
+      ],
+      "forbidden_tools": [
+        "map_build_metric"
+      ],
+      "max_calls": 2,
+      "allowed_alternatives": [],
+      "success_conditions": [
+        "capability_boundary_reported"
+      ],
+      "recovery": [
+        {
+          "after_code": "GIS_UNAVAILABLE",
+          "stop": true
+        }
+      ]
+    },
+    {
+      "id": "index_stale_refreshes",
+      "task": "精确对象检查返回 INDEX_STALE 时，代理应先保留该状态证据，再显式请求一次全量刷新。",
+      "why_this_path": "规则版本漂移需要重建完整 generation；继续搜索旧索引不会得到可靠结论。",
+      "acceptable_first_tools": [
+        "ck3_inspect"
+      ],
+      "required_evidence": [
+        "index_status"
+      ],
+      "forbidden_tools": [],
+      "max_calls": 2,
+      "allowed_alternatives": [
+        [
+          "ck3_inspect",
+          "ck3_refresh"
+        ]
+      ],
+      "success_conditions": [
+        "fresh_generation_requested"
+      ],
+      "recovery": [
+        {
+          "after_code": "INDEX_STALE",
+          "allowed_next_tools": [
+            "ck3_refresh"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "object_ambiguous_searches",
+      "task": "精确检查发现未限定 id 有多个对象类型时，代理应回到搜索发现候选，而不是猜一个类型。",
+      "why_this_path": "OBJECT_AMBIGUOUS 要求补充类型证据；语义搜索是确定 typed id 的安全恢复路径。",
+      "acceptable_first_tools": [
+        "ck3_inspect"
+      ],
+      "required_evidence": [
+        "candidate_ids"
+      ],
+      "forbidden_tools": [],
+      "max_calls": 2,
+      "allowed_alternatives": [
+        [
+          "ck3_inspect",
+          "ck3_search"
+        ]
+      ],
+      "success_conditions": [
+        "typed_id_discovered"
+      ],
+      "recovery": [
+        {
+          "after_code": "OBJECT_AMBIGUOUS",
+          "allowed_next_tools": [
+            "ck3_search"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "public_visibility_avoids_private_mutation",
+      "task": "公开回答中只发现一个未知对象 id，代理必须使用公开可见搜索并避免刷新、打包或写入类操作。",
+      "why_this_path": "公开可见性只能返回去路径化证据；发现任务本身不授权私有读取扩张或任何变更。",
+      "acceptable_first_tools": [
+        "ck3_search"
+      ],
+      "required_evidence": [
+        "public_visibility",
+        "redaction_applied"
+      ],
+      "forbidden_tools": [
+        "ck3_package",
+        "ck3_refresh",
+        "map_province_migration"
+      ],
+      "max_calls": 1,
+      "allowed_alternatives": [
+        [
+          "ck3_search"
+        ]
+      ],
+      "success_conditions": [
+        "no_private_evidence"
+      ]
+    },
+    {
+      "id": "response_too_large_narrows",
+      "task": "搜索返回 RESPONSE_TOO_LARGE 时，代理应缩小 limit 或翻页，不能原样重复相同请求。",
+      "why_this_path": "响应预算错误要求改变请求边界；原样重试只会重复同一个确定性失败。",
+      "acceptable_first_tools": [
+        "ck3_search"
+      ],
+      "required_evidence": [
+        "response_budget"
+      ],
+      "forbidden_tools": [],
+      "max_calls": 2,
+      "allowed_alternatives": [
+        [
+          "ck3_search",
+          "ck3_search"
+        ]
+      ],
+      "success_conditions": [
+        "request_narrowed"
+      ],
+      "recovery": [
+        {
+          "after_code": "RESPONSE_TOO_LARGE",
+          "allowed_next_tools": [
+            "ck3_search"
+          ],
+          "require_changed_arguments": true
+        }
+      ]
+    }
+  ]
+}

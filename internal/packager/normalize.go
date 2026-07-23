@@ -12,6 +12,12 @@ import (
 
 var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{2,63}$`)
 
+// CK3 accepts a concrete three/four-component version or a wildcard on the
+// patch component, for example 1.19.0.6 and 1.19.*. A wildcard in the major
+// or minor component is rejected by the launcher (1.* and 1.*.* are common
+// sources of descriptor.log errors).
+var supportedVersionPattern = regexp.MustCompile(`^\d+\.\d+\.(?:\d+|\*)(?:\.\d+)?$`)
+
 var allowedRoots = map[string]bool{
 	"common": true, "events": true, "history": true, "gui": true,
 	"localization": true, "gfx": true, "map_data": true, "sound": true,
@@ -103,6 +109,11 @@ func normalizeMetadata(meta Metadata) (Metadata, ValidationReport) {
 	}
 	if !slugPattern.MatchString(meta.Slug) {
 		return meta, packageBlocked("package_slug_invalid", "slug must match [a-z0-9][a-z0-9_-]{2,63}", "slug")
+	}
+	if !supportedVersionPattern.MatchString(meta.SupportedVersion) {
+		return meta, packageBlocked("package_supported_version_invalid",
+			"supported_version must use a CK3 major.minor.patch version such as 1.19.* or 1.19.0.6; wildcards are not valid in major/minor components",
+			"supported_version")
 	}
 	if meta.Kind != "addon" && meta.Kind != "submod" && meta.Kind != "total_conversion" {
 		return meta, packageBlocked("package_kind_invalid", "kind must be addon, submod, or total_conversion", "kind")

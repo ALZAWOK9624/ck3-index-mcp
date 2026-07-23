@@ -15,7 +15,7 @@
 
 ## 快速开始
 
-需要 Go 1.24 或更高版本，以及你本机合法安装的 CK3 与 Mod 文件。
+需要 Go 1.26 或更高版本（与 `go.mod` 一致），以及你本机合法安装的 CK3 与 Mod 文件。
 
 ```powershell
 git clone https://github.com/ALZAWOK9624/ck3-index-mcp.git
@@ -41,9 +41,17 @@ path = "../Crusader Kings III/game"
 rank = 2
 role = "game"
 private = false
+
+[[source]]
+name = "engine-assets"
+path = "../Crusader Kings III/clausewitz"
+rank = 3
+role = "reference"
+private = false
+resource_only = true
 ```
 
-`role` 表示来源身份，`rank` 只表示覆盖优先级；配置必须恰好有一个 `project` 来源。`private = true` 的来源不会进入公开可见性结果。
+`role` 表示来源身份，`rank` 只表示覆盖优先级；配置必须恰好有一个 `project` 来源。`private = true` 的来源不会进入公开可见性结果。`resource_only = true` 只遍历 `gfx/`、`map_data/` 和 `sound/`，适合把 CK3 安装目录中的 `game`、`clausewitz`、`jomini` 资源补入解析，而不重复索引其脚本定义；它不能用于 `project` 来源。
 
 ## 证据索引与刷新边界
 
@@ -95,12 +103,12 @@ private = false
 
 ## MCP 工具
 
-标准模式提供日常使用的核心工具；只有兼容旧客户端时才设置 `CK3_INDEX_MCP_PROFILE=expert` 启用旧名称。详细参数见 [MCP 工具参考](docs/MCP_TOOL_REFERENCE.md)。
+MCP 只公开一套规范工具；精细能力通过各工具的受限 `operation` 参数提供。详细参数见 [MCP 工具参考](docs/MCP_TOOL_REFERENCE.md)。
 
 <!-- BEGIN GENERATED MCP TOOLS -->
-## MCP 工具（标准模式：30；专家模式：58）
+## MCP 工具（30 个规范工具）
 
-标准模式只公开下列规范工具。专家模式还会公开已弃用的兼容名称；在兼容期内，所有旧名称仍然可以调用。
+ck3-index 仅公开一套规范 MCP 工具；细分能力通过受限 operation 提供，不再保留旧版专用工具别名。
 
 ### 核心工具
 
@@ -141,10 +149,6 @@ private = false
 | `map_build_metric` | 在渲染前构建可审计的索引指标或带来源说明的地图指标。返回数值、分位数、异常值、来源与警告。 |
 | `map_route` | 解析中英文地名、领地头衔或省份 ID，并在已索引省份拓扑上计算确定性的合法陆路、海路或混合路线；返回紧凑路径、分段、沿途上下文和像素距离警告。 |
 | `map_render` | 渲染只读的自适应 CK3 地图；省略尺寸时自动选择分辨率。返回结构化元数据和内存中的 PNG，不接受客户端文件路径。 |
-
-### 兼容模式
-
-只有仍需发现旧版专用工具名的客户端才应设置 `CK3_INDEX_MCP_PROFILE=expert`。新提示词与 `next_actions` 一律使用规范工具名。
 <!-- END GENERATED MCP TOOLS -->
 
 ## 许可证与发布

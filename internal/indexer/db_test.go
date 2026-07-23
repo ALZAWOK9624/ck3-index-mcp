@@ -27,6 +27,39 @@ func TestOpenAppliesBusyTimeoutToEveryConnection(t *testing.T) {
 	}
 }
 
+func TestScanWriterTransactionUsesPinnedPragmas(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "writer.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	conn, err := db.scanWriteConnection(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	for pragma, want := range map[string]int{
+		"busy_timeout": 60000,
+		"temp_store":   2,
+		"cache_size":   -200000,
+		"synchronous":  0,
+	} {
+		var got int
+		if err := tx.QueryRowContext(ctx, `PRAGMA `+pragma).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("writer PRAGMA %s=%d, want %d", pragma, got, want)
+		}
+	}
+}
+
 func TestOpenHandlesDatabasePathWithURICharacters(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "index #%地图.sqlite")
 	db, err := Open(path)

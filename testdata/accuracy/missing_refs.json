@@ -3,7 +3,7 @@
   "files": [
     {
       "path": "common/decisions/test_missing_refs.txt",
-      "content": "test_missing_refs_decision = {\n\tpicture = \"gfx/interface/illustrations/decisions/missing_accuracy_icon.dds\"\n\tdesc = test_missing_refs_decision.desc\n\tis_shown = { holder = title:k_missing_accuracy_title }\n\teffect = { add_prestige = 10 }\n}\n"
+      "content": "test_missing_refs_decision = {\n\tpicture = \"gfx/interface/illustrations/decisions/missing_accuracy_icon.dds\"\n\tdesc = test_missing_refs_decision.desc\n\tai_check_interval = 12\n\tis_shown = { holder = title:k_missing_accuracy_title }\n\teffect = { add_prestige = 10 }\n}\n"
     }
   ],
   "expect_diagnostics": [
@@ -24,7 +24,7 @@
     {
       "id": "test_missing_refs_decision",
       "counts": {
-        "blocking_risks": 2,
+        "blocking_risks": 3,
         "unresolved_refs": 3
       }
     }

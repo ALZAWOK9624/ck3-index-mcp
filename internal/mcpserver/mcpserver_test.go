@@ -393,9 +393,9 @@ func TestCallMCPToolRejectsBadArguments(t *testing.T) {
 	defer db.Close()
 
 	for _, raw := range []json.RawMessage{
-		json.RawMessage(`{"name":"query_object","arguments":"bad"}`),
-		json.RawMessage(`{"name":"query_object","arguments":{}}`),
-		json.RawMessage(`{"name":"preflight_patch","arguments":{}}`),
+		json.RawMessage(`{"name":"ck3_inspect","arguments":"bad"}`),
+		json.RawMessage(`{"name":"ck3_inspect","arguments":{}}`),
+		json.RawMessage(`{"name":"ck3_preflight","arguments":{}}`),
 	} {
 		result, err := callMCPTool(context.Background(), db, indexer.Config{}, raw)
 		if err != nil {
@@ -417,7 +417,7 @@ func TestCallMCPToolRejectsNullArgumentsWithoutPanicking(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, name := range []string{"ck3_health", "query_object", "preflight_patch"} {
+	for _, name := range []string{"ck3_health", "ck3_inspect", "ck3_preflight"} {
 		raw := json.RawMessage(fmt.Sprintf(`{"name":%q,"arguments":null}`, name))
 		got, callErr := callMCPTool(context.Background(), db, indexer.Config{}, raw)
 		if callErr != nil {
@@ -437,7 +437,7 @@ func TestLookupIteratorFallsBackToOfficialExample(t *testing.T) {
 	}
 	defer db.Close()
 
-	raw := json.RawMessage(`{"name":"lookup_iterator","arguments":{"id":"any_courtier"}}`)
+	raw := json.RawMessage(`{"name":"ck3_script_reference","arguments":{"kind":"iterator","id":"any_courtier"}}`)
 	got, err := callMCPTool(context.Background(), db, indexer.Config{}, raw)
 	if err != nil {
 		t.Fatal(err)
@@ -698,7 +698,7 @@ rank = 1
 	}
 	defer db.Close()
 
-	raw := json.RawMessage(`{"name":"query_object_types","arguments":{"limit":3}}`)
+	raw := json.RawMessage(`{"name":"ck3_workspace","arguments":{"operation":"object_types","limit":3}}`)
 	got, err := callMCPTool(context.Background(), db, emptyMCPConfig(filepath.Join(dir, "cache", "test.sqlite")), raw)
 	if err != nil {
 		t.Fatal(err)
@@ -710,7 +710,7 @@ rank = 1
 		t.Fatalf("expected LLM object type result, got %s", text)
 	}
 
-	raw = json.RawMessage(`{"name":"query_patterns","arguments":{"id":"trait","limit":3}}`)
+	raw = json.RawMessage(`{"name":"ck3_prepare_edit","arguments":{"operation":"patterns","id":"trait","limit":3}}`)
 	got, err = callMCPTool(context.Background(), db, emptyMCPConfig(filepath.Join(dir, "cache", "test.sqlite")), raw)
 	if err != nil {
 		t.Fatal(err)
@@ -722,7 +722,7 @@ rank = 1
 		t.Fatalf("expected LLM pattern result, got %s", text)
 	}
 
-	raw = json.RawMessage(`{"name":"preflight_patch","arguments":{"limit":5,"files":[{"path":"common/traits/patch_traits.txt","content":"patch_trait = { desc = test_trait_desc }"}]}}`)
+	raw = json.RawMessage(`{"name":"ck3_preflight","arguments":{"operation":"patch","limit":5,"files":[{"path":"common/traits/patch_traits.txt","content":"patch_trait = { desc = test_trait_desc }"}]}}`)
 	got, err = callMCPTool(context.Background(), db, emptyMCPConfig(filepath.Join(dir, "cache", "test.sqlite")), raw)
 	if err != nil {
 		t.Fatal(err)
@@ -734,7 +734,7 @@ rank = 1
 		t.Fatalf("expected LLM preflight patch result, got %s", text)
 	}
 
-	raw = json.RawMessage(`{"name":"health_check","arguments":{"limit":3}}`)
+	raw = json.RawMessage(`{"name":"ck3_health","arguments":{}}`)
 	got, err = callMCPTool(context.Background(), db, emptyMCPConfig(filepath.Join(dir, "cache", "test.sqlite")), raw)
 	if err != nil {
 		t.Fatal(err)
@@ -746,10 +746,10 @@ rank = 1
 		t.Fatalf("expected health result, got %s", text)
 	}
 	if strings.Contains(text, cfgPath) || strings.Contains(text, filepath.Join(dir, "cache", "test.sqlite")) {
-		t.Fatalf("health_check should not expose local absolute paths, got %s", text)
+		t.Fatalf("ck3_health should not expose local absolute paths, got %s", text)
 	}
 
-	raw = json.RawMessage(`{"name":"architecture_overview","arguments":{"limit":3}}`)
+	raw = json.RawMessage(`{"name":"ck3_workspace","arguments":{"operation":"overview","limit":3}}`)
 	got, err = callMCPTool(context.Background(), db, emptyMCPConfig(filepath.Join(dir, "cache", "test.sqlite")), raw)
 	if err != nil {
 		t.Fatal(err)
@@ -761,7 +761,7 @@ rank = 1
 		t.Fatalf("expected architecture overview result, got %s", text)
 	}
 
-	raw = json.RawMessage(`{"name":"dependency_graph","arguments":{"id":"test_trait","limit":3,"depth":2}}`)
+	raw = json.RawMessage(`{"name":"ck3_dependencies","arguments":{"id":"test_trait","limit":3,"depth":2}}`)
 	got, err = callMCPTool(context.Background(), db, emptyMCPConfig(filepath.Join(dir, "cache", "test.sqlite")), raw)
 	if err != nil {
 		t.Fatal(err)
@@ -773,7 +773,7 @@ rank = 1
 		t.Fatalf("expected dependency graph result, got %s", text)
 	}
 
-	raw = json.RawMessage(`{"name":"dependency_graph","arguments":{"id":"test_maa","limit":8,"depth":2}}`)
+	raw = json.RawMessage(`{"name":"ck3_dependencies","arguments":{"id":"test_maa","limit":8,"depth":2}}`)
 	got, err = callMCPTool(context.Background(), db, emptyMCPConfig(filepath.Join(dir, "cache", "test.sqlite")), raw)
 	if err != nil {
 		t.Fatal(err)
@@ -797,7 +797,7 @@ rank = 1
 		t.Fatalf("expected event-chain topology result, got %s", text)
 	}
 
-	raw = json.RawMessage(`{"name":"dependency_graph","arguments":{"id":"test_maa","limit":8,"mode":"public","allow_project":false}}`)
+	raw = json.RawMessage(`{"name":"ck3_dependencies","arguments":{"id":"test_maa","limit":8,"visibility":"public"}}`)
 	got, err = callMCPTool(context.Background(), db, emptyMCPConfig(filepath.Join(dir, "cache", "test.sqlite")), raw)
 	if err != nil {
 		t.Fatal(err)

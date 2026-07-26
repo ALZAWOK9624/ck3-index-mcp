@@ -80,9 +80,7 @@ func (compiler *guiRuntimeCompiler) bindNodeRuntimeText(node *GUIPreviewNode) {
 	}
 
 	tooltip := &GUIRuntimeTextBindingSet{}
-	if node.Semantics != nil {
-		tooltip.Raw = compiler.runtimeTextBinding(node.Semantics.Tooltip, false, "", nil)
-	}
+	tooltip.Raw = compiler.runtimeTextBinding(guiPreviewTooltipText(node.Semantics), false, "", nil)
 	if node.TooltipLocalization != nil {
 		if node.TooltipLocalization.English != nil && node.TooltipLocalization.English.Dynamic {
 			tooltip.English = compiler.runtimeLocalizedTextBinding(node.TooltipLocalization.English)
@@ -99,6 +97,28 @@ func (compiler *guiRuntimeCompiler) bindNodeRuntimeText(node *GUIPreviewNode) {
 			node.Runtime = &GUINodeRuntime{}
 		}
 		node.Runtime.Tooltip = tooltip
+	}
+
+	disabledTooltip := &GUIRuntimeTextBindingSet{}
+	if node.Semantics != nil {
+		disabledTooltip.Raw = compiler.runtimeTextBinding(node.Semantics.TooltipWhenDisabled, false, "", nil)
+	}
+	if node.TooltipWhenDisabledLocalization != nil {
+		if node.TooltipWhenDisabledLocalization.English != nil && node.TooltipWhenDisabledLocalization.English.Dynamic {
+			disabledTooltip.English = compiler.runtimeLocalizedTextBinding(node.TooltipWhenDisabledLocalization.English)
+		}
+		if node.TooltipWhenDisabledLocalization.SimpChinese != nil && node.TooltipWhenDisabledLocalization.SimpChinese.Dynamic {
+			disabledTooltip.SimpChinese = compiler.runtimeLocalizedTextBinding(node.TooltipWhenDisabledLocalization.SimpChinese)
+		}
+	} else if node.Semantics != nil {
+		disabledTooltip.English = compiler.runtimeConditionalLocalizedTextBinding(node.Semantics.TooltipWhenDisabled, GUIPreviewLanguageEnglish)
+		disabledTooltip.SimpChinese = compiler.runtimeConditionalLocalizedTextBinding(node.Semantics.TooltipWhenDisabled, GUIPreviewLanguageSimpChinese)
+	}
+	if disabledTooltip.Raw != nil || disabledTooltip.English != nil || disabledTooltip.SimpChinese != nil {
+		if node.Runtime == nil {
+			node.Runtime = &GUINodeRuntime{}
+		}
+		node.Runtime.TooltipWhenDisabled = disabledTooltip
 	}
 }
 

@@ -26,12 +26,18 @@ type GUIHTMLBehaviorStats struct {
 	EnabledExpressions   int `json:"enabled_expressions"`
 	DownExpressions      int `json:"down_expressions"`
 	SelectedExpressions  int `json:"selected_expressions"`
+	CheckedExpressions   int `json:"checked_expressions"`
+	GrayscaleExpressions int `json:"grayscale_expressions"`
 	AlphaExpressions     int `json:"alpha_expressions"`
+	ScaleExpressions     int `json:"scale_expressions"`
+	RotateUVExpressions  int `json:"rotate_uv_expressions"`
 	ValueExpressions     int `json:"value_expressions"`
 	ColorExpressions     int `json:"color_expressions"`
 	DynamicTexts         int `json:"dynamic_texts"`
 	ClickActions         int `json:"click_actions"`
+	RightClickActions    int `json:"right_click_actions"`
 	States               int `json:"states"`
+	StateTriggers        int `json:"state_triggers"`
 	TooltipOverlays      int `json:"tooltip_overlays,omitempty"`
 	ScrollViewports      int `json:"scroll_viewports,omitempty"`
 	ModelRows            int `json:"model_rows,omitempty"`
@@ -177,6 +183,9 @@ func summarizeGUIHTMLBehaviors(nodes []GUIPreviewNode) GUIHTMLBehaviorStats {
 		}
 		if node.StateDefinition != nil {
 			result.States++
+			if node.StateDefinition.TriggerWhen != "" {
+				result.StateTriggers++
+			}
 		}
 		if node.Semantics == nil {
 			if strings.Contains(node.Text, "[") || (node.TextLocalization != nil && node.TextLocalization.Partial) {
@@ -196,11 +205,26 @@ func summarizeGUIHTMLBehaviors(nodes []GUIPreviewNode) GUIHTMLBehaviorStats {
 		if node.Semantics.Selected != "" {
 			result.SelectedExpressions++
 		}
+		if node.Semantics.Checked != "" {
+			result.CheckedExpressions++
+		}
+		if node.Semantics.Grayscale != "" {
+			result.GrayscaleExpressions++
+		}
 		if node.Semantics.Alpha != "" {
 			result.AlphaExpressions++
 		}
-		if node.Semantics.Value != "" {
+		if node.Semantics.Scale != "" {
+			result.ScaleExpressions++
+		}
+		if node.Semantics.RotateUV != "" {
+			result.RotateUVExpressions++
+		}
+		if node.Semantics.Value != "" || node.Semantics.AnimatedProgressValue != "" {
 			result.ValueExpressions++
+		}
+		if node.Semantics.Color != "" {
+			result.ColorExpressions++
 		}
 		if node.Semantics.TintColor != "" {
 			result.ColorExpressions++
@@ -216,6 +240,9 @@ func summarizeGUIHTMLBehaviors(nodes []GUIPreviewNode) GUIHTMLBehaviorStats {
 		} else if node.Semantics.OnClick != "" {
 			result.ClickActions++
 		}
+		if node.Semantics.OnRightClick != "" {
+			result.RightClickActions++
+		}
 		if node.Semantics.State != "" && node.StateDefinition == nil {
 			result.States++
 		}
@@ -230,18 +257,20 @@ func guiHTMLStyles(width, height int) string {
 html,body{margin:0;padding:0;width:%dpx;height:%dpx;overflow:hidden;background:var(--ck3-bg);font-family:"Noto Sans CJK SC","Microsoft YaHei UI","Segoe UI",sans-serif;color:var(--ck3-text)}
 .ck3-preview,.ck3-canvas{position:relative;width:%dpx;height:%dpx;overflow:hidden}
 .ck3-canvas{background-color:var(--ck3-bg);background-image:linear-gradient(var(--ck3-grid) 1px,transparent 1px),linear-gradient(90deg,var(--ck3-grid) 1px,transparent 1px);background-size:64px 64px}
-.ck3-node{position:absolute;overflow:hidden;border:1px solid var(--ck3-generic-border);background:var(--ck3-generic);color:var(--ck3-text);font-size:12px;line-height:1.25;pointer-events:none;opacity:calc(var(--ck3-alpha,1)*var(--ck3-state-alpha,1))}
+.ck3-node{position:absolute;overflow:hidden;border:1px solid var(--ck3-generic-border);background:var(--ck3-generic);color:var(--ck3-text);font-size:12px;line-height:1.25;pointer-events:none;opacity:calc(var(--ck3-alpha,1)*var(--ck3-state-alpha,1));transform:translate(var(--ck3-state-offset-x,0px),calc(var(--ck3-down-offset,0px) + var(--ck3-state-offset-y,0px))) scale(var(--ck3-scale,1)) scale(var(--ck3-state-scale,1));transform-origin:center}
 .ck3-container{background:var(--ck3-container);border-color:var(--ck3-container-border)}
 .ck3-button{display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg,#bc7b34aa,#754315aa);border-color:var(--ck3-button-border);font-weight:600;text-align:center}
 .ck3-text{display:flex;align-items:center;background:var(--ck3-text-node);border-color:var(--ck3-text-border);padding:2px 4px}
 .ck3-image{display:flex;align-items:flex-end;background:repeating-linear-gradient(135deg,#68459588 0,#68459588 8px,#50356f88 8px,#50356f88 16px);border-color:var(--ck3-image-border);padding:2px 4px}
 .ck3-expand{background:transparent;border-color:var(--ck3-muted)}
+.ck3-line{overflow:visible!important;background:transparent!important;border:0!important;pointer-events:none;user-select:none}.ck3-line>.ck3-line-stroke{position:absolute;height:var(--ck3-line-width,1px);background-color:var(--ck3-tint-color,#b17ae5);background-blend-mode:multiply;background-position:left center;background-repeat:repeat-x;background-size:auto 100%%;transform:translateY(-50%%) rotate(var(--ck3-line-angle,0deg));transform-origin:0 50%%;pointer-events:none}.ck3-line>.ck3-line-stroke.ck3-line-cap{border-radius:999px}.ck3-line>.ck3-caption{display:none}
 .ck3-texture-modifier{background:transparent;border-color:transparent}.ck3-blend-screen{mix-blend-mode:screen}.ck3-blend-multiply{mix-blend-mode:multiply}.ck3-blend-overlay{mix-blend-mode:overlay}.ck3-blend-color-dodge{mix-blend-mode:color-dodge}
 .ck3-approximate{border-color:var(--ck3-approx);border-style:dashed}
 .ck3-scenario-hidden{opacity:.08;filter:grayscale(1)}.ck3-scenario-disabled{filter:grayscale(1);border-color:#d96b6b}
-.ck3-node.is-sim-down{transform:translateY(1px);box-shadow:inset 0 2px 5px #000b;filter:saturate(.82)}.ck3-node.is-sim-selected-state{border-color:#f0cf72;box-shadow:inset 0 0 0 1px #f0cf72aa,0 0 7px #f0cf7255}
-.ck3-texture{position:absolute;inset:0;width:100%%;height:100%%;background-position:center;background-repeat:no-repeat;background-size:100%% 100%%;background-color:var(--ck3-tint-color,transparent);background-blend-mode:multiply;pointer-events:none;user-select:none;transform-origin:center}.ck3-image>.ck3-texture,.ck3-button>.ck3-texture{background-size:contain}.ck3-texture.ck3-framed{background-position:var(--ck3-frame-up-x) var(--ck3-frame-up-y)}.ck3-node:hover>.ck3-texture.ck3-framed{background-position:var(--ck3-frame-over-x) var(--ck3-frame-over-y)}.ck3-node:active>.ck3-texture.ck3-framed,.ck3-node.is-sim-down>.ck3-texture.ck3-framed{background-position:var(--ck3-frame-down-x) var(--ck3-frame-down-y)}.ck3-node:disabled>.ck3-texture.ck3-framed,.ck3-node.is-sim-disabled>.ck3-texture.ck3-framed{background-position:var(--ck3-frame-disabled-x) var(--ck3-frame-disabled-y)}.ck3-texture.ck3-framed-images{--ck3-active-frame-image:var(--ck3-frame-up-image)}.ck3-node:hover>.ck3-texture.ck3-framed-images{--ck3-active-frame-image:var(--ck3-frame-over-image)}.ck3-node:active>.ck3-texture.ck3-framed-images,.ck3-node.is-sim-down>.ck3-texture.ck3-framed-images{--ck3-active-frame-image:var(--ck3-frame-down-image)}.ck3-node:disabled>.ck3-texture.ck3-framed-images,.ck3-node.is-sim-disabled>.ck3-texture.ck3-framed-images{--ck3-active-frame-image:var(--ck3-frame-disabled-image)}.ck3-texture.ck3-framed-images:not(.ck3-nine-slice){background-image:var(--ck3-active-frame-image)!important;background-size:100%% 100%%}.ck3-texture.ck3-nine-slice{background-image:none!important;border-style:solid;border-width:var(--ck3-slice-y) var(--ck3-slice-x);border-image-source:var(--ck3-active-frame-image,var(--ck3-texture-image));border-image-slice:var(--ck3-source-slice-y) var(--ck3-source-slice-x) fill;border-image-width:var(--ck3-slice-y) var(--ck3-slice-x);border-image-repeat:stretch}.ck3-texture.ck3-nine-slice-tiled{border-image-repeat:round}.ck3-texture.ck3-mirror-horizontal{transform:scaleX(-1)}.ck3-texture.ck3-mirror-vertical{transform:scaleY(-1)}.ck3-texture.ck3-mirror-both{transform:scale(-1,-1)}
-.ck3-progresspie>.ck3-texture{-webkit-mask-image:conic-gradient(from -90deg,#000 0deg var(--ck3-progress-angle,360deg),transparent var(--ck3-progress-angle,360deg) 360deg);mask-image:conic-gradient(from -90deg,#000 0deg var(--ck3-progress-angle,360deg),transparent var(--ck3-progress-angle,360deg) 360deg)}.ck3-progressbar>.ck3-progress-fill{clip-path:inset(0 var(--ck3-progress-inverse,0%%) 0 0)}
+.ck3-node.is-sim-down{--ck3-down-offset:1px;box-shadow:inset 0 2px 5px #000b;filter:saturate(.82)}.ck3-node.is-sim-selected-state{border-color:#f0cf72;box-shadow:inset 0 0 0 1px #f0cf72aa,0 0 7px #f0cf7255}
+.ck3-texture{position:absolute;inset:0;width:100%%;height:100%%;background-position:center;background-repeat:no-repeat;background-size:100%% 100%%;background-color:var(--ck3-tint-color,transparent);background-blend-mode:multiply;pointer-events:none;user-select:none;transform:rotate(var(--ck3-rotate-uv,0deg)) scale(var(--ck3-mirror-x,1),var(--ck3-mirror-y,1));transform-origin:center}.ck3-image>.ck3-texture,.ck3-button>.ck3-texture{background-size:contain}.ck3-texture.ck3-framed{background-position:var(--ck3-frame-up-x) var(--ck3-frame-up-y)}.ck3-node:hover>.ck3-texture.ck3-framed{background-position:var(--ck3-frame-over-x) var(--ck3-frame-over-y)}.ck3-node:active>.ck3-texture.ck3-framed,.ck3-node.is-sim-down>.ck3-texture.ck3-framed{background-position:var(--ck3-frame-down-x) var(--ck3-frame-down-y)}.ck3-node:disabled>.ck3-texture.ck3-framed,.ck3-node.is-sim-disabled>.ck3-texture.ck3-framed{background-position:var(--ck3-frame-disabled-x) var(--ck3-frame-disabled-y)}.ck3-texture.ck3-framed-images{--ck3-active-frame-image:var(--ck3-frame-up-image)}.ck3-node:hover>.ck3-texture.ck3-framed-images{--ck3-active-frame-image:var(--ck3-frame-over-image)}.ck3-node:active>.ck3-texture.ck3-framed-images,.ck3-node.is-sim-down>.ck3-texture.ck3-framed-images{--ck3-active-frame-image:var(--ck3-frame-down-image)}.ck3-node:disabled>.ck3-texture.ck3-framed-images,.ck3-node.is-sim-disabled>.ck3-texture.ck3-framed-images{--ck3-active-frame-image:var(--ck3-frame-disabled-image)}.ck3-texture.ck3-framed-images:not(.ck3-nine-slice){background-image:var(--ck3-active-frame-image)!important;background-size:100%% 100%%}.ck3-texture.ck3-nine-slice{background-image:none!important;border-style:solid;border-width:var(--ck3-slice-y) var(--ck3-slice-x);border-image-source:var(--ck3-active-frame-image,var(--ck3-texture-image));border-image-slice:var(--ck3-source-slice-y) var(--ck3-source-slice-x) fill;border-image-width:var(--ck3-slice-y) var(--ck3-slice-x);border-image-repeat:stretch}.ck3-texture.ck3-nine-slice-tiled{border-image-repeat:round}.ck3-texture.ck3-mirror-horizontal{--ck3-mirror-x:-1}.ck3-texture.ck3-mirror-vertical{--ck3-mirror-y:-1}.ck3-texture.ck3-mirror-both{--ck3-mirror-x:-1;--ck3-mirror-y:-1}.ck3-coa-layer,.ck3-coa-mask{position:absolute;inset:0;width:100%%;height:100%%;pointer-events:none;user-select:none}.ck3-texture.ck3-coa-content{transform:translate(var(--ck3-coa-offset-x,0%%),var(--ck3-coa-offset-y,0%%)) rotate(var(--ck3-rotate-uv,0deg)) scale(var(--ck3-coa-scale-x,1),var(--ck3-coa-scale-y,1)) scale(var(--ck3-mirror-x,1),var(--ck3-mirror-y,1))}
+.ck3-image>.ck3-coa-layer .ck3-texture,.ck3-button>.ck3-coa-layer .ck3-texture{background-size:contain}.ck3-progresspie>.ck3-texture{-webkit-mask-image:conic-gradient(from -90deg,#000 0deg var(--ck3-progress-angle,360deg),transparent var(--ck3-progress-angle,360deg) 360deg);mask-image:conic-gradient(from -90deg,#000 0deg var(--ck3-progress-angle,360deg),transparent var(--ck3-progress-angle,360deg) 360deg)}.ck3-progressbar>.ck3-progress-fill{clip-path:inset(0 var(--ck3-progress-inverse,0%%) 0 0)}
+.ck3-checkmark{position:absolute;inset:0;z-index:2;display:flex;align-items:center;justify-content:center;opacity:0;color:#f1d98b;font-size:18px;font-weight:700;line-height:1;text-shadow:0 1px 3px #000;pointer-events:none}.ck3-node.ck3-checkable.is-sim-checked>.ck3-checkmark{opacity:1}
 .ck3-caption{position:relative;z-index:1;display:block;max-width:100%%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-shadow:0 1px 2px #000}
 .ck3-container>.ck3-caption{position:absolute;left:2px;top:1px;color:var(--ck3-muted);font-size:10px}
 .ck3-semantic-tree{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
@@ -250,6 +279,9 @@ html,body{margin:0;padding:0;width:%dpx;height:%dpx;overflow:hidden;background:v
 
 func writeGUIHTMLNode(output *strings.Builder, node GUIPreviewNode, textureAssets guiHTMLTextureAssets, previewLanguage string) {
 	classes := []string{"ck3-node", guiHTMLKindClass(node.Kind)}
+	if guiHTMLNodeIsCheckable(node) {
+		classes = append(classes, "ck3-checkable")
+	}
 	if blendClass := guiHTMLTextureBlendClass(node); blendClass != "" {
 		classes = append(classes, "ck3-texture-modifier", blendClass)
 	}
@@ -268,6 +300,9 @@ func writeGUIHTMLNode(output *strings.Builder, node GUIPreviewNode, textureAsset
 	if value, known := guiNodeEffectiveSelected(node); known && value {
 		classes = append(classes, "is-sim-selected-state")
 	}
+	if value, known := guiNodeEffectiveChecked(node); known && value && guiHTMLNodeIsCheckable(node) {
+		classes = append(classes, "is-sim-checked")
+	}
 	output.WriteString("<div id=\"ck3-node-")
 	output.WriteString(strconv.Itoa(node.Index))
 	output.WriteString("\" class=\"")
@@ -282,7 +317,15 @@ func writeGUIHTMLNode(output *strings.Builder, node GUIPreviewNode, textureAsset
 	writeGUIHTMLData(output, "name", node.Name)
 	writeGUIHTMLData(output, "type-chain", strings.Join(node.TypeChain, ","))
 	writeGUIHTMLData(output, "source", node.Source)
+	writeGUIHTMLData(output, "background-texture", node.BackgroundTexture)
+	writeGUIHTMLData(output, "mask", node.MaskTexture)
+	writeGUIHTMLData(output, "coat-of-arms-mask-resource", node.CoatOfArmsMask)
+	writeGUIHTMLLineGeometryData(output, node.LineGeometry)
+	writeGUIHTMLVectorData(output, "coat-of-arms-offset-literal", node.CoatOfArmsOffset)
+	writeGUIHTMLVectorData(output, "coat-of-arms-scale-literal", node.CoatOfArmsScale)
 	writeGUIHTMLData(output, "mirror", node.Mirror)
+	writeGUIHTMLData(output, "fit-type", node.FitType)
+	writeGUIHTMLData(output, "align", node.Align)
 	writeGUIHTMLData(output, "texture-blend-mode", node.TextureBlendMode)
 	writeGUIHTMLTextureFrameData(output, node.TextureFrames)
 	writeGUIHTMLTextureSliceData(output, node.TextureSlice)
@@ -292,6 +335,7 @@ func writeGUIHTMLNode(output *strings.Builder, node GUIPreviewNode, textureAsset
 	writeGUIHTMLSemantics(output, node.Semantics)
 	writeGUIHTMLLocalizationData(output, "text", node.TextLocalization)
 	writeGUIHTMLLocalizationData(output, "tooltip", node.TooltipLocalization)
+	writeGUIHTMLLocalizationData(output, "tooltip-when-disabled", node.TooltipWhenDisabledLocalization)
 	writeGUIHTMLModelRowData(output, node.ModelRow)
 	writeGUIHTMLScenarioData(output, node.Scenario)
 	writeGUIHTMLRuntimeData(output, node, previewLanguage)
@@ -308,13 +352,34 @@ func writeGUIHTMLNode(output *strings.Builder, node GUIPreviewNode, textureAsset
 		output.WriteString(";")
 		output.WriteString(colorStyle)
 	}
+	if grayscaleStyle := guiHTMLGrayscaleStyle(node); grayscaleStyle != "" {
+		output.WriteString(";")
+		output.WriteString(grayscaleStyle)
+	}
 	if alphaStyle := guiHTMLAlphaStyle(node); alphaStyle != "" {
 		output.WriteString(";")
 		output.WriteString(alphaStyle)
 	}
+	if scaleStyle := guiHTMLScaleStyle(node); scaleStyle != "" {
+		output.WriteString(";")
+		output.WriteString(scaleStyle)
+	}
+	if rotateUVStyle := guiHTMLRotateUVStyle(node); rotateUVStyle != "" {
+		output.WriteString(";")
+		output.WriteString(rotateUVStyle)
+	}
+	if alignStyle := guiHTMLAlignStyle(node); alignStyle != "" {
+		output.WriteString(";")
+		output.WriteString(alignStyle)
+	}
 	output.WriteString("\"")
 	output.WriteString(">")
-	writeGUIHTMLTextureImage(output, node, textureAssets)
+	if guiPreviewLineGeometryReady(node.LineGeometry) {
+		writeGUIHTMLLineStroke(output, node, textureAssets)
+	} else {
+		writeGUIHTMLTextureImage(output, node, textureAssets)
+	}
+	writeGUIHTMLCheckMark(output, node)
 	output.WriteString("<span class=\"ck3-caption\">")
 	output.WriteString(html.EscapeString(guiHTMLStageLabel(node)))
 	output.WriteString("</span></div>\n")
@@ -336,6 +401,61 @@ func guiHTMLInitialClipStyle(node GUIPreviewNode) string {
 		return ""
 	}
 	return fmt.Sprintf("clip-path:inset(%dpx %dpx %dpx %dpx);", top, right, bottom, left)
+}
+
+func writeGUIHTMLLineGeometryData(output *strings.Builder, geometry *GUIPreviewLineGeometry) {
+	if geometry == nil {
+		return
+	}
+	writeGUIHTMLData(output, "line-coordinate-space", geometry.CoordinateSpace)
+	writeGUIHTMLData(output, "line-width", guiHTMLCSSNumber(geometry.Width))
+	writeGUIHTMLData(output, "line-origin", guiHTMLLinePointValue(geometry.Origin))
+	if geometry.From != nil {
+		writeGUIHTMLData(output, "line-from", guiHTMLLinePointValue(*geometry.From))
+	}
+	if geometry.To != nil {
+		writeGUIHTMLData(output, "line-to", guiHTMLLinePointValue(*geometry.To))
+	}
+	if geometry.LineCap {
+		writeGUIHTMLData(output, "line-cap", "true")
+	}
+}
+
+func guiHTMLLinePointValue(point GUIPreviewPoint) string {
+	return "{ " + guiHTMLCSSNumber(point.X) + " " + guiHTMLCSSNumber(point.Y) + " }"
+}
+
+func writeGUIHTMLLineStroke(output *strings.Builder, node GUIPreviewNode, assets guiHTMLTextureAssets) {
+	if !guiPreviewLineGeometryReady(node.LineGeometry) {
+		return
+	}
+	geometry := node.LineGeometry
+	from, to := *geometry.From, *geometry.To
+	deltaX, deltaY := to.X-from.X, to.Y-from.Y
+	length := math.Hypot(deltaX, deltaY)
+	angle := math.Atan2(deltaY, deltaX) * 180 / math.Pi
+	classes := []string{"ck3-line-stroke"}
+	if geometry.LineCap {
+		classes = append(classes, "ck3-line-cap")
+	}
+	if node.TextureRef != nil && node.TextureRef.Embedded && node.TextureRef.dataURI != "" {
+		if className := assets.classes[node.TextureRef.dataURI]; className != "" {
+			classes = append(classes, className)
+		}
+	}
+	output.WriteString("<span class=\"")
+	output.WriteString(strings.Join(classes, " "))
+	output.WriteString("\" style=\"left:")
+	output.WriteString(guiHTMLCSSNumber(from.X - float64(node.Bounds.X)))
+	output.WriteString("px;top:")
+	output.WriteString(guiHTMLCSSNumber(from.Y - float64(node.Bounds.Y)))
+	output.WriteString("px;width:")
+	output.WriteString(guiHTMLCSSNumber(math.Max(1, length)))
+	output.WriteString("px;--ck3-line-width:")
+	output.WriteString(guiHTMLCSSNumber(math.Max(1, geometry.Width)))
+	output.WriteString("px;--ck3-line-angle:")
+	output.WriteString(guiHTMLCSSNumber(angle))
+	output.WriteString("deg\" aria-hidden=\"true\"></span>")
 }
 
 func guiNodeEffectiveVisible(node GUIPreviewNode) (bool, bool) {
@@ -372,6 +492,34 @@ func guiNodeEffectiveSelected(node GUIPreviewNode) (bool, bool) {
 	return false, false
 }
 
+func guiNodeEffectiveChecked(node GUIPreviewNode) (bool, bool) {
+	if node.Runtime != nil && node.Runtime.Checked != nil && node.Runtime.Checked.Result != nil {
+		return *node.Runtime.Checked.Result, true
+	}
+	if node.Semantics != nil {
+		if literal, ok := parseGUIRuntimeLiteral(node.Semantics.Checked); ok && literal.kind == guiRuntimeKindBoolean {
+			return literal.boolV, true
+		}
+	}
+	return false, false
+}
+
+func guiHTMLNodeIsCheckable(node GUIPreviewNode) bool {
+	for _, candidate := range append([]string{node.Kind}, node.TypeChain...) {
+		candidate = strings.ToLower(strings.TrimSpace(candidate))
+		if strings.Contains(candidate, "checkbutton") || strings.Contains(candidate, "checkbox") {
+			return true
+		}
+	}
+	return false
+}
+
+func writeGUIHTMLCheckMark(output *strings.Builder, node GUIPreviewNode) {
+	if guiHTMLNodeIsCheckable(node) {
+		output.WriteString("<span class=\"ck3-checkmark\" aria-hidden=\"true\">&#10003;</span>")
+	}
+}
+
 func guiNodeEffectiveAlpha(node GUIPreviewNode) (float64, bool) {
 	if node.Runtime != nil && node.Runtime.Alpha != nil && node.Runtime.Alpha.Result != nil {
 		return *node.Runtime.Alpha.Result, true
@@ -392,9 +540,58 @@ func guiHTMLAlphaStyle(node GUIPreviewNode) string {
 	return "--ck3-alpha:" + guiHTMLCSSNumber(math.Max(0, math.Min(1, alpha)))
 }
 
+func guiNodeEffectiveScale(node GUIPreviewNode) (float64, bool) {
+	if node.Runtime != nil && node.Runtime.Scale != nil && node.Runtime.Scale.Result != nil {
+		return *node.Runtime.Scale.Result, true
+	}
+	if node.Semantics != nil {
+		if literal, ok := parseGUIRuntimeLiteral(node.Semantics.Scale); ok && literal.kind == guiRuntimeKindNumber {
+			return literal.number, true
+		}
+	}
+	return 0, false
+}
+
+func guiHTMLScaleStyle(node GUIPreviewNode) string {
+	scale, known := guiNodeEffectiveScale(node)
+	if !known || math.IsNaN(scale) || math.IsInf(scale, 0) {
+		return ""
+	}
+	return "--ck3-scale:" + guiHTMLCSSNumber(math.Max(0, math.Min(8, scale)))
+}
+
+func guiNodeEffectiveRotateUV(node GUIPreviewNode) (float64, bool) {
+	if node.Runtime != nil && node.Runtime.RotateUV != nil && node.Runtime.RotateUV.Result != nil {
+		return *node.Runtime.RotateUV.Result, true
+	}
+	if node.Semantics != nil {
+		if literal, ok := parseGUIRuntimeLiteral(node.Semantics.RotateUV); ok && literal.kind == guiRuntimeKindNumber {
+			return literal.number, true
+		}
+	}
+	return 0, false
+}
+
+func guiHTMLRotateUVStyle(node GUIPreviewNode) string {
+	rotation, known := guiNodeEffectiveRotateUV(node)
+	if !known || math.IsNaN(rotation) || math.IsInf(rotation, 0) {
+		return ""
+	}
+	rotation = math.Mod(rotation, 360)
+	if math.Abs(rotation) < 0.0005 {
+		rotation = 0
+	}
+	return "--ck3-rotate-uv:" + guiHTMLCSSNumber(rotation) + "deg"
+}
+
 func guiNodeEffectiveProgress(node GUIPreviewNode) (float64, bool) {
-	if node.Runtime != nil && node.Runtime.Value != nil && node.Runtime.Value.Result != nil {
-		return *node.Runtime.Value.Result, true
+	if node.Runtime != nil {
+		if node.Runtime.Value != nil && node.Runtime.Value.Result != nil {
+			return *node.Runtime.Value.Result, true
+		}
+		if node.Runtime.AnimatedProgressValue != nil && node.Runtime.AnimatedProgressValue.Result != nil {
+			return *node.Runtime.AnimatedProgressValue.Result, true
+		}
 	}
 	return 0, false
 }
@@ -410,7 +607,10 @@ func guiHTMLColorStyle(node GUIPreviewNode) string {
 	if node.Runtime == nil {
 		return ""
 	}
-	styles := make([]string, 0, 3)
+	styles := make([]string, 0, 4)
+	if color, known := guiNodeEffectiveColor(node.Runtime.Color); known {
+		styles = append(styles, "--ck3-tint-color:"+color)
+	}
 	if color, known := guiNodeEffectiveColor(node.Runtime.TintColor); known {
 		styles = append(styles, "--ck3-tint-color:"+color)
 	}
@@ -418,6 +618,13 @@ func guiHTMLColorStyle(node GUIPreviewNode) string {
 		styles = append(styles, "--ck3-font-tint-color:"+color, "color:var(--ck3-font-tint-color)")
 	}
 	return strings.Join(styles, ";")
+}
+
+func guiHTMLGrayscaleStyle(node GUIPreviewNode) string {
+	if node.Runtime != nil && node.Runtime.Grayscale != nil && node.Runtime.Grayscale.Result != nil && *node.Runtime.Grayscale.Result {
+		return "filter:grayscale(1)"
+	}
+	return ""
 }
 
 func guiNodeEffectiveProgressBound(binding *GUIRuntimeNumberBinding, fallback float64, required bool) (float64, bool) {
@@ -532,10 +739,29 @@ func writeGUIHTMLRuntimeData(output *strings.Builder, node GUIPreviewNode, previ
 			writeGUIHTMLData(output, "initial-sim-selected", value)
 		}
 	}
+	writeGUIHTMLRuntimeBooleanData(output, "checked", node.Runtime.Checked)
+	writeGUIHTMLRuntimeBooleanData(output, "state-trigger", node.Runtime.StateTrigger)
+	writeGUIHTMLRuntimeBooleanData(output, "allow-outside", node.Runtime.AllowOutside)
+	writeGUIHTMLRuntimeNumberData(output, "state-position-x", node.Runtime.StatePositionX)
+	writeGUIHTMLRuntimeNumberData(output, "state-position-y", node.Runtime.StatePositionY)
+	writeGUIHTMLRuntimeBooleanData(output, "tooltip-visible", node.Runtime.TooltipVisible)
+	writeGUIHTMLRuntimeBooleanData(output, "grayscale", node.Runtime.Grayscale)
 	writeGUIHTMLRuntimeNumberData(output, "min", node.Runtime.Min)
 	writeGUIHTMLRuntimeNumberData(output, "max", node.Runtime.Max)
 	writeGUIHTMLRuntimeNumberData(output, "value", node.Runtime.Value)
+	writeGUIHTMLRuntimeNumberData(output, "animated-progress-value", node.Runtime.AnimatedProgressValue)
 	writeGUIHTMLRuntimeNumberData(output, "alpha", node.Runtime.Alpha)
+	writeGUIHTMLRuntimeNumberData(output, "scale", node.Runtime.Scale)
+	writeGUIHTMLRuntimeNumberData(output, "rotate-uv", node.Runtime.RotateUV)
+	writeGUIHTMLRuntimeNumberData(output, "min-width", node.Runtime.MinWidth)
+	writeGUIHTMLRuntimeNumberData(output, "max-width", node.Runtime.MaxWidth)
+	writeGUIHTMLRuntimeNumberData(output, "min-height", node.Runtime.MinHeight)
+	writeGUIHTMLRuntimeNumberData(output, "max-height", node.Runtime.MaxHeight)
+	writeGUIHTMLRuntimeNumberData(output, "margin-left", node.Runtime.MarginLeft)
+	writeGUIHTMLRuntimeNumberData(output, "margin-right", node.Runtime.MarginRight)
+	writeGUIHTMLRuntimeNumberData(output, "margin-top", node.Runtime.MarginTop)
+	writeGUIHTMLRuntimeNumberData(output, "margin-bottom", node.Runtime.MarginBottom)
+	writeGUIHTMLRuntimeColorData(output, "color", node.Runtime.Color)
 	writeGUIHTMLRuntimeColorData(output, "tint-color", node.Runtime.TintColor)
 	writeGUIHTMLRuntimeColorData(output, "font-tint-color", node.Runtime.FontTintColor)
 	if binding := node.Runtime.Action; binding != nil {
@@ -549,8 +775,13 @@ func writeGUIHTMLRuntimeData(output *strings.Builder, node GUIPreviewNode, previ
 		}
 		writeGUIHTMLData(output, "action-plans", strings.Join(plans, ","))
 	}
+	if binding := node.Runtime.RightClickAction; binding != nil {
+		writeGUIHTMLData(output, "right-click-action-plan", strconv.Itoa(binding.PlanID))
+		writeGUIHTMLData(output, "right-click-action-runtime-status", binding.Status)
+	}
 	writeGUIHTMLRuntimeTextSet(output, "text", node.Runtime.Text)
 	writeGUIHTMLRuntimeTextSet(output, "tooltip", node.Runtime.Tooltip)
+	writeGUIHTMLRuntimeTextSet(output, "tooltip-when-disabled", node.Runtime.TooltipWhenDisabled)
 	if node.Runtime.Text != nil {
 		if node.Scenario != nil && node.Scenario.Text != nil {
 			writeGUIHTMLData(output, "text-override", "scenario")
@@ -579,6 +810,31 @@ func writeGUIHTMLRuntimeData(output *strings.Builder, node GUIPreviewNode, previ
 		if value, ok := resolvedGUIRuntimeText(node.Runtime.Tooltip, language); ok {
 			writeGUIHTMLRawData(output, "sim-tooltip", value)
 		}
+	}
+	if node.Runtime.TooltipWhenDisabled != nil {
+		language := previewLanguage
+		if language == "" {
+			language = GUIPreviewLanguageRaw
+		}
+		if node.TooltipWhenDisabledLocalization != nil && node.TooltipWhenDisabledLocalization.SelectedLanguage != "" {
+			language = node.TooltipWhenDisabledLocalization.SelectedLanguage
+		}
+		if value, ok := resolvedGUIRuntimeText(node.Runtime.TooltipWhenDisabled, language); ok {
+			writeGUIHTMLRawData(output, "sim-tooltip-when-disabled", value)
+		}
+	}
+}
+
+func writeGUIHTMLRuntimeBooleanData(output *strings.Builder, name string, binding *GUIRuntimeBinding) {
+	if binding == nil {
+		return
+	}
+	writeGUIHTMLData(output, name+"-plan", strconv.Itoa(binding.PlanID))
+	writeGUIHTMLData(output, name+"-runtime-status", binding.Status)
+	if binding.Result != nil {
+		value := strconv.FormatBool(*binding.Result)
+		writeGUIHTMLRawData(output, "sim-"+name, value)
+		writeGUIHTMLData(output, "initial-sim-"+name, value)
 	}
 }
 
@@ -635,6 +891,19 @@ func writeGUIHTMLScenarioData(output *strings.Builder, scenario *GUINodeScenario
 	if scenario.Texture != nil {
 		writeGUIHTMLData(output, "scenario-texture", *scenario.Texture)
 	}
+	if scenario.Video {
+		writeGUIHTMLData(output, "scenario-video", "true")
+	}
+	if scenario.CoatOfArms {
+		writeGUIHTMLData(output, "scenario-coat-of-arms", "true")
+	}
+	if scenario.CoatOfArmsMask != nil {
+		writeGUIHTMLData(output, "scenario-coat-of-arms-mask", *scenario.CoatOfArmsMask)
+	}
+	writeGUIHTMLVectorData(output, "scenario-coat-of-arms-offset", scenario.CoatOfArmsOffset)
+	writeGUIHTMLVectorData(output, "scenario-coat-of-arms-scale", scenario.CoatOfArmsScale)
+	writeGUIHTMLVectorData(output, "scenario-from", scenario.LineFrom)
+	writeGUIHTMLVectorData(output, "scenario-to", scenario.LineTo)
 	if scenario.Visible != nil {
 		writeGUIHTMLRawData(output, "sim-visible", strconv.FormatBool(*scenario.Visible))
 		writeGUIHTMLData(output, "initial-sim-visible", strconv.FormatBool(*scenario.Visible))
@@ -722,10 +991,24 @@ func writeGUIHTMLTextureAssetStyles(output *strings.Builder, assets guiHTMLTextu
 }
 
 func writeGUIHTMLTextureImage(output *strings.Builder, node GUIPreviewNode, assets guiHTMLTextureAssets) {
+	if node.BackgroundTextureRef != nil {
+		background := node
+		background.TextureRef = node.BackgroundTextureRef
+		background.TextureFrames = nil
+		background.TextureSlice = nil
+		background.MaskTextureRef = nil
+		background.textureMaskDataURI = ""
+		background.Scenario = nil
+		writeGUIHTMLTextureImageRef(output, background, assets, "ck3-background")
+	}
 	if node.NoProgressTextureRef != nil {
 		background := node
 		background.TextureRef = node.NoProgressTextureRef
 		background.TextureFrames = nil
+		background.TextureSlice = nil
+		background.MaskTextureRef = nil
+		background.textureMaskDataURI = ""
+		background.Scenario = nil
 		writeGUIHTMLTextureImageRef(output, background, assets, "ck3-no-progress")
 	}
 	extraClass := ""
@@ -736,6 +1019,10 @@ func writeGUIHTMLTextureImage(output *strings.Builder, node GUIPreviewNode, asse
 }
 
 func writeGUIHTMLTextureImageRef(output *strings.Builder, node GUIPreviewNode, assets guiHTMLTextureAssets, extraClass string) {
+	if guiHTMLUsesCoatOfArmsComposition(node) {
+		writeGUIHTMLCoatOfArmsTextureImageRef(output, node, assets, extraClass)
+		return
+	}
 	if node.TextureRef == nil || !node.TextureRef.Embedded || node.TextureRef.dataURI == "" {
 		return
 	}
@@ -768,6 +1055,7 @@ func writeGUIHTMLTextureImageRef(output *strings.Builder, node GUIPreviewNode, a
 	styleParts := []string{
 		guiHTMLTextureFrameStyle(node),
 		guiHTMLTextureFrameImageStyle(node, assets),
+		guiHTMLTextureFitStyle(node),
 		guiHTMLTextureSliceStyle(node),
 		guiHTMLTextureMaskStyle(node, assets),
 	}
@@ -784,6 +1072,73 @@ func writeGUIHTMLTextureImageRef(output *strings.Builder, node GUIPreviewNode, a
 		output.WriteString("\"")
 	}
 	output.WriteString(" aria-hidden=\"true\"></span>")
+}
+
+func guiHTMLUsesCoatOfArmsComposition(node GUIPreviewNode) bool {
+	return node.Scenario != nil && node.Scenario.CoatOfArms && node.Scenario.Texture != nil
+}
+
+func writeGUIHTMLCoatOfArmsTextureImageRef(output *strings.Builder, node GUIPreviewNode, assets guiHTMLTextureAssets, extraClass string) {
+	if node.TextureRef == nil || !node.TextureRef.Embedded || node.TextureRef.dataURI == "" {
+		return
+	}
+	className := assets.classes[node.TextureRef.dataURI]
+	if className == "" {
+		return
+	}
+	output.WriteString("<span class=\"ck3-coa-layer\"")
+	if style := guiHTMLTextureMaskStyle(node, assets); style != "" {
+		output.WriteString(" style=\"")
+		output.WriteString(style)
+		output.WriteString("\"")
+	}
+	output.WriteString(" aria-hidden=\"true\"><span class=\"ck3-coa-mask\"")
+	if style := guiHTMLCoatOfArmsMaskStyle(node, assets); style != "" {
+		output.WriteString(" style=\"")
+		output.WriteString(style)
+		output.WriteString("\"")
+	}
+	output.WriteString("><span class=\"ck3-texture ck3-coa-content ")
+	output.WriteString(className)
+	if guiHTMLTextureHasFrameImages(node) {
+		output.WriteString(" ck3-framed-images")
+	} else if guiHTMLTextureIsFramed(node) {
+		output.WriteString(" ck3-framed")
+	}
+	if guiHTMLTextureIsNineSlice(node) {
+		output.WriteString(" ck3-nine-slice")
+		if strings.Contains(strings.ToLower(node.TextureSlice.SpriteType), "tiled") {
+			output.WriteString(" ck3-nine-slice-tiled")
+		}
+	}
+	if mirrorClass := guiHTMLMirrorClass(node.Mirror); mirrorClass != "" {
+		output.WriteString(" ")
+		output.WriteString(mirrorClass)
+	}
+	if extraClass != "" {
+		output.WriteString(" ")
+		output.WriteString(extraClass)
+	}
+	output.WriteString("\"")
+	styleParts := []string{
+		guiHTMLTextureFrameStyle(node),
+		guiHTMLTextureFrameImageStyle(node, assets),
+		guiHTMLTextureFitStyle(node),
+		guiHTMLTextureSliceStyle(node),
+		guiHTMLCoatOfArmsTransformStyle(node),
+	}
+	filteredStyleParts := styleParts[:0]
+	for _, part := range styleParts {
+		if part = strings.Trim(part, "; "); part != "" {
+			filteredStyleParts = append(filteredStyleParts, part)
+		}
+	}
+	if style := strings.Join(filteredStyleParts, ";"); style != "" {
+		output.WriteString(" style=\"")
+		output.WriteString(style)
+		output.WriteString("\"")
+	}
+	output.WriteString(" aria-hidden=\"true\"></span></span></span>")
 }
 
 func bindGUIHTMLTextureModifierMasks(nodes []GUIPreviewNode) {
@@ -809,10 +1164,27 @@ func bindGUIHTMLTextureModifierMasks(nodes []GUIPreviewNode) {
 }
 
 func guiHTMLTextureMaskStyle(node GUIPreviewNode, assets guiHTMLTextureAssets) string {
-	if node.textureMaskDataURI == "" {
+	maskDataURI := node.textureMaskDataURI
+	maskSize := "contain"
+	if node.MaskTextureRef != nil && node.MaskTextureRef.Embedded && node.MaskTextureRef.dataURI != "" {
+		maskDataURI = node.MaskTextureRef.dataURI
+		maskSize = "100% 100%"
+	}
+	return guiHTMLMaskDataURIStyle(maskDataURI, maskSize, assets)
+}
+
+func guiHTMLCoatOfArmsMaskStyle(node GUIPreviewNode, assets guiHTMLTextureAssets) string {
+	if node.CoatOfArmsMaskRef == nil || !node.CoatOfArmsMaskRef.Embedded || node.CoatOfArmsMaskRef.dataURI == "" {
 		return ""
 	}
-	className := assets.classes[node.textureMaskDataURI]
+	return guiHTMLMaskDataURIStyle(node.CoatOfArmsMaskRef.dataURI, "100% 100%", assets)
+}
+
+func guiHTMLMaskDataURIStyle(maskDataURI, maskSize string, assets guiHTMLTextureAssets) string {
+	if maskDataURI == "" {
+		return ""
+	}
+	className := assets.classes[maskDataURI]
 	suffix := strings.TrimPrefix(className, "ck3-texture-")
 	if className == "" || suffix == className {
 		return ""
@@ -820,7 +1192,85 @@ func guiHTMLTextureMaskStyle(node GUIPreviewNode, assets guiHTMLTextureAssets) s
 	image := "var(--ck3-texture-image-" + suffix + ")"
 	return "-webkit-mask-image:" + image + ";mask-image:" + image +
 		";-webkit-mask-position:center;mask-position:center;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat" +
-		";-webkit-mask-size:contain;mask-size:contain;mask-mode:alpha"
+		";-webkit-mask-size:" + maskSize + ";mask-size:" + maskSize + ";mask-mode:alpha"
+}
+
+func guiHTMLCoatOfArmsTransformStyle(node GUIPreviewNode) string {
+	if !guiHTMLUsesCoatOfArmsComposition(node) {
+		return ""
+	}
+	parts := make([]string, 0, 4)
+	if x, y, ok := guiHTMLCoatOfArmsVector(node.CoatOfArmsOffset); ok {
+		parts = append(parts, "--ck3-coa-offset-x:"+guiHTMLCSSNumber(x*100)+"%", "--ck3-coa-offset-y:"+guiHTMLCSSNumber(y*100)+"%")
+	}
+	if x, y, ok := guiHTMLCoatOfArmsVector(node.CoatOfArmsScale); ok {
+		parts = append(parts, "--ck3-coa-scale-x:"+guiHTMLCSSNumber(x), "--ck3-coa-scale-y:"+guiHTMLCSSNumber(y))
+	}
+	return strings.Join(parts, ";")
+}
+
+func guiHTMLCoatOfArmsVector(vector *GUIVector) (float64, float64, bool) {
+	if vector == nil {
+		return 0, 0, false
+	}
+	x, err := strconv.ParseFloat(strings.Trim(strings.TrimSpace(vector.X), "\""), 64)
+	if err != nil || math.IsNaN(x) || math.IsInf(x, 0) {
+		return 0, 0, false
+	}
+	y, err := strconv.ParseFloat(strings.Trim(strings.TrimSpace(vector.Y), "\""), 64)
+	if err != nil || math.IsNaN(y) || math.IsInf(y, 0) {
+		return 0, 0, false
+	}
+	return x, y, true
+}
+
+func guiHTMLTextureFitStyle(node GUIPreviewNode) string {
+	if node.TextureFrames != nil || node.TextureSlice != nil {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(node.FitType)) {
+	case "centercrop":
+		return "background-size:cover;background-position:center"
+	case "start":
+		return "background-size:cover;background-position:left top"
+	case "end":
+		return "background-size:cover;background-position:right bottom"
+	default:
+		return ""
+	}
+}
+
+func guiHTMLAlignStyle(node GUIPreviewNode) string {
+	horizontal := ""
+	vertical := ""
+	for _, part := range strings.Split(strings.ToLower(strings.TrimSpace(node.Align)), "|") {
+		switch strings.TrimSpace(part) {
+		case "left", "center", "right":
+			horizontal = strings.TrimSpace(part)
+		case "top":
+			vertical = "flex-start"
+		case "vcenter":
+			vertical = "center"
+		case "bottom":
+			vertical = "flex-end"
+		}
+	}
+	parts := make([]string, 0, 3)
+	if horizontal != "" {
+		parts = append(parts, "text-align:"+horizontal)
+		switch horizontal {
+		case "left":
+			parts = append(parts, "justify-content:flex-start")
+		case "right":
+			parts = append(parts, "justify-content:flex-end")
+		case "center":
+			parts = append(parts, "justify-content:center")
+		}
+	}
+	if vertical != "" {
+		parts = append(parts, "align-items:"+vertical)
+	}
+	return strings.Join(parts, ";")
 }
 
 func guiHTMLTextureIsNineSlice(node GUIPreviewNode) bool {
@@ -892,6 +1342,13 @@ func writeGUIHTMLTextureSliceData(output *strings.Builder, slice *GUITextureSlic
 	if slice.TextureDensity > 0 {
 		writeGUIHTMLData(output, "texture-density", guiHTMLCSSNumber(slice.TextureDensity))
 	}
+}
+
+func writeGUIHTMLVectorData(output *strings.Builder, name string, vector *GUIVector) {
+	if vector == nil || strings.TrimSpace(vector.X) == "" || strings.TrimSpace(vector.Y) == "" {
+		return
+	}
+	writeGUIHTMLData(output, name, "{ "+strings.TrimSpace(vector.X)+" "+strings.TrimSpace(vector.Y)+" }")
 }
 
 func guiHTMLTextureIsFramed(node GUIPreviewNode) bool {
@@ -996,10 +1453,27 @@ func writeGUIHTMLSemantics(output *strings.Builder, semantics *GUISemantics) {
 	writeGUIHTMLData(output, "enabled", semantics.Enabled)
 	writeGUIHTMLData(output, "down", semantics.Down)
 	writeGUIHTMLData(output, "selected", semantics.Selected)
+	writeGUIHTMLData(output, "selected-index", semantics.SelectedIndex)
+	writeGUIHTMLData(output, "checked", semantics.Checked)
+	writeGUIHTMLData(output, "grayscale", semantics.Grayscale)
 	writeGUIHTMLData(output, "alpha", semantics.Alpha)
+	writeGUIHTMLData(output, "scale", semantics.Scale)
+	writeGUIHTMLData(output, "rotate-uv", semantics.RotateUV)
+	writeGUIHTMLData(output, "from", semantics.LineFrom)
+	writeGUIHTMLData(output, "to", semantics.LineTo)
+	writeGUIHTMLData(output, "min-width", semantics.MinWidth)
+	writeGUIHTMLData(output, "max-width", semantics.MaxWidth)
+	writeGUIHTMLData(output, "min-height", semantics.MinHeight)
+	writeGUIHTMLData(output, "max-height", semantics.MaxHeight)
+	writeGUIHTMLData(output, "margin-left", semantics.MarginLeft)
+	writeGUIHTMLData(output, "margin-right", semantics.MarginRight)
+	writeGUIHTMLData(output, "margin-top", semantics.MarginTop)
+	writeGUIHTMLData(output, "margin-bottom", semantics.MarginBottom)
 	writeGUIHTMLData(output, "min", semantics.Min)
 	writeGUIHTMLData(output, "max", semantics.Max)
 	writeGUIHTMLData(output, "value", semantics.Value)
+	writeGUIHTMLData(output, "animated-progress-value", semantics.AnimatedProgressValue)
+	writeGUIHTMLData(output, "color", semantics.Color)
 	writeGUIHTMLData(output, "tint-color", semantics.TintColor)
 	writeGUIHTMLData(output, "font-tint-color", semantics.FontTintColor)
 	writeGUIHTMLData(output, "data-context", semantics.DataContext)
@@ -1011,11 +1485,30 @@ func writeGUIHTMLSemantics(output *strings.Builder, semantics *GUISemantics) {
 	} else if semantics.OnClick != "" {
 		writeGUIHTMLData(output, "on-click-count", "1")
 	}
+	writeGUIHTMLData(output, "on-right-click", semantics.OnRightClick)
 	writeGUIHTMLData(output, "tooltip", semantics.Tooltip)
+	writeGUIHTMLData(output, "tooltip-when-disabled", semantics.TooltipWhenDisabled)
+	writeGUIHTMLData(output, "raw-tooltip", semantics.RawTooltip)
+	writeGUIHTMLData(output, "raw-tooltip-display", guiHTMLRawTooltipDisplay(semantics.RawTooltip))
+	writeGUIHTMLData(output, "tooltip-visible", semantics.TooltipVisible)
 	writeGUIHTMLData(output, "raw-text", semantics.RawText)
 	writeGUIHTMLData(output, "raw-texture", semantics.RawTexture)
+	writeGUIHTMLData(output, "video", semantics.Video)
+	writeGUIHTMLData(output, "portrait-texture", semantics.PortraitTexture)
+	writeGUIHTMLData(output, "coat-of-arms", semantics.CoatOfArmsTexture)
+	writeGUIHTMLData(output, "coat-of-arms-mask", semantics.CoatOfArmsMask)
+	writeGUIHTMLData(output, "coat-of-arms-offset", semantics.CoatOfArmsOffset)
+	writeGUIHTMLData(output, "coat-of-arms-scale", semantics.CoatOfArmsScale)
 	writeGUIHTMLData(output, "no-progress-texture", semantics.NoProgressTexture)
 	writeGUIHTMLData(output, "state", semantics.State)
+}
+
+// guiHTMLRawTooltipDisplay keeps the exact raw_tooltip expression in metadata
+// while making literal CK3 formatting markers readable in the browser's inert
+// text-only tooltip panel. Runtime expressions still go through the existing
+// bounded text-plan path and take precedence when one is available.
+func guiHTMLRawTooltipDisplay(value string) string {
+	return normalizeGUIRuntimeTextTemplate(value, false, false)
 }
 
 func writeGUIHTMLData(output *strings.Builder, name, value string) {
@@ -1041,6 +1534,8 @@ func guiHTMLKindClass(kind string) string {
 		return "ck3-container"
 	case kind == "progresspie":
 		return "ck3-image ck3-progresspie"
+	case kind == "line":
+		return "ck3-line"
 	case strings.Contains(kind, "progressbar"):
 		return "ck3-image ck3-progressbar"
 	case strings.Contains(kind, "button"):
@@ -1162,6 +1657,12 @@ func guiHTMLNodeDescription(node GUIPreviewNode) string {
 	if label := guiHTMLNodeLabel(node); label != "" && label != node.Name && label != node.Kind {
 		parts = append(parts, "label "+label)
 	}
+	if node.FitType != "" {
+		parts = append(parts, "fittype "+node.FitType)
+	}
+	if node.Align != "" {
+		parts = append(parts, "align "+node.Align)
+	}
 	if node.Semantics != nil {
 		if node.Semantics.DataContext != "" {
 			parts = append(parts, "datacontext "+node.Semantics.DataContext)
@@ -1175,6 +1676,21 @@ func guiHTMLNodeDescription(node GUIPreviewNode) string {
 		if node.Semantics.Selected != "" {
 			parts = append(parts, "selected "+node.Semantics.Selected)
 		}
+		if node.Semantics.SelectedIndex != "" {
+			parts = append(parts, "selectedindex "+node.Semantics.SelectedIndex)
+		}
+		if node.Semantics.Checked != "" {
+			parts = append(parts, "checked "+node.Semantics.Checked)
+		}
+		if node.Semantics.Grayscale != "" {
+			parts = append(parts, "grayscale "+node.Semantics.Grayscale)
+		}
+		if node.Semantics.Scale != "" {
+			parts = append(parts, "scale "+node.Semantics.Scale)
+		}
+		if node.Semantics.RotateUV != "" {
+			parts = append(parts, "rotate_uv "+node.Semantics.RotateUV)
+		}
 		if node.Semantics.Min != "" {
 			parts = append(parts, "min "+node.Semantics.Min)
 		}
@@ -1184,11 +1700,20 @@ func guiHTMLNodeDescription(node GUIPreviewNode) string {
 		if node.Semantics.Value != "" {
 			parts = append(parts, "value "+node.Semantics.Value)
 		}
+		if node.Semantics.AnimatedProgressValue != "" {
+			parts = append(parts, "animated_progress_value "+node.Semantics.AnimatedProgressValue)
+		}
+		if node.Semantics.Color != "" {
+			parts = append(parts, "color "+node.Semantics.Color)
+		}
 		if node.Semantics.TintColor != "" {
 			parts = append(parts, "tintcolor "+node.Semantics.TintColor)
 		}
 		if node.Semantics.FontTintColor != "" {
 			parts = append(parts, "fonttintcolor "+node.Semantics.FontTintColor)
+		}
+		if node.Semantics.TooltipWhenDisabled != "" {
+			parts = append(parts, "tooltip_when_disabled "+node.Semantics.TooltipWhenDisabled)
 		}
 		if len(node.Semantics.OnClicks) > 0 {
 			for _, expression := range node.Semantics.OnClicks {
@@ -1197,14 +1722,47 @@ func guiHTMLNodeDescription(node GUIPreviewNode) string {
 		} else if node.Semantics.OnClick != "" {
 			parts = append(parts, "onclick "+node.Semantics.OnClick)
 		}
+		if node.Semantics.OnRightClick != "" {
+			parts = append(parts, "onrightclick "+node.Semantics.OnRightClick)
+		}
+		if node.Semantics.Video != "" {
+			parts = append(parts, "video "+node.Semantics.Video)
+		}
+		if node.Semantics.PortraitTexture != "" {
+			parts = append(parts, "portrait_texture "+node.Semantics.PortraitTexture)
+		}
+		if node.Semantics.CoatOfArmsTexture != "" {
+			parts = append(parts, "coat_of_arms "+node.Semantics.CoatOfArmsTexture)
+		}
+	}
+	if node.CoatOfArmsMask != "" {
+		parts = append(parts, "coat_of_arms_mask "+node.CoatOfArmsMask)
+	}
+	if node.CoatOfArmsOffset != nil && strings.TrimSpace(node.CoatOfArmsOffset.X) != "" && strings.TrimSpace(node.CoatOfArmsOffset.Y) != "" {
+		parts = append(parts, "coat_of_arms_offset { "+strings.TrimSpace(node.CoatOfArmsOffset.X)+" "+strings.TrimSpace(node.CoatOfArmsOffset.Y)+" }")
+	}
+	if node.CoatOfArmsScale != nil && strings.TrimSpace(node.CoatOfArmsScale.X) != "" && strings.TrimSpace(node.CoatOfArmsScale.Y) != "" {
+		parts = append(parts, "coat_of_arms_scale { "+strings.TrimSpace(node.CoatOfArmsScale.X)+" "+strings.TrimSpace(node.CoatOfArmsScale.Y)+" }")
 	}
 	if node.StateDefinition != nil {
 		parts = append(parts, "state "+node.StateDefinition.Name)
 		if node.StateDefinition.Alpha != "" {
 			parts = append(parts, "alpha "+node.StateDefinition.Alpha)
 		}
+		if node.StateDefinition.Scale != "" {
+			parts = append(parts, "scale "+node.StateDefinition.Scale)
+		}
+		if node.StateDefinition.PositionX != "" {
+			parts = append(parts, "position_x "+node.StateDefinition.PositionX)
+		}
+		if node.StateDefinition.PositionY != "" {
+			parts = append(parts, "position_y "+node.StateDefinition.PositionY)
+		}
 		if node.StateDefinition.Duration != "" {
 			parts = append(parts, "duration "+node.StateDefinition.Duration)
+		}
+		if node.StateDefinition.TriggerWhen != "" {
+			parts = append(parts, "trigger_when "+node.StateDefinition.TriggerWhen)
 		}
 	}
 	if node.Approximate {

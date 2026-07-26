@@ -304,11 +304,29 @@ func TestGUIModelSamplesSchemaIsBoundedAndTyped(t *testing.T) {
 	}
 	sample := samples["items"].(map[string]any)
 	property := sample["properties"].(map[string]any)["property"].(map[string]any)
-	if !reflect.DeepEqual(property["enum"], []string{"text", "texture", "visible", "enabled"}) {
+	if !reflect.DeepEqual(property["enum"], []string{"text", "texture", "video", "visible", "enabled", "coat_of_arms_mask", "coat_of_arms_offset", "coat_of_arms_scale", "from", "to"}) {
 		t.Fatalf("model sample property enum = %+v", property["enum"])
 	}
 	if additional, ok := collection["additionalProperties"].(bool); !ok || additional {
 		t.Fatal("model sample collections must reject undocumented fields")
+	}
+}
+
+func TestGUIScenarioSamplesSchemaMatchesIndexerContract(t *testing.T) {
+	gui, ok := findCanonicalTool("ck3_gui")
+	if !ok {
+		t.Fatal("ck3_gui is missing")
+	}
+	properties := gui.InputSchema["properties"].(map[string]any)
+	samples := properties["sample_values"].(map[string]any)
+	if samples["maxItems"] != indexer.GUIScenarioMaxSamples {
+		t.Fatalf("sample_values maxItems = %v", samples["maxItems"])
+	}
+	sample := samples["items"].(map[string]any)
+	property := sample["properties"].(map[string]any)["property"].(map[string]any)
+	expected := []string{"text", "texture", "video", "visible", "enabled", "coat_of_arms_mask", "coat_of_arms_offset", "coat_of_arms_scale", "from", "to"}
+	if !reflect.DeepEqual(property["enum"], expected) {
+		t.Fatalf("scenario sample property enum = %+v", property["enum"])
 	}
 }
 

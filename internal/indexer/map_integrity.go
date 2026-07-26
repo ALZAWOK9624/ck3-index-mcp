@@ -61,17 +61,19 @@ func integrityMessages(issues []MapIntegrityIssue) []string {
 	return out
 }
 
-func (db *DB) renderIntegrityOverlay(ctx context.Context, canvas *image.RGBA, v renderViewport, issues []MapIntegrityIssue) (int, error) {
+func (db *DB) renderIntegrityOverlay(ctx context.Context, scratch *mapRenderScratch, canvas *image.RGBA, v renderViewport, issues []MapIntegrityIssue) (int, error) {
 	count := 0
-	for pid := range integrityProvinceSet(issues) {
-		runs, err := db.mapProvinceRuns(ctx, pid, false)
+	for _, pid := range sortedProvinceIDs(integrityProvinceSet(issues)) {
+		runs, err := db.mapProvinceRuns(ctx, scratch, pid, false)
 		if err != nil {
 			return count, err
 		}
 		if len(runs) == 0 {
 			continue
 		}
-		drawRunPattern(canvas, v, runs, color.RGBA{R: 255, B: 255, A: 220}, 14, 4)
+		// Conflicts are hatched in red ink rather than filled, so the disputed
+		// area and its rightful tint both stay readable.
+		drawInkHatch(canvas, v, runs, color.RGBA{R: 168, G: 50, B: 74, A: 205}, 7)
 		count++
 	}
 	return count, nil

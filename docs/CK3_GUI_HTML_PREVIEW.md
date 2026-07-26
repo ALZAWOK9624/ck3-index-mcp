@@ -8,6 +8,108 @@
 
 文件覆盖、模板 `using`、自定义类型继承、实例展开、`blockoverride`、锚点、`hbox/vbox`、边距、资源存在性和运行时表达式都来自现有索引与解析流水线，不建立第二套 GUI 数据库。
 
+## 聚焦依赖解析与展开界限
+
+`type`、`template` 和 `preview` 查询仍会读取同一组生效 GUI 文件来建立覆盖定义，但只展开所请求符号及其实际可达的类型/模板依赖，不会先把整个工作区的每一种控件树都扁平化后才筛选结果。`path_prefix` 继续只限制目标符号的选择范围，因此 `resolution_files` 可能大于 `files`；这保证跨文件继承仍然完整，同时避免无关 GUI 树消耗预览内存。
+
+原版常见的 `type icon = icon`、`type button = button` 一类写法表示“在同名引擎 primitive 上定义默认项”，不是自继承循环。真正的自定义类型循环仍报告 `gui_inheritance_cycle`。解析器还对一次解析中复制出的 GUI 元素设置总量界限；若返回 `resolution_truncated=true`、`gui_expansion_limit` 或 `gui_expansion_depth`，表示该符号树只保留了可诊断的部分结果，不能把它当作完整预览或据此断言 `blockoverride` 无误。
+
+## `grayscale`
+
+原版的 `grayscale` 是布尔视觉状态，常用于死亡肖像与不可选角色。预览会保留表达式，字面量或 `runtime_facts` 判定为真时使整个节点及其嵌入纹理灰度化；条件为假或未知时不伪造灰度效果。
+
+## `scale`
+
+普通控件的 `scale` 会作为数值语义保留。字面量或受限 `runtime_facts` 的数值会缩放节点视觉层；状态块中的 `scale` 则单独作为 `_mouse_enter` / `_mouse_leave` 动画结果重放。两者和按钮按下位移会在同一变换链中组合，不会互相覆盖；复杂动态表达式继续标为未知。
+
+## 动态尺寸约束与边距
+
+`min_width`、`max_width`、`min_height`、`max_height` 以及 `margin_left`、`margin_right`、`margin_top`、`margin_bottom` 会保留动态表达式并在 inspector 中绑定为数值运行时计划。受限求值器可组合显式原子事实、布尔条件和 `Select_float`、`Select_int32`、`Select_CFixedPoint` 的三分支选择；这覆盖了原版事件名牌、通知和宫廷职位列表中常见的数值形状，而不会执行任意 Jomini 调用。
+
+事实可求值时，检查器会先重置到解析出的基准边界，再应用宽高上下限，随后以当前边距重排直接流式/网格子项，并让多行 `autoresize` 文本重新遵守动态高度限制。缺失或超出白名单的事实保持原有基准几何，不猜测游戏数据；完整的虚拟化列表、复杂锚点重定位与引擎内部空间再分配仍须在游戏内复核。
+
+## `allow_outside`
+
+`allow_outside` is retained as layout metadata. For the bounded scroll-preview subset, a literal `yes` or a supplied boolean runtime fact excludes that branch from the scroll-content extent calculation, matching the purpose of the original field without inventing a larger scrolling surface. The inspector recomputes that extent when the fact changes; engine clipping, hit-testing, and non-scroll layout behavior remain in-game validation boundaries.
+
+## `line` 的 `from` / `to`
+
+`line` primitive 的字面量 `from = { x y }` / `to = { x y }` 现在会生成一条可审查的二维线段：预览先采用该 line 的 `parentanchor` 与静态 `position` 作为原点，再把端点视为父控件局部坐标。字面量 `width` 和 `line_cap` 会决定 PNG/HTML 线段的粗细与圆端；已嵌入的主纹理可作为 HTML 线段纹理，颜色仍沿用现有 `color` / `tintcolor` 路径。
+
+动态端点不会执行 Jomini。调用者可以分别提供精确匹配原表达式的 `sample_values`，其中 `property="from"` 和 `property="to"` 的值必须是两个有限数字；两端都命中后才会绘制样例线段，并在节点 `scenario` 与检查器元数据中标为 `source=provided`。line shader、UV/mask 动画、屏幕缩放、复杂父坐标空间和 `resizeparent` 对布局的影响仍标记为近似，必须在游戏内复核。
+
+## `color`
+
+原版 GUI 的 `color`（例如 `divider` 的白色纹理、进度条和 `modify_texture`）会和 `tintcolor` 一样写入 `semantics` 并转为受限 CSS RGBA/十六进制颜色。两者同时存在时，`tintcolor` 保持优先；检查器改动显式颜色事实后会立即重放纹理着色。无纹理的专用控件仍保留原字段，不能据此伪造完整的引擎控件行为。
+
+## `fontcolor`
+
+When `fonttintcolor` is absent, `fontcolor` feeds the same bounded text-color preview path, including literal RGBA values and supplied runtime facts. The original GUI property remains in the resolved model; this fallback does not claim engine precedence when both fields exist.
+
+## `checked`
+
+`checked` is preserved as a distinct checkbutton state rather than being merged into `down` or `selected`. Literal values and bounded runtime facts can replay a deterministic checkmark overlay only for nodes whose resolved kind/type chain identifies `checkbutton` or `checkbox`. The original expression remains node metadata; ordinary inspector clicks do not reverse it, and exact engine frame or shader transitions remain explicitly outside the preview contract.
+
+## Nonvisual callbacks and input routing
+
+`on_start`, `on_finish`, `oncreate`, text/edit/selection callbacks including `oncolorchanged`, shortcuts, click sounds, `alwaystransparent`, `button_ignore`, video playback `loop`, animation `delay`, editbox `maxcharacters`, and input-only `intersectionmask_texture` are kept in the resolved GUI model as metadata. They describe lifecycle side effects, input routing, playback timing, or validation, not a standalone canvas appearance to imitate. `gui summary` therefore labels them `preserved` and reserves `runtime_property_hotspots` for fields that are actually `unmodeled`. `@...` entries are GUI macro declarations rather than properties, so summary omits them entirely.
+
+## `trigger_when`
+
+State-block `trigger_when` is compiled as a bounded boolean runtime plan. When an explicit fact evaluates it to `true`, the inspector activates the state's supported alpha, scale, and scalar `position_x`/`position_y` subset on its owner; changing the fact removes a trigger-owned state before applying the active state set again. Literal offsets replay directly, and bracketed scalar offsets can use the existing bounded numeric evaluator. Unknown values do not activate a state, and `on_start`/`on_finish`, chained animation timing, sound, texture mutation, and other engine-only state effects remain preserved rather than executed.
+
+## `raw_tooltip`
+
+`raw_tooltip` is preserved separately from `tooltip`: it is direct display text, not a localization key. When a node has no regular `tooltip`, the inspector uses its raw tooltip in the fixed inert hover panel; literal CK3 color/format markers are cleaned only for display, while the exact source value remains node metadata. Dynamic text still uses the existing bounded runtime text plan and never evaluates Jomini.
+
+## `tooltip_when_disabled`
+
+`tooltip_when_disabled` keeps its own localization binding and bounded runtime-text plan. The inspector's text-only hover panel chooses it only while the owner is known disabled; if it is absent or unresolved, the regular `tooltip` remains the fallback. Custom `tooltipwidget` overlays stay separate, so their disabled-state interaction still requires in-game validation.
+
+## `animated_progress_value`
+
+`animated_progress_value` is preserved as a distinct numeric expression. For progress bars and pies without an ordinary `value`, its literal or bounded runtime result drives the same final fill, range normalization, and marker geometry as `value`. The preview deliberately does not invent the engine's interpolation, delay, or easing timeline.
+
+## `selectedindex`
+
+`selectedindex` is preserved as a dropdown/datamodel selection index. The inspector records it in node metadata and the semantic tree rather than inventing an active item without real model rows; exact option content and dropdown rendering remain in-game validation.
+
+## `tooltip_visible`
+
+`tooltip_visible` 会原样写入节点 `semantics`，并作为布尔运行时计划随 `runtime_facts` 重算。字面量或提供的事实判定为 `false` 时，HTML inspector 不打开该拥有者的 `tooltipwidget` 覆盖层，也不显示纯文本 tooltip；未知值继续可查看，不会被擅自当成关闭。
+
+## `onrightclick`
+
+`onrightclick` 现在与 `onclick` 分开保留并重放。检查器可用画布右键或 “Simulate right-click” 按钮触发同一套受限动作白名单和调用方提供的后果；没有受支持后果的原始表达式仍会明确记录为已保留，绝不执行 CK3/Jomini。
+
+## `portrait_texture`
+
+肖像控件的 `portrait_texture` 会保留为独立动态纹理语义。无需新增输入类型：`sample_values` 的 `property="texture"` 只要精确匹配该表达式，就会以调用方提供且已索引的 `gfx/` 资源替换预览中的透明肖像底图；表达式、样例来源和未命中状态都会继续显式呈现。
+
+## `video` 海报样例
+
+`video_icon` 和 `modify_texture` 中的 `video` 会保留原始 `.bk2` 路径或动态表达式；预览不会解码 Bink、选择首帧，或执行播放、循环与重播逻辑。调用方可以提供精确匹配的 `sample_values`，其中 `property="video"` 的值必须是已索引的 `gfx/` PNG/DDS/TGA 静态海报图。命中后该图仅作为调用方提供的固定审查样例显示，节点 `scenario.video=true`、检查器元数据和原始 `video` 表达式会同时保留。`loop`、`restart_on_show`、视频遮罩、混合方式和实际时间轴仍须在游戏内验证。
+
+## `coat_of_arms`
+
+`coat_of_arms` 是引擎生成的纹章纹理表达式。预览保留原表达式，并复用 `sample_values` 的 `property="texture"`：只要精确匹配，就用调用方提供且已索引的 `gfx/` 扁平纹理显示审查样例。字面量 `coat_of_arms_mask` 会作为独立 alpha 遮罩嵌入；动态遮罩可用同名 `sample_values.property` 精确提供已索引的 `gfx/` 路径。字面量 `coat_of_arms_offset = { x y }` / `coat_of_arms_scale = { x y }`，以及精确匹配动态表达式的同名样例，都会以两个有限数值重放到扁平纹章层；遮罩保持在框架坐标中，不会跟着纹章位移。该路径只是提供的最终图像、遮罩和二维 CSS 近似，不是对存档、图集 slot 或引擎合成的推断；`coat_of_arms_slot` 与纹章 shader 仍必须在游戏内验证。
+
+## `background_texture` 与 `mask`
+
+肖像控件的字面量 `background_texture` 和直接 `mask` 也会成为独立资源层：背景资源先于主体纹理写入 HTML，遮罩资源只裁切主体（包括已提供样例替换后的 `portrait_texture`），不会误裁切背景。检查器会显示两者的原始资源 ID、解析来源、嵌入状态、格式与尺寸。遮罩以完整控件范围的 CSS alpha mask 近似重放；它不执行 `gui_portrait.shader`，也不伪造动态肖像的动画、光照或角色数据。
+
+## `rotate_uv`
+
+原版 `modify_texture` 常用 `rotate_uv` 把渐隐遮罩、轮盘和图层旋转 90°、180°、360° 等角度。预览把字面量或受限数值运行时计划写成纹理层的角度变量，并与 `mirror` 组成同一条 CSS 变换链；调用方可通过已有 `runtime_facts` 为精确表达式提供数值。角度会按 360° 归一化，未知或非数值表达式保持显式未求值。`state.animation` 中的引擎曲线与持续动画不会在 HTML 中自行执行。
+
+## `fittype`
+
+原版宽幅背景会用 `fittype` 控制保持比例后的裁切锚点。预览对已见的字面量 `centercrop`、`start`、`end` 分别采用 `cover + center`、`cover + left top`、`cover + right bottom`，保留原值供检查器核对。未知值不会被归一成某种猜测的裁切；与 `framesize` 图集或 `spriteborder` 九宫格同时出现时，现有帧/九宫格算法优先，节点明确标为近似，仍须在游戏内验证。
+
+## `align`
+
+原版文本、按钮与图像标签使用 `align` 的 `left`、`center`、`right` 以及 `top`、`vcenter`、`bottom` 控制文字落点。预览把横向 token 映射为 `text-align + justify-content`，纵向 token 映射为 `align-items`，因此静态页和 inspector 都可显示真实的左中右、上中下位置。`nobaseline` 会原样保留，但不假装实现引擎字体基线；未知 token 保留原文、标为近似并留待游戏内验证。
+
 ## MCP
 
 ```json
@@ -65,13 +167,13 @@ HTML 元数据示例：
 }
 ```
 
-每个 `preview.nodes[]` 保留 `kind`、`type_chain`、`name`、父节点、深度、来源相对路径、行号、声明的 `declared_position` / `declared_size`、最终原生布局边界、纹理解析结果、`texture_frames`、`texture_slice`、规范化的 `texture_blend_mode`、`mirror` 和近似标记。`type_chain` 使解析成基础 primitive 的自定义类型仍能保留 `scrollbox` 等运行语义。`mirror=horizontal|vertical|vertical|horizontal` 会作为纹理层的水平、垂直或双轴翻转重放，而不会翻转节点坐标或文字。字面量 `framesize` 会建立图集网格：静态 `frame` 按零基索引选初始帧，按钮 `upframe/overframe/downframe/disableframe` 按一基索引在普通、悬停、按下和禁用状态间切换。`Corneredstretched` / `Corneredtiled` 结合 `spriteborder` 与 `texture_density` 通过九宫格边框拉伸或平铺；若纹理同时是多帧图集，嵌入器会先按帧裁出确定性 PNG，再让每个交互状态切换对应九宫格。无尺寸的 `modify_texture` 按父控件填充，已知 `add` / `screen` / `multiply` / `alphamultiply` / `overlay` / `colordodge` 使用固定 CSS 类近似合成，并以最近的父纹理 alpha 轮廓遮罩，避免把颜色图集画成不透明方块；未知模式不进入样式。`layout` 还保存受支持的流向、间距、边距、扩展策略、填充背景和 `ignoreinvisible`；`flowcontainer` 未声明 `direction` 时按 CK3 的横向默认值处理。`tooltipwidget` 子树标记为 `overlay`，不再进入常驻 HUD 的边界计算或 PNG 渲染。常用运行时字段放在 `semantics` 中：`visible`、`enabled`、`value`、`data_context`、`data_model`、`on_click`、`tooltip`、`raw_text` 和 `state`。
+每个 `preview.nodes[]` 保留 `kind`、`type_chain`、`name`、父节点、深度、来源相对路径、行号、声明的 `declared_position` / `declared_size`、最终原生布局边界、纹理解析结果、肖像专用 `background_texture` / `mask_texture` 资源层、纹章专用 `coat_of_arms_mask` / `coat_of_arms_offset` / `coat_of_arms_scale`、`texture_frames`、`texture_slice`、规范化的 `texture_blend_mode`、`mirror`、`fit_type`、`align` 和近似标记。`type_chain` 使解析成基础 primitive 的自定义类型仍能保留 `scrollbox` 等运行语义。`mirror=horizontal|vertical|vertical|horizontal` 会作为纹理层的水平、垂直或双轴翻转重放，而不会翻转节点坐标或文字；`rotate_uv` 与镜像在同一纹理变换链中按角度重放；普通纹理的 `fittype=centercrop|start|end` 则对应居中、左上、右下锚定的 cover 裁切；`align` 的常用横纵 token 则直接调整标签位置。字面量 `framesize` 会建立图集网格：静态 `frame` 按零基索引选初始帧，按钮 `upframe/overframe/downframe/disableframe` 按一基索引在普通、悬停、按下和禁用状态间切换。`Corneredstretched` / `Corneredtiled` 结合 `spriteborder` 与 `texture_density` 通过九宫格边框拉伸或平铺；若纹理同时是多帧图集，嵌入器会先按帧裁出确定性 PNG，再让每个交互状态切换对应九宫格。无尺寸的 `modify_texture` 按父控件填充，已知 `add` / `screen` / `multiply` / `alphamultiply` / `overlay` / `colordodge` 使用固定 CSS 类近似合成，并以最近的父纹理 alpha 轮廓遮罩，避免把颜色图集画成不透明方块；未知模式不进入样式。`layout` 还保存受支持的流向、间距、边距、扩展策略、填充背景和 `ignoreinvisible`；`flowcontainer` 未声明 `direction` 时按 CK3 的横向默认值处理。`tooltipwidget` 子树标记为 `overlay`，不再进入常驻 HUD 的边界计算或 PNG 渲染。常用运行时字段放在 `semantics` 中：`visible`、`enabled`、`value`、`scale`、`rotate_uv`、`data_context`、`data_model`、`on_click`、`on_right_click`、`portrait_texture`、`coat_of_arms`、`tooltip`、`raw_text` 和 `state`。
 
 当 `text` 或 `tooltip` 命中真实本地化 key 时，节点还会返回 `text_localization` 或 `tooltip_localization`，包含英中原值、从同一生效索引有界展开后的 `resolved_value`、去除 CK3 颜色/图标标记后的 `display_text`、来源和所选语言。静态 `[aspect_blood]`、`[concept|E]` 与 `$nested_key$` 最多递归四层、总计 256 个 key；循环、缺失或动态表达式保持原样。预览阶段会把剩余受支持的 `[GetPlayer...]`、数值格式和 `$VALUE$` 编译成受限文本计划，并只从显式 `runtime_facts` 插值。`SelectLocalization`、`Select_CString`、`AddTextIf` 和 `AddLocalizationIf` 支持最多四层嵌套的惰性分支：只要求当前选中分支的事实，静态本地化分支从同一活动索引分别解析英中值，动态分支保持显式字符串事实；全部递归 token 最多 128 个。缺失的选中分支事实保持 `<unknown>`，未选分支不会把结果误标为不完整。`preview.localization` 汇总绑定、双语、部分解析、缺失目标语言和截断数量。
 
-`sample_values` 最多 32 项，支持 `property=text|texture|visible|enabled`。每项只会精确匹配索引中保留的表达式或已绑定本地化 key：文本作为展示样例，纹理值必须是索引中存在的 `gfx/` 源根相对 PNG/DDS/TGA 路径，布尔属性只接受 `true`/`false`。纹理样例不会接受 URL、客户端文件路径或路径穿越；命中后仍由同一资源索引和嵌入预算验证。结果在 `preview.scenario` 和节点 `scenario` 中固定标记 `source=provided`，并返回每项 `matched_nodes`；零命中项进入 `unused` 和警告。工具不会把这些值描述成游戏截图或真实存档状态。
+`sample_values` 最多 32 项，支持 `property=text|texture|video|visible|enabled|coat_of_arms_mask|coat_of_arms_offset|coat_of_arms_scale|from|to`。每项只会精确匹配索引中保留的表达式或已绑定本地化 key：文本作为展示样例，`texture` 同时匹配普通动态 `texture`、肖像专用 `portrait_texture` 与 `coat_of_arms`；`video` 只匹配 `video` 原表达式并以调用方提供的静态海报图替代播放画面；`coat_of_arms_mask` 也必须是索引中存在的 `gfx/` 源根相对 PNG/DDS/TGA 路径；纹章向量字段和 line 的 `from` / `to` 都只接受 `{ x y }` 或等价的两个有限数值。布尔属性只接受 `true`/`false`。纹理与视频海报样例不会接受 URL、客户端文件路径或路径穿越；命中后仍由同一资源索引和嵌入预算验证。结果在 `preview.scenario` 和节点 `scenario` 中固定标记 `source=provided`，并返回每项 `matched_nodes`；零命中项进入 `unused` 和警告。工具不会把这些值描述成游戏截图或真实存档状态。
 
-`model_samples` 用于真实 `fixedgridbox` / `dynamicgridbox` 列表。每个集合必须用 `target`、`datamodel` 或两者精确选中一个网格；目标网格必须只有一个 `item` 模板。工具会深复制该模板并实例化调用者给出的行，而不是猜测存档里的数据模型。契约限制为最多 8 个集合、每个集合 16 行、全部集合合计 32 行、每行 16 个精确 `text|texture|visible|enabled` 样例。行 `id` 在集合内唯一，并写入每个克隆节点的 `model_row`：
+`model_samples` 用于真实 `fixedgridbox` / `dynamicgridbox` 列表。每个集合必须用 `target`、`datamodel` 或两者精确选中一个网格；目标网格必须只有一个 `item` 模板。工具会深复制该模板并实例化调用者给出的行，而不是猜测存档里的数据模型。契约限制为最多 8 个集合、每个集合 16 行、全部集合合计 32 行、每行 16 个精确 `text|texture|video|visible|enabled|coat_of_arms_mask|coat_of_arms_offset|coat_of_arms_scale|from|to` 样例。行 `id` 在集合内唯一，并写入每个克隆节点的 `model_row`：
 
 ```json
 {
@@ -116,16 +218,16 @@ HTML 元数据示例：
 3. 25%～200% 缩放、自动适配和空白区域拖拽平移。
 4. 节点来源、行号、边界、纹理、数据上下文和表达式检查。
 5. 对共享表达式的 `visible`、`enabled`、数值 `min` / `max` / `value`、动态文本和 `state` 进行一致的视觉状态模拟；数值事实可直接驱动 `progresspie` 圆形遮罩与 `progressbar` 横向裁剪，进度条按自身范围归一化而不是假定所有值都在 `0..1`。
-6. 记录并重放白名单内的 `onclick` 视觉后果。单一 `OpenGameView`、`CloseGameView`、`ToggleGameView`，静态 `SetMapMode` 以及字面量 `GetVariableSystem.Toggle/Clear/Set` 可以触发全页重算；`HasValue` 会读取类型化变量值。Visual 模式默认允许直接点击画布按钮重放，关闭 `Replay clicks` 后只选择节点；其他点击仍只记录，不执行 CK3 效果。
+6. 分别记录并重放白名单内的 `onclick` 与 `onrightclick` 视觉后果。单一 `OpenGameView`、`CloseGameView`、`ToggleGameView`，静态 `SetMapMode` 以及字面量 `GetVariableSystem.Toggle/Clear/Set` 可以触发全页重算；`HasValue` 会读取类型化变量值。Visual 模式默认允许直接点击或右击画布控件重放，关闭 `Replay clicks` 后只选择节点；其他点击仍只记录，不执行 CK3 效果。
 7. 单节点或全局重置，保证审查过程可重复。
 8. 在原始 key、英文、简体中文和双语之间即时切换；控件文字和属性面板同步更新。
 9. 当 `hbox`、`vbox` 或 `flowcontainer` 使用 `ignoreinvisible=yes` 时，运行事实变化会按源码顺序重新计算可见子项；隐藏项退出画布布局，后续控件收拢，扩展项重新分配剩余空间。
 10. `tooltipwidget` 作为独立覆盖层保留在控件树中；悬停拥有者时才在画布边缘安全范围内展开。没有 `tooltipwidget` 但存在已解析 tooltip 文本或运行时文本计划时，检查器使用固定的纯文本悬浮面板，并随语言和事实重算；两条路径互斥，移开后都会关闭。
-11. 默认开启 `Visual`：去掉诊断网格、容器底色和普通边框，优先显示已嵌入纹理与真实文本；父节点隐藏会传播到整个子树。嵌入纹理会按节点 `mirror` 重放翻转，按帧字段响应悬停、按下和禁用状态，对 `spriteborder` 使用单帧或逐帧九宫格，并对已知 `modify_texture` 混合模式施加父纹理 alpha 遮罩。关闭 `Visual` 后恢复彩色类型框、近似边界和隐藏节点淡化，便于工程排错。
+11. 默认开启 `Visual`：去掉诊断网格、容器底色和普通边框，优先显示已嵌入纹理与真实文本；父节点隐藏会传播到整个子树。嵌入纹理会按节点 `mirror` 与 `rotate_uv` 组合重放变换，并按普通纹理的 `fittype` 进行对应锚点裁切；文字标签会按已知 `align` token 放到指定的横纵位置；按帧字段响应悬停、按下和禁用状态，对 `spriteborder` 使用单帧或逐帧九宫格，先绘制肖像 `background_texture`，再以直接 `mask` 裁切主体，并对已知 `modify_texture` 混合模式施加父纹理 alpha 遮罩。关闭 `Visual` 后恢复彩色类型框、近似边界和隐藏节点淡化，便于工程排错。
 
 HTML 模式还会尝试把已由索引确认的 PNG 与 DDS 纹理解码成页面内 `data:` PNG。当前支持普通 PNG、DDS BC1/DXT1、BC2/DXT3、BC3/DXT5、对应的 DX10 BC1/BC2/BC3，以及带明确通道掩膜的 32 位无压缩 DDS；未压缩 DDS 会按头标志区分逐行 `pitch` 与整张图 `linear size`。同一资源先汇总全部节点的最大实际显示框，只在源图更大时用确定性 Catmull-Rom 降采样，不会放大；`texture_ref` 会同时报告嵌入 `width/height`、`source_width/source_height`、`resized` 和解码格式。读取仅使用索引数据库已经确认的资源路径，路径本身不会进入 HTML 或 MCP 输出。
 
-`state` 块被标记为 `behavior_only`，不会再作为普通方框污染画布。检查器会保留状态名、`alpha` 与 `duration`，允许从控件树手动应用；标准 `_mouse_enter`/`_mouse_leave` 状态也会在浏览器指针进入或离开所属控件时重放。这里只处理可证明的透明度视觉结果，复杂动画模板和脚本动作仍保持未执行状态。
+`state` 块被标记为 `behavior_only`，不会再作为普通方框污染画布。检查器会保留状态名、字面量 `alpha`、`scale` 与 `duration`，允许从控件树手动应用；标准 `_mouse_enter`/`_mouse_leave` 状态也会在浏览器指针进入或离开所属控件时重放。缩放进入组合变换链，不会覆盖普通控件缩放或按钮按下的位移；复杂动画模板、动态缩放和脚本动作仍保持未执行状态。
 
 这里的“模拟”是对表达式结果的人工赋值和视觉后果重放。例如把 `[InDebugMode]` 设为 `false` 可以隐藏所有引用同一表达式的节点；工具不会解释 `[InDebugMode]` 为什么为真，也不会运行 `[SelectCharacter]`。
 
@@ -191,7 +293,7 @@ ck3-index --config ck3-index.toml gui preview gh_magic_resource_widget gui/GH_ty
 
 ## 模型工作流
 
-1. 用 `summary` 确认 GUI 索引状态。
+1. 用 `summary` 确认 GUI 索引状态和高频字段；它逐文件汇总原始模型并返回 `resolution_complete=false`，不会为了概览展开全库继承树。需要跨文件模板、继承、`blockoverride` 或未解析类型诊断时，再用一个精确 `type`、`template` 或 `preview` 查询。
 2. 用 `file`、`type` 或 `template` 缩小到目标定义。
 3. 修改后调用 `preview + format=both + html_mode=inspector`。
 4. 先看 PNG 总体布局，再在检查器的默认 `Visual` 模式检查接近游戏的纹理/文字层；关闭 `Visual` 后搜索控件、核对来源、父子传播和近似节点。
@@ -205,9 +307,10 @@ ck3-index --config ck3-index.toml gui preview gh_magic_resource_widget gui/GH_ty
 
 - 检查器不是完整 Jomini 解释器；它仅从显式 `runtime_facts` 组合 `And` / `Or` / `Not` 和类型化比较。未知引擎调用是原子事实，缺失值不会被猜测。
 - BC4、BC5、BC6、BC7、TGA 和未提供样例的引擎动态纹理尚未内嵌；不支持或超限时保留解析状态与占位视觉。
-- 多帧图集与九宫格可以组合重放，`progresspie` / `progressbar` 的范围归一化进度遮罩、填充/未填充纹理和普通 overlay 也可重放；但 `tintcolor`、着色器、混合模式、非线性或分段进度效果以及 CK3 对某些边缘平铺的精确采样仍由游戏运行时决定。
+- 多帧图集与九宫格可以组合重放，`progresspie` / `progressbar` 的范围归一化进度遮罩、填充/未填充纹理和普通 overlay 也可重放；字面量或显式 `runtime_facts` 驱动的 `tintcolor` / `fonttintcolor` 会转成受限 CSS 颜色。提供的扁平纹章样图可叠加单独的遮罩与二维偏移/缩放，但不会解读 `coat_of_arms_slot`、重建可变图集或执行纹章 shader；着色器、未支持的混合模式、非线性或分段进度效果以及 CK3 对某些边缘平铺的精确采样仍由游戏运行时决定。
+- `line` 只在两端点可验证时绘制。它采用父局部二维坐标的直线近似；`PdxGuiLineScreenSpace` shader、UV/mask 采样、动画、缩放空间和 `resizeparent` 造成的父级重排不在 HTML/PNG 合约内。
 - 静态本地化 key 已支持英中绑定和切换，简单作用域值、宏和数值格式可由显式运行事实驱动；数据上下文切换、脚本列表、嵌套本地化选择、复杂动画/状态机、效果和动态纹理仍由游戏运行时决定。当前状态重放只覆盖明确的 `alpha` 与 `duration`。
-- 动态重排只覆盖已解析的直接流式/网格子项、边距、间距、网格步长和横纵扩展策略。常见 `parentanchor` / `widgetanchor` 配对及隐式同锚点已确定性重放；`flipdirection` 目前只保留元数据并维持源码顺序，未提供的虚拟化列表行、复合锚点组合和引擎内部布局模板仍可能近似，必须结合 `approximate` 与游戏内结果复核。
+- 动态重排覆盖已解析的直接流式/网格子项、边距、间距、正数 `layoutstretchfactor` 权重、网格步长、横纵扩展策略、`flipdirection` 反向填充与网格 `layoutanchor`。常见 `parentanchor` / `widgetanchor` 配对及隐式同锚点已确定性重放；未提供的虚拟化列表行、未识别的复合锚点组合和引擎内部布局模板仍可能近似，必须结合 `approximate` 与游戏内结果复核。
 - Tooltip 覆盖层会保留解析后的内容与纹理，并用拥有者边界选择左侧或右侧锚点；引擎模板定义的精确尖角、延迟、动画和多屏避让尚未模拟。
 - `Visual` 只能隐藏诊断色并优先组合已解析素材；缺失纹理仍显示斜纹警告，无法解析的引擎模板不会被伪造成原版控件。
 - 缺少引擎内置模板或外部自定义类型时会保留诊断与近似节点，不能据此声称像素级一致。

@@ -19,7 +19,7 @@ type mapObjectInstanceRow struct {
 	Capital    bool
 }
 
-func (db *DB) renderVegetationMarkerLayer(ctx context.Context, canvas *image.RGBA, v renderViewport, pids map[int]bool, layer MapRenderLayer) (int, []string, error) {
+func (db *DB) renderVegetationMarkerLayer(ctx context.Context, scratch *mapRenderScratch, canvas *image.RGBA, v renderViewport, pids map[int]bool, layer MapRenderLayer, palette parchmentPalette, metrics styleMetrics) (int, []string, error) {
 	rows, err := db.sql.QueryContext(ctx, `SELECT subtype,province_id,x,y,rotation,scale FROM map_object_instances WHERE object_kind='vegetation' ORDER BY y,x,subtype`)
 	if err != nil {
 		return 0, nil, err
@@ -46,6 +46,7 @@ func (db *DB) renderVegetationMarkerLayer(ctx context.Context, canvas *image.RGB
 	if size <= 0 {
 		size = 5
 	}
+	size = maxInt(3, metrics.px(float64(size)))
 	spacing := maxInt(12, size*4)
 	limit := layer.Limit
 	if limit <= 0 {
@@ -63,7 +64,10 @@ func (db *DB) renderVegetationMarkerLayer(ctx context.Context, canvas *image.RGB
 			continue
 		}
 		occupied[cell] = true
-		drawVegetationSymbol(canvas, x, y, size, item.Subtype, item.Rotation)
+		if !scratch.claim(glyphBox(x, y, size)) {
+			continue
+		}
+		drawTerrainGlyph(canvas, x, y, size, item.Subtype, item.Rotation, palette)
 		drawn++
 		if drawn >= limit {
 			break
@@ -72,7 +76,7 @@ func (db *DB) renderVegetationMarkerLayer(ctx context.Context, canvas *image.RGB
 	return drawn, nil, nil
 }
 
-func (db *DB) renderHoldingMarkerLayer(ctx context.Context, canvas *image.RGBA, v renderViewport, pids map[int]bool, year int, layer MapRenderLayer) (int, []string, error) {
+func (db *DB) renderHoldingMarkerLayer(ctx context.Context, scratch *mapRenderScratch, canvas *image.RGBA, v renderViewport, pids map[int]bool, year int, layer MapRenderLayer, palette parchmentPalette, metrics styleMetrics) (int, []string, error) {
 	rows, err := db.sql.QueryContext(ctx, `SELECT o.subtype,o.province_id,o.x,o.y,o.rotation,o.scale,p.is_county_capital
 		FROM map_object_instances o JOIN map_provinces p ON p.province_id=o.province_id
 		WHERE o.object_kind='holding' ORDER BY p.is_county_capital DESC,o.province_id`)
@@ -103,6 +107,7 @@ func (db *DB) renderHoldingMarkerLayer(ctx context.Context, canvas *image.RGBA, 
 	if size <= 0 {
 		size = 7
 	}
+	size = maxInt(3, metrics.px(float64(size)))
 	spacing := maxInt(12, size*2)
 	limit := layer.Limit
 	if limit <= 0 {
@@ -134,7 +139,10 @@ func (db *DB) renderHoldingMarkerLayer(ctx context.Context, canvas *image.RGBA, 
 			continue
 		}
 		occupied[cell] = true
-		drawHoldingSymbol(canvas, x, y, size, kind, item.Capital)
+		if !scratch.claim(glyphBox(x, y, size)) {
+			continue
+		}
+		drawSettlementGlyph(canvas, x, y, size, kind, item.Capital, palette)
 		drawn++
 		if drawn >= limit {
 			break

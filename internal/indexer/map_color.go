@@ -102,10 +102,22 @@ func coordinatePoliticalColors(input map[string]color.RGBA, neighbors map[string
 		alpha[id] = c.A
 	}
 	sort.Strings(ids)
+	// Each nudge below reads and writes values, so the neighbour visit order
+	// decides the outcome. Iterating the neighbour map directly made the same
+	// request produce different title colors between runs.
+	sortedNeighbors := make(map[string][]string, len(ids))
+	for _, id := range ids {
+		adjacent := make([]string, 0, len(neighbors[id]))
+		for neighbor := range neighbors[id] {
+			adjacent = append(adjacent, neighbor)
+		}
+		sort.Strings(adjacent)
+		sortedNeighbors[id] = adjacent
+	}
 	for round := 0; round < 28; round++ {
 		changed := false
 		for _, id := range ids {
-			for neighbor := range neighbors[id] {
+			for _, neighbor := range sortedNeighbors[id] {
 				if id >= neighbor || input[neighbor].A == 0 {
 					continue
 				}

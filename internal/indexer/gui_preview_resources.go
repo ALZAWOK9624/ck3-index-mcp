@@ -62,6 +62,21 @@ func (db *DB) bindGUIPreviewTextures(ctx context.Context, preview *GUIPreviewRes
 			return err
 		}
 		preview.Nodes[index].TextureRef = ref
+		ref, err = resolve(preview.Nodes[index].BackgroundTexture)
+		if err != nil {
+			return err
+		}
+		preview.Nodes[index].BackgroundTextureRef = ref
+		ref, err = resolve(preview.Nodes[index].MaskTexture)
+		if err != nil {
+			return err
+		}
+		preview.Nodes[index].MaskTextureRef = ref
+		ref, err = resolve(preview.Nodes[index].CoatOfArmsMask)
+		if err != nil {
+			return err
+		}
+		preview.Nodes[index].CoatOfArmsMaskRef = ref
 		if preview.Nodes[index].Semantics == nil {
 			continue
 		}

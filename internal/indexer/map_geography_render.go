@@ -183,7 +183,7 @@ func drawBridgeTick(canvas *image.RGBA, x0, y0, x1, y1, width int) {
 	drawLine(canvas, mx+int(px*half), my+int(py*half), mx-int(px*half), my-int(py*half), maxInt(1, width), color.RGBA{191, 172, 126, 225})
 }
 
-func (db *DB) renderStrategicPortalLayer(ctx context.Context, canvas *image.RGBA, v renderViewport, pids map[int]bool, layer MapRenderLayer) (int, []string, error) {
+func (db *DB) renderStrategicPortalLayer(ctx context.Context, canvas *image.RGBA, v renderViewport, pids map[int]bool, layer MapRenderLayer, palette parchmentPalette, metrics styleMetrics) (int, []string, error) {
 	rows, err := db.loadStrategicRenderRows(ctx)
 	if err != nil {
 		return 0, nil, err
@@ -235,7 +235,7 @@ func drawPortalSymbol(canvas *image.RGBA, x, y, size int, c color.RGBA) {
 	drawLine(canvas, x, y-size-3, x, y-size+1, 1, c)
 }
 
-func (db *DB) renderLakeMarkerLayer(ctx context.Context, canvas *image.RGBA, v renderViewport, pids map[int]bool, layer MapRenderLayer) (int, []string, error) {
+func (db *DB) renderLakeMarkerLayer(ctx context.Context, canvas *image.RGBA, v renderViewport, pids map[int]bool, layer MapRenderLayer, palette parchmentPalette, metrics styleMetrics) (int, []string, error) {
 	selectedBodies := map[int]bool{}
 	rows, err := db.sql.QueryContext(ctx, `SELECT water_body_id,province_id FROM map_water_body_provinces`)
 	if err != nil {

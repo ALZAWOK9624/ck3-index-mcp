@@ -573,8 +573,10 @@ func (db *DB) loadMapSurfaceRaster(ctx context.Context, key string) (*mapPhysica
 	defer db.physicalRasterMu.Unlock()
 	var width, height int
 	var format, fingerprint string
-	var data []byte
-	if err := db.sql.QueryRowContext(ctx, `SELECT width,height,format,fingerprint,data FROM map_surface_rasters WHERE layer_key=?`, key).Scan(&width, &height, &format, &fingerprint, &data); err != nil {
+	// Read the fingerprint before the blob: these rasters are multi-megabyte
+	// PNGs, and selecting data up front pulled every byte out of SQLite on each
+	// render even when the decoded raster was already cached.
+	if err := db.sql.QueryRowContext(ctx, `SELECT width,height,format,fingerprint FROM map_surface_rasters WHERE layer_key=?`, key).Scan(&width, &height, &format, &fingerprint); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -585,6 +587,10 @@ func (db *DB) loadMapSurfaceRaster(ctx context.Context, key string) (*mapPhysica
 	}
 	if format != mapSurfaceRasterFormat {
 		return nil, fmt.Errorf("unsupported surface raster format %q", format)
+	}
+	var data []byte
+	if err := db.sql.QueryRowContext(ctx, `SELECT data FROM map_surface_rasters WHERE layer_key=?`, key).Scan(&data); err != nil {
+		return nil, err
 	}
 	decoded, err := png.Decode(bytes.NewReader(data))
 	if err != nil {
@@ -602,7 +608,7 @@ func (db *DB) loadMapSurfaceRaster(ctx context.Context, key string) (*mapPhysica
 	return raster, nil
 }
 
-func (db *DB) renderSurfaceMaterialOverlay(ctx context.Context, canvas *image.RGBA, v renderViewport, landMask []bool, strength string) (int, []string, error) {
+func (db *DB) renderSurfaceMaterialOverlay(ctx context.Context, scratch *mapRenderScratch, canvas *image.RGBA, v renderViewport, landMask []bool, landBounds *maskBounds, strength string) (int, []string, error) {
 	indexRaster, err := db.loadMapSurfaceRaster(ctx, "material_index")
 	if err != nil {
 		return 0, nil, err
@@ -633,29 +639,48 @@ func (db *DB) renderSurfaceMaterialOverlay(ctx context.Context, canvas *image.RG
 	if err := rows.Close(); err != nil {
 		return 0, nil, err
 	}
+	// The tint only depends on the material index, of which there are at most
+	// 256. Resolving it per pixel meant a strings.ToLower allocation plus up to
+	// two dozen substring searches for every land pixel on the canvas.
+	var tintByIndex [256]color.RGBA
+	for index := 0; index < 256; index++ {
+		tintByIndex[index] = surfaceMaterialTint(materialIDs[uint8(index)])
+	}
 	alphaScale := 0.11
 	if strength == "strong" {
 		alphaScale = 0.18
 	}
-	for y := 0; y < v.Height; y++ {
-		sy := int(math.Round(float64(v.MinY) + float64(y-v.OffsetY)/v.Scale))
+	// Only land pixels are tinted, so walk the land mask's rows and spans.
+	sourceX := scratch.sourceColumns(v)
+	sourceY := scratch.sourceRows(v)
+	columnX := make([]int, v.Width)
+	for x := 0; x < v.Width; x++ {
+		sx := int(math.Round(sourceX[x]))
+		if sx < 0 || sx >= indexRaster.Width {
+			sx = -1
+		}
+		columnX[x] = sx
+	}
+	for y := maxInt(0, landBounds.MinY); y <= landBounds.MaxY; y++ {
+		sy := int(math.Round(sourceY[y]))
 		if sy < 0 || sy >= indexRaster.Height {
 			continue
 		}
-		for x := 0; x < v.Width; x++ {
-			if !landMask[y*v.Width+x] {
+		lo, hi := landBounds.rowSpan(y, 0, v.Width)
+		row := landMask[y*v.Width : y*v.Width+v.Width]
+		for x := lo; x <= hi; x++ {
+			if !row[x] {
 				continue
 			}
-			sx := int(math.Round(float64(v.MinX) + float64(x-v.OffsetX)/v.Scale))
-			if sx < 0 || sx >= indexRaster.Width {
+			sx := columnX[x]
+			if sx < 0 {
 				continue
 			}
 			weight := strengthRaster.Image.GrayAt(sx, sy).Y
 			if weight < 20 {
 				continue
 			}
-			materialID := materialIDs[indexRaster.Image.GrayAt(sx, sy).Y]
-			c := surfaceMaterialTint(materialID)
+			c := tintByIndex[indexRaster.Image.GrayAt(sx, sy).Y]
 			c.A = uint8(math.Min(42, float64(weight)*alphaScale))
 			blendPixel(canvas, x, y, c)
 		}

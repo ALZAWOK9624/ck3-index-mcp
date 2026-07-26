@@ -221,6 +221,123 @@ func TestRenderGUIPreviewPreservesTextureMirror(t *testing.T) {
 	}
 }
 
+func TestRenderGUIPreviewPreservesFitType(t *testing.T) {
+	root := GUIElement{
+		Kind: "widget", Size: &GUIVector{Width: "100", Height: "100"},
+		Children: []GUIElement{
+			{Kind: "icon", Name: "center", Size: &GUIVector{Width: "20", Height: "20"}, Properties: []GUIProperty{{Name: "fittype", Value: "CenterCrop"}}},
+			{Kind: "icon", Name: "start", Size: &GUIVector{Width: "20", Height: "20"}, Properties: []GUIProperty{{Name: "fittype", Value: "start"}}},
+			{Kind: "icon", Name: "end", Size: &GUIVector{Width: "20", Height: "20"}, Properties: []GUIProperty{{Name: "fittype", Value: "end"}}},
+			{Kind: "icon", Name: "unknown", Size: &GUIVector{Width: "20", Height: "20"}, Properties: []GUIProperty{{Name: "fittype", Value: "future_fit"}}},
+			{Kind: "icon", Name: "framed", Size: &GUIVector{Width: "20", Height: "20"}, Properties: []GUIProperty{{Name: "fittype", Value: "centercrop"}, {Name: "framesize", Values: []string{"20", "20"}}}},
+		},
+	}
+	result, err := RenderGUIPreview("fits", "type", "gui/test.gui", root, 200, 200, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Nodes) != 6 {
+		t.Fatalf("nodes=%d want 6: %+v", len(result.Nodes), result.Nodes)
+	}
+	for index, expected := range []string{"centercrop", "start", "end"} {
+		node := result.Nodes[index+1]
+		if node.FitType != expected || node.Approximate {
+			t.Fatalf("supported fittype at node %d was not preserved exactly: %+v", index+1, node)
+		}
+	}
+	if node := result.Nodes[4]; node.FitType != "future_fit" || !node.Approximate {
+		t.Fatalf("unknown fittype was not preserved as approximate: %+v", node)
+	}
+	if node := result.Nodes[5]; node.FitType != "centercrop" || !node.Approximate {
+		t.Fatalf("framed fittype was not retained as an explicit approximation: %+v", node)
+	}
+	if !result.Approximate || len(result.Warnings) == 0 {
+		t.Fatalf("unsupported fittype combinations did not make the preview approximate: %+v", result)
+	}
+}
+
+func TestRenderGUIPreviewPreservesAlign(t *testing.T) {
+	root := GUIElement{
+		Kind: "widget", Size: &GUIVector{Width: "100", Height: "100"},
+		Children: []GUIElement{
+			{Kind: "text_single", Name: "left", Size: &GUIVector{Width: "80", Height: "20"}, Properties: []GUIProperty{{Name: "align", Value: "left|top"}}},
+			{Kind: "text_single", Name: "center", Size: &GUIVector{Width: "80", Height: "20"}, Properties: []GUIProperty{{Name: "align", Value: "center|vcenter"}}},
+			{Kind: "text_single", Name: "right", Size: &GUIVector{Width: "80", Height: "20"}, Properties: []GUIProperty{{Name: "align", Value: "right|bottom|nobaseline"}}},
+			{Kind: "text_single", Name: "unknown", Size: &GUIVector{Width: "80", Height: "20"}, Properties: []GUIProperty{{Name: "align", Value: "diagonal"}}},
+		},
+	}
+	result, err := RenderGUIPreview("alignments", "type", "gui/preload/labels.gui", root, 200, 200, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Nodes) != 5 {
+		t.Fatalf("nodes=%d want 5: %+v", len(result.Nodes), result.Nodes)
+	}
+	for index, expected := range []string{"left|top", "center|vcenter", "right|bottom|nobaseline"} {
+		node := result.Nodes[index+1]
+		if node.Align != expected || node.Approximate {
+			t.Fatalf("supported align at node %d was not preserved exactly: %+v", index+1, node)
+		}
+	}
+	if node := result.Nodes[4]; node.Align != "diagonal" || !node.Approximate {
+		t.Fatalf("unknown align was not preserved as approximate: %+v", node)
+	}
+	if !result.Approximate || len(result.Warnings) == 0 {
+		t.Fatalf("unknown align did not make the preview explicitly approximate: %+v", result)
+	}
+}
+
+func TestRenderGUIPreviewPreservesPortraitBackgroundAndMaskTextures(t *testing.T) {
+	const portraitExpression = "[Character.GetAnimatedPortrait('environment_hud', 'camera_hud', 'idle', PdxGetWidgetScreenSize(PdxGuiWidget.Self))]"
+	root := GUIElement{
+		Kind: "portrait_button", Name: "portrait", Size: &GUIVector{Width: "120", Height: "180"},
+		Properties: []GUIProperty{
+			{Name: "texture", Value: "gfx/portraits/portrait_transparent.dds"},
+			{Name: "portrait_texture", Value: portraitExpression},
+			{Name: "background_texture", Value: "gfx/portraits/portrait_background.dds"},
+			{Name: "mask", Value: "gfx/portraits/portrait_mask_head.dds"},
+		},
+	}
+	result, err := RenderGUIPreview("portrait", "type", "gui/shared/portraits.gui", root, 320, 240, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Nodes) != 1 {
+		t.Fatalf("nodes=%d want 1: %+v", len(result.Nodes), result.Nodes)
+	}
+	node := result.Nodes[0]
+	if node.BackgroundTexture != "gfx/portraits/portrait_background.dds" || node.MaskTexture != "gfx/portraits/portrait_mask_head.dds" {
+		t.Fatalf("portrait layers were not preserved: %+v", node)
+	}
+	if node.Semantics == nil || node.Semantics.PortraitTexture != portraitExpression {
+		t.Fatalf("portrait runtime texture was lost: %+v", node.Semantics)
+	}
+}
+
+func TestRenderGUIPreviewPreservesCoatOfArmsTexture(t *testing.T) {
+	const coatOfArmsExpression = "[Title.GetTitleCoA.GetTexture('(int32)256','(int32)256')]"
+	root := GUIElement{
+		Kind: "coat_of_arms_icon", Name: "title_arms",
+		Properties: []GUIProperty{
+			{Name: "coat_of_arms", Value: coatOfArmsExpression},
+			{Name: "coat_of_arms_mask", Value: "gfx/interface/coat_of_arms/title_mask.dds"},
+			{Name: "coat_of_arms_offset", Values: []string{"0.0", "0.07"}},
+			{Name: "coat_of_arms_scale", Values: []string{"0.9", "0.9"}},
+		},
+	}
+	preview, err := RenderGUIPreview("title_arms", "element", "gui/shared/coat_of_arms.gui", root, 320, 240, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Nodes) != 1 || preview.Nodes[0].Semantics == nil || preview.Nodes[0].Semantics.CoatOfArmsTexture != coatOfArmsExpression {
+		t.Fatalf("coat_of_arms texture expression was not preserved: %#v", preview.Nodes)
+	}
+	node := preview.Nodes[0]
+	if node.CoatOfArmsMask != "gfx/interface/coat_of_arms/title_mask.dds" || node.CoatOfArmsOffset == nil || node.CoatOfArmsOffset.X != "0.0" || node.CoatOfArmsOffset.Y != "0.07" || node.CoatOfArmsScale == nil || node.CoatOfArmsScale.X != "0.9" || node.CoatOfArmsScale.Y != "0.9" {
+		t.Fatalf("literal coat-of-arms composition fields were not preserved: %#v", node)
+	}
+}
+
 func TestRenderGUIPreviewMakesModifyTextureFillItsParent(t *testing.T) {
 	root := GUIElement{
 		Kind: "button", Size: &GUIVector{Width: "30", Height: "30"},
@@ -231,6 +348,7 @@ func TestRenderGUIPreviewMakesModifyTextureFillItsParent(t *testing.T) {
 				Properties: []GUIProperty{
 					{Name: "texture", Value: `"gfx/interface/colors/colors_textured.dds"`},
 					{Name: "blend_mode", Value: "add"},
+					{Name: "rotate_uv", Value: "90"},
 					{Name: "framesize", Values: []string{"96", "96"}},
 				},
 			}},
@@ -258,6 +376,9 @@ func TestRenderGUIPreviewMakesModifyTextureFillItsParent(t *testing.T) {
 	}
 	if !modifier.TextureBlendSupported {
 		t.Fatalf("known modify_texture blend mode was not marked supported: %+v", modifier)
+	}
+	if modifier.Semantics == nil || modifier.Semantics.RotateUV != "90" {
+		t.Fatalf("modify_texture rotate_uv was not preserved: %+v", modifier.Semantics)
 	}
 }
 
@@ -362,6 +483,155 @@ func TestRenderGUIPreviewFlowsHBoxAndDistributesExpand(t *testing.T) {
 	first, second := result.Nodes[1].Bounds, result.Nodes[2].Bounds
 	if first.X != 0 || first.Width != 40 || second.X != 50 || second.Width != 250 {
 		t.Fatalf("unexpected hbox flow: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestRenderGUIPreviewWeightsExpandingFlowItems(t *testing.T) {
+	root := GUIElement{
+		Kind: "hbox", Size: &GUIVector{Width: "300", Height: "50"},
+		Children: []GUIElement{
+			{Kind: "widget", Name: "short", Size: &GUIVector{Width: "20", Height: "20"}, Properties: []GUIProperty{
+				{Name: "layoutpolicy_horizontal", Value: "expanding"},
+				{Name: "layoutstretchfactor_horizontal", Value: "1"},
+			}},
+			{Kind: "widget", Name: "long", Size: &GUIVector{Width: "20", Height: "20"}, Properties: []GUIProperty{
+				{Name: "layoutpolicy_horizontal", Value: "expanding"},
+				{Name: "layoutstretchfactor_horizontal", Value: "2"},
+			}},
+		},
+	}
+	result, err := RenderGUIPreview("weighted_flow", "type", "gui/test.gui", root, 400, 200, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, second := result.Nodes[1], result.Nodes[2]
+	if first.Bounds != (GUIPreviewRect{X: 0, Y: 0, Width: 100, Height: 20}) ||
+		second.Bounds != (GUIPreviewRect{X: 100, Y: 0, Width: 200, Height: 20}) {
+		t.Fatalf("weighted hbox flow: first=%+v second=%+v", first.Bounds, second.Bounds)
+	}
+	if first.Layout == nil || second.Layout == nil || first.Layout.StretchHorizontal != 1 || second.Layout.StretchHorizontal != 2 {
+		t.Fatalf("stretch metadata: first=%+v second=%+v", first.Layout, second.Layout)
+	}
+	vertical := GUIElement{
+		Kind: "vbox", Size: &GUIVector{Width: "50", Height: "300"},
+		Children: []GUIElement{
+			{Kind: "widget", Name: "short", Size: &GUIVector{Width: "20", Height: "20"}, Properties: []GUIProperty{
+				{Name: "layoutpolicy_vertical", Value: "expanding"},
+				{Name: "layoutstretchfactor_vertical", Value: "1"},
+			}},
+			{Kind: "widget", Name: "long", Size: &GUIVector{Width: "20", Height: "20"}, Properties: []GUIProperty{
+				{Name: "layoutpolicy_vertical", Value: "expanding"},
+				{Name: "layoutstretchfactor_vertical", Value: "2"},
+			}},
+		},
+	}
+	result, err = RenderGUIPreview("weighted_vertical_flow", "type", "gui/test.gui", vertical, 400, 200, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, second = result.Nodes[1], result.Nodes[2]
+	if first.Bounds != (GUIPreviewRect{X: 0, Y: 0, Width: 20, Height: 100}) ||
+		second.Bounds != (GUIPreviewRect{X: 0, Y: 100, Width: 20, Height: 200}) {
+		t.Fatalf("weighted vbox flow: first=%+v second=%+v", first.Bounds, second.Bounds)
+	}
+	if first.Layout == nil || second.Layout == nil || first.Layout.StretchVertical != 1 || second.Layout.StretchVertical != 2 {
+		t.Fatalf("vertical stretch metadata: first=%+v second=%+v", first.Layout, second.Layout)
+	}
+}
+
+func TestRenderGUIPreviewDisplaysRawTextWithoutLocalizingIt(t *testing.T) {
+	raw := strings.Repeat("x", 24)
+	root := GUIElement{
+		Kind:       "text_single",
+		Properties: []GUIProperty{{Name: "raw_text", Value: raw}},
+	}
+	result, err := RenderGUIPreview("raw_caption", "type", "gui/test.gui", root, 400, 200, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := result.Nodes[0]
+	if node.Text != "" || node.Semantics == nil || node.Semantics.RawText != raw {
+		t.Fatalf("raw_text should stay separate from localization text: %+v", node)
+	}
+	if guiPreviewNodeDisplayText(node) != raw {
+		t.Fatalf("raw_text display fallback=%q want %q", guiPreviewNodeDisplayText(node), raw)
+	}
+	if wantWidth := len([]rune(raw))*7 + 16; node.Bounds.Width != wantWidth {
+		t.Fatalf("raw_text intrinsic width=%d want %d", node.Bounds.Width, wantWidth)
+	}
+}
+
+func TestRenderGUIPreviewPreservesRawTooltipWithoutLocalizingIt(t *testing.T) {
+	raw := "#X Not yet implemented button.#!"
+	root := GUIElement{
+		Kind:       "button",
+		Name:       "raw_tooltip_owner",
+		Properties: []GUIProperty{{Name: "raw_tooltip", Value: raw}},
+	}
+	result, err := RenderGUIPreview("raw_tooltip_owner", "type", "gui/test.gui", root, 400, 200, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := result.Nodes[0]
+	if node.Semantics == nil || node.Semantics.RawTooltip != raw {
+		t.Fatalf("raw_tooltip should stay separate from localization tooltip: %+v", node)
+	}
+	if node.TooltipLocalization != nil || guiPreviewTooltipText(node.Semantics) != raw {
+		t.Fatalf("raw_tooltip was treated as a localization binding: %+v", node)
+	}
+	if got := guiPreviewTooltipText(&GUISemantics{Tooltip: "regular_tooltip_key", RawTooltip: raw}); got != "regular_tooltip_key" {
+		t.Fatalf("regular tooltip must retain precedence when both forms exist: %q", got)
+	}
+}
+
+func TestRenderGUIPreviewPreservesTooltipWhenDisabled(t *testing.T) {
+	root := GUIElement{
+		Kind: "button",
+		Name: "disabled_action",
+		Properties: []GUIProperty{
+			{Name: "tooltip", Value: "normal_action_tooltip"},
+			{Name: "tooltip_when_disabled", Value: "[DisabledActionReason]"},
+		},
+	}
+	result, err := RenderGUIPreview("disabled_action", "type", "gui/test.gui", root, 400, 200, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := result.Nodes[0]
+	if node.Semantics == nil || node.Semantics.Tooltip != "normal_action_tooltip" || node.Semantics.TooltipWhenDisabled != "[DisabledActionReason]" {
+		t.Fatalf("tooltip_when_disabled was not preserved independently: %+v", node.Semantics)
+	}
+}
+
+func TestRenderGUIPreviewPreservesTooltipVisible(t *testing.T) {
+	root := GUIElement{
+		Kind:       "button",
+		Name:       "tooltip_owner",
+		Size:       &GUIVector{Width: "120", Height: "30"},
+		Properties: []GUIProperty{{Name: "tooltip", Value: "detail"}, {Name: "tooltip_visible", Value: "no"}},
+	}
+	result, err := RenderGUIPreview("tooltip_owner", "type", "gui/test.gui", root, 400, 200, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Nodes[0].Semantics == nil || result.Nodes[0].Semantics.TooltipVisible != "no" {
+		t.Fatalf("tooltip_visible was not preserved: %+v", result.Nodes[0].Semantics)
+	}
+}
+
+func TestRenderGUIPreviewPreservesChecked(t *testing.T) {
+	root := GUIElement{
+		Kind:       "checkbutton",
+		Name:       "cloud_save",
+		Size:       &GUIVector{Width: "30", Height: "30"},
+		Properties: []GUIProperty{{Name: "checked", Value: "[CloudSaveData.ShouldSaveToCloud]"}},
+	}
+	result, err := RenderGUIPreview("cloud_save", "type", "gui/test.gui", root, 400, 200, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Nodes[0].Semantics == nil || result.Nodes[0].Semantics.Checked != "[CloudSaveData.ShouldSaveToCloud]" {
+		t.Fatalf("checked was not preserved: %+v", result.Nodes[0].Semantics)
 	}
 }
 
@@ -495,15 +765,50 @@ func TestRenderGUIPreviewLaysOutBoundedGridRows(t *testing.T) {
 		t.Fatalf("grid metadata=%+v", grid)
 	}
 	for index, expected := range []GUIPreviewRect{
-		{X: 0, Y: 0, Width: 20, Height: 10},
-		{X: 40, Y: 0, Width: 20, Height: 10},
+		{X: 40, Y: 30, Width: 20, Height: 10},
 		{X: 0, Y: 30, Width: 20, Height: 10},
+		{X: 40, Y: 0, Width: 20, Height: 10},
 	} {
 		node := result.Nodes[index+1]
 		if node.Bounds != expected || node.Layout == nil || !node.Layout.GridItem ||
-			node.Layout.GridRow != index/2 || node.Layout.GridColumn != index%2 {
+			node.Layout.GridRow != []int{1, 1, 0}[index] || node.Layout.GridColumn != []int{1, 0, 1}[index] {
 			t.Fatalf("grid item %d=%+v want bounds %+v", index, node, expected)
 		}
+	}
+	for _, warning := range result.Warnings {
+		if strings.Contains(strings.ToLower(warning), "flipdirection") {
+			t.Fatalf("flipdirection should not remain an approximation warning: %v", result.Warnings)
+		}
+	}
+}
+
+func TestRenderGUIPreviewHonorsGridLayoutAnchor(t *testing.T) {
+	root := GUIElement{
+		Kind: "fixedgridbox", Size: &GUIVector{Width: "100", Height: "100"},
+		Properties: []GUIProperty{
+			{Name: "datamodel_wrap", Value: "2"},
+			{Name: "addcolumn", Value: "40"},
+			{Name: "addrow", Value: "30"},
+			{Name: "flipdirection", Value: "yes"},
+			{Name: "layoutanchor", Value: "bottomleft"},
+		},
+		Children: []GUIElement{
+			{Kind: "item", Name: "one", Size: &GUIVector{Width: "20", Height: "10"}},
+			{Kind: "item", Name: "two", Size: &GUIVector{Width: "20", Height: "10"}},
+		},
+	}
+	result, err := RenderGUIPreview("anchored_grid", "type", "gui/test.gui", root, 400, 200, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Nodes[1].Bounds; got != (GUIPreviewRect{X: 40, Y: 70, Width: 20, Height: 10}) {
+		t.Fatalf("bottomleft flipped first item=%+v", got)
+	}
+	if got := result.Nodes[2].Bounds; got != (GUIPreviewRect{X: 0, Y: 70, Width: 20, Height: 10}) {
+		t.Fatalf("bottomleft flipped second item=%+v", got)
+	}
+	if result.Nodes[0].Layout == nil || result.Nodes[0].Layout.GridLayoutAnchor != "bottomleft" {
+		t.Fatalf("grid layout anchor metadata=%+v", result.Nodes[0].Layout)
 	}
 }
 
@@ -638,8 +943,8 @@ func TestRenderGUIPreviewTreatsStateBlocksAsBehavior(t *testing.T) {
 	root := GUIElement{
 		Kind: "button", Name: "stateful", Size: &GUIVector{Width: "35", Height: "35"},
 		Children: []GUIElement{
-			{Kind: "state", Name: "_mouse_enter", Properties: []GUIProperty{{Name: "alpha", Value: "1"}, {Name: "duration", Value: "0.7"}}},
-			{Kind: "state", Name: "_mouse_leave", Properties: []GUIProperty{{Name: "alpha", Value: "0.5"}, {Name: "duration", Value: "0.2"}}},
+			{Kind: "state", Name: "_mouse_enter", Properties: []GUIProperty{{Name: "alpha", Value: "1"}, {Name: "scale", Value: "1.35"}, {Name: "position_x", Value: "-4"}, {Name: "position_y", Value: "3"}, {Name: "duration", Value: "0.7"}}},
+			{Kind: "state", Name: "_mouse_leave", Properties: []GUIProperty{{Name: "alpha", Value: "0.5"}, {Name: "scale", Value: "1.3"}, {Name: "duration", Value: "0.2"}}},
 		},
 	}
 	result, err := RenderGUIPreview("stateful", "type", "gui/test.gui", root, 400, 200, 20)
@@ -651,16 +956,39 @@ func TestRenderGUIPreviewTreatsStateBlocksAsBehavior(t *testing.T) {
 	}
 	for index, name := range []string{"_mouse_enter", "_mouse_leave"} {
 		node := result.Nodes[index+1]
-		if !node.BehaviorOnly || node.StateDefinition == nil || node.StateDefinition.Name != name {
+		if !node.BehaviorOnly || node.StateDefinition == nil || node.StateDefinition.Name != name || node.StateDefinition.Scale == "" {
 			t.Fatalf("state node %d was not preserved as behavior: %+v", index+1, node)
 		}
+	}
+	if result.Nodes[1].StateDefinition.PositionX != "-4" || result.Nodes[1].StateDefinition.PositionY != "3" {
+		t.Fatalf("state position was not preserved: %+v", result.Nodes[1].StateDefinition)
 	}
 	htmlPreview, err := RenderGUIHTMLPreviewWithOptions(result, GUIHTMLRenderOptions{Mode: GUIHTMLModeInspector})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if htmlPreview.Behaviors.States != 2 || !bytes.Contains([]byte(htmlPreview.Document), []byte(`data-ck3-state-name="_mouse_enter"`)) || !bytes.Contains([]byte(htmlPreview.Document), []byte(`id="ck3-apply-state"`)) {
+	if htmlPreview.Behaviors.States != 2 || !bytes.Contains([]byte(htmlPreview.Document), []byte(`data-ck3-state-name="_mouse_enter"`)) || !bytes.Contains([]byte(htmlPreview.Document), []byte(`data-ck3-state-scale="1.35"`)) || !bytes.Contains([]byte(htmlPreview.Document), []byte(`data-ck3-state-position-x="-4"`)) || !bytes.Contains([]byte(htmlPreview.Document), []byte(`data-ck3-state-position-y="3"`)) || !bytes.Contains([]byte(htmlPreview.Document), []byte(`style.setProperty('--ck3-state-offset-x'`)) || !bytes.Contains([]byte(htmlPreview.Document), []byte(`id="ck3-apply-state"`)) {
 		t.Fatalf("state behavior is missing from inspector: %+v", htmlPreview.Behaviors)
+	}
+}
+
+func TestRenderGUIPreviewPreservesStateTriggerWhen(t *testing.T) {
+	root := GUIElement{
+		Kind: "widget", Name: "stateful", Size: &GUIVector{Width: "100", Height: "40"},
+		Children: []GUIElement{{
+			Kind: "state", Name: "hide_when_modal", Properties: []GUIProperty{
+				{Name: "alpha", Value: "0"},
+				{Name: "scale", Value: "0.9"},
+				{Name: "trigger_when", Value: "[IsModalOpen]"},
+			},
+		}},
+	}
+	result, err := RenderGUIPreview("stateful", "type", "gui/test.gui", root, 400, 200, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Nodes) != 2 || result.Nodes[1].StateDefinition == nil || result.Nodes[1].StateDefinition.TriggerWhen != "[IsModalOpen]" {
+		t.Fatalf("state trigger_when was not preserved: %+v", result.Nodes)
 	}
 }
 
@@ -672,6 +1000,7 @@ func TestRenderGUIPreviewPreservesPressedStateAndRepeatedClickProperties(t *test
 			{Name: "selected", Value: "[Character.IsTraveling]"},
 			{Name: "onclick", Value: "[ToggleGameViewData('travel_planner', TravelPlan.GetID)]"},
 			{Name: "onclick", Value: "[Character.ZoomCameraTo]"},
+			{Name: "onrightclick", Value: "[DefaultOnCharacterRightClick(Character.GetID)]"},
 		},
 	}
 	preview, err := RenderGUIPreview("traveling", "element", "gui/hud.gui", root, 640, 360, 20)
@@ -687,6 +1016,98 @@ func TestRenderGUIPreviewPreservesPressedStateAndRepeatedClickProperties(t *test
 	}
 	if len(semantics.OnClicks) != 2 || semantics.OnClicks[0] != "[ToggleGameViewData('travel_planner', TravelPlan.GetID)]" {
 		t.Fatalf("repeated onclick properties were not preserved in source order: %#v", semantics.OnClicks)
+	}
+	if semantics.OnRightClick != "[DefaultOnCharacterRightClick(Character.GetID)]" {
+		t.Fatalf("portrait-style onrightclick semantics were not preserved: %#v", semantics)
+	}
+}
+
+func TestRenderGUIPreviewPreservesSelectedIndexAsModelMetadata(t *testing.T) {
+	root := GUIElement{
+		Kind: "dropdown", Name: "sort_order",
+		Properties: []GUIProperty{
+			{Name: "datamodel", Value: "[SortOptions]"},
+			{Name: "selectedindex", Value: "[CurrentSortIndex]"},
+		},
+	}
+	preview, err := RenderGUIPreview("sort_order", "element", "gui/settings.gui", root, 640, 360, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Nodes) != 1 || preview.Nodes[0].Semantics == nil || preview.Nodes[0].Semantics.SelectedIndex != "[CurrentSortIndex]" {
+		t.Fatalf("dropdown selectedindex was not retained as model metadata: %#v", preview.Nodes)
+	}
+}
+
+func TestRenderGUIPreviewUsesFontColorAsFontTintFallback(t *testing.T) {
+	root := GUIElement{
+		Kind: "text_single", Name: "track_name",
+		Properties: []GUIProperty{
+			{Name: "raw_text", Value: "Track"},
+			{Name: "fontcolor", Value: "[MusicPlayer.GetTrackTextColor]"},
+		},
+	}
+	preview, err := RenderGUIPreview("track_name", "element", "gui/music.gui", root, 640, 360, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Nodes) != 1 || preview.Nodes[0].Semantics == nil || preview.Nodes[0].Semantics.FontTintColor != "[MusicPlayer.GetTrackTextColor]" {
+		t.Fatalf("fontcolor did not enter the text-color preview path: %#v", preview.Nodes)
+	}
+}
+
+func TestRenderGUIPreviewUsesParsedFontColorVectorAsFontTintFallback(t *testing.T) {
+	model := BuildGUIModel(`types Defaults {
+	type textbox = textbox {
+		fontcolor = { 0.61 0.6 0.56 1.0 }
+	}
+}`)
+	root := model.Namespaces[0].Types[0].Element
+	preview, err := RenderGUIPreview("textbox", "type", "gui/preload/defaults.gui", root, 640, 360, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Nodes) != 1 || preview.Nodes[0].Semantics == nil || preview.Nodes[0].Semantics.FontTintColor != "{ 0.61 0.6 0.56 1.0 }" {
+		t.Fatalf("parsed fontcolor vector did not enter the text-color preview path: %#v", preview.Nodes)
+	}
+}
+
+func TestRenderGUIPreviewRendersLiteralLineGeometry(t *testing.T) {
+	root := GUIElement{
+		Kind: "container", Size: &GUIVector{Width: "200", Height: "120"},
+		Children: []GUIElement{{
+			Kind: "line", Properties: []GUIProperty{
+				{Name: "parentanchor", Value: "hcenter"},
+				{Name: "from", Values: []string{"0", "-20"}},
+				{Name: "to", Values: []string{"0", "30"}},
+				{Name: "width", Value: "6"},
+				{Name: "line_cap", Value: "yes"},
+				{Name: "color", Values: []string{"0.2", "0.4", "0.6", "1"}},
+			},
+		}},
+	}
+	preview, err := RenderGUIPreview("line", "element", "gui/shared/lines.gui", root, 640, 360, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Nodes) != 2 {
+		t.Fatalf("nodes=%d want 2: %#v", len(preview.Nodes), preview.Nodes)
+	}
+	line := preview.Nodes[1]
+	if line.LineGeometry == nil || line.LineGeometry.From == nil || line.LineGeometry.To == nil {
+		t.Fatalf("literal line geometry was not retained: %#v", line)
+	}
+	if line.LineGeometry.Origin != (GUIPreviewPoint{X: 100, Y: 0}) || *line.LineGeometry.From != (GUIPreviewPoint{X: 100, Y: -20}) || *line.LineGeometry.To != (GUIPreviewPoint{X: 100, Y: 30}) || line.LineGeometry.Width != 6 || !line.LineGeometry.LineCap || line.LineGeometry.CoordinateSpace != "parent_anchor" {
+		t.Fatalf("line geometry=%#v", line.LineGeometry)
+	}
+	if line.Bounds != (GUIPreviewRect{X: 97, Y: -23, Width: 6, Height: 56}) {
+		t.Fatalf("line bounds=%+v", line.Bounds)
+	}
+	if line.Semantics == nil || line.Semantics.LineFrom != "{ 0 -20 }" || line.Semantics.LineTo != "{ 0 30 }" {
+		t.Fatalf("line source endpoints were not retained: %#v", line.Semantics)
+	}
+	if !line.Approximate || len(preview.PNG) == 0 {
+		t.Fatalf("line preview should remain explicitly approximate and render PNG output: %#v", line)
 	}
 }
 

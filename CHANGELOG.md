@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+- GUI previews now retain `video` expressions and can display an exact caller-provided indexed image as a fixed `sample_values.property=video` poster. This is visibly marked as provided scenario data; Bink decoding, frame selection, playback, looping, masks, and timing remain in-game validation boundaries.
+- GUI previews now draw literal `line` `from`/`to` endpoint vectors as bounded parent-local strokes, carrying literal `width`, `line_cap`, color, and embedded HTML texture where available. Dynamic endpoints accept exact caller-provided `sample_values` with `property=from|to`; line shader, UV/mask animation, coordinate-space edge cases, and `resizeparent` remain explicit approximations.
+- GUI inspector now replays dynamic `min_width`/`max_width`, `min_height`/`max_height`, and four-sided margin expressions before direct flow/grid reflow and multiline autoresize. The bounded numeric evaluator now recognizes CK3's `Select_int32` and `Select_CFixedPoint` alongside `Select_float`; missing facts retain the resolved baseline instead of inventing engine state.
+- GUI inspector now replays dynamic `allow_outside` only where the preview can observe it: a supplied boolean fact changes whether the owning scroll-content branch contributes to the bounded scroll extent. Engine clipping, hit-testing, and non-scroll layout behavior remain explicit boundaries.
+- GUI `type`/`template`/`preview` queries now resolve only the requested symbol and its reachable cross-file dependencies instead of flattening every active GUI tree first. Resolution cache keys include the focused operation, symbol, and selection scope; `resolution_truncated`, `gui_expansion_limit`, and `gui_expansion_depth` make any bounded partial result explicit.
+- GUI resolver now recognizes CK3 primitive default declarations such as `type icon = icon` as engine-base definitions rather than false inheritance cycles. Repeated template/type reuse has a cloned-element budget with a diagnostic fallback, preventing unbounded memory growth while retaining an inspectable partial tree.
+- GUI model parsing now retains native brace-delimited `fontcolor` and `cursorcolor` values as vector properties rather than structural child controls. Original `textbox` defaults therefore reach the existing font-color preview path without inventing bogus GUI nodes.
+- GUI model parsing now also classifies any non-empty brace block made solely of bare values as a property vector. This preserves CK3 line endpoints such as `from`/`to` and texture values such as `uv_scale` instead of fabricating false GUI child controls; their engine-coordinate rendering remains explicitly unmodeled.
+- GUI inspector now replays state-block `position_x` and `position_y` as bounded visual offsets alongside existing alpha and scale state effects. Literal state motion is immediate, while bracketed scalar expressions may use the existing numeric fact evaluator; engine curves and chained timeline behavior remain preserved.
+- GUI inspector now preserves `raw_tooltip` as direct display text rather than a localization key. Literal CK3 format markers are cleaned only for the inert hover panel, while the original value remains metadata and dynamic text stays within the existing bounded runtime-text evaluator.
+- GUI inspector now preserves `tooltip_when_disabled` independently from the normal tooltip. Its localized or bounded dynamic text replaces the text-only hover panel only while the owner is disabled, then falls back without executing Jomini.
+- GUI previews now use `animated_progress_value` as the visual progress fallback when a control has no ordinary `value`. Literal and bounded numeric facts drive the existing bar/pie fill; engine tween timing remains preserved rather than replayed.
+- GUI previews now retain dropdown `selectedindex` as datamodel metadata. It is intentionally excluded from render hotspots because exact active-option content requires model rows that the preview cannot invent.
+- GUI summary now retains video playback (`loop`), state timing (`delay`), editbox length (`maxcharacters`), and interaction-only masks (`intersectionmask_texture`) as nonvisual metadata. Their parent video, animation, or layout remains an explicit fidelity boundary rather than four duplicate render gaps.
+- GUI previews now route `fontcolor` through the existing text-color path when `fonttintcolor` is absent. GUI summary also ignores `@...` macro declarations and retains `oncolorchanged` as a callback, removing two more false rendering gaps.
+- GUI previews now preserve dynamic `coat_of_arms` expressions and accept the existing exact `sample_values.texture` contract for a caller-provided, indexed flattened heraldry sample. Slots, masks, offsets, scales, and the engine shader remain explicit gaps.
+- GUI previews now compose a provided flattened `coat_of_arms` sample with literal or exact provided `coat_of_arms_mask`, `coat_of_arms_offset`, and `coat_of_arms_scale` values. The HTML path nests fixed alpha masks around the transformed sample; slot extraction, atlas generation, and the engine heraldry shader remain explicit in-game validation boundaries.
+- GUI inspector now preserves and replays checkbutton `checked` state from literal values or bounded runtime facts. Recognized checkbutton/checkbox type chains receive a deterministic checkmark overlay; ordinary clicks never imply a state reversal, and exact engine frame/shader transitions remain for in-game validation.
+- GUI summary now reports `runtime_property_hotspots` only for genuinely unmodeled dynamic fields. Lifecycle/input callbacks, shortcuts, click sounds, `alwaystransparent`, and `button_ignore` are retained as nonvisual metadata instead of being presented as preview-rendering gaps.
+- GUI inspector now evaluates state-block `trigger_when` through the same bounded boolean facts used by other preview controls. A true trigger activates the state’s supported alpha/scale subset; unknown facts stay inactive and lifecycle callbacks remain preserved rather than executed.
+
+- GUI 预览新增普通控件 `scale` 的数值语义与运行时重放；它会与状态缩放、按下位移组合，而不再把 `scale` 误列为未建模字段。
+- GUI inspector 的 `state` 重放新增字面量 `scale`，可还原肖像悬停时的缩放，并与原有按下位移独立组合。
+- GUI 预览现在识别 `portrait_texture`：肖像专用动态纹理可复用现有受限 `sample_values.texture` 输入显示已索引的本地样例资源，并保留表达式与来源。
+- 肖像控件的 `background_texture` 与直接 `mask` 现在会各自解析、嵌入并写入检查器：背景先于主体绘制，已嵌入的遮罩以 CSS alpha mask 裁切主体样例；`gui_portrait.shader` 的动画和光照仍明确保持为近似。
+- GUI 预览现在识别 `rotate_uv`：原版常见的 90°/180°/360° 纹理旋转会与 `mirror` 组合重放，动态旋转可复用既有数值 `runtime_facts` 在检查器中更新；复杂 `state.animation` 仍不会被猜测执行。
+- GUI 预览现在重放常见 `fittype`：`centercrop`、`start`、`end` 分别映射为居中、左上、右下锚定的 cover 裁切；未知值以及与精灵帧/九宫格并用的组合仍保留原文并明确标为近似。
+- GUI 预览现在保留并重放 `align` 的左中右与上中下对齐：文本、按钮和图像标签按原始 token 调整 CSS 对齐；`nobaseline` 仍保留为元数据，未知 token 明确标为近似而不猜测字体基线。
+- GUI `summary` 改为逐文件的原始模型汇总，不再为了统计字段而展开全库继承树；结果用 `resolution_complete=false` 明确说明跨文件模板、继承与 blockoverride 诊断需通过具体查询获得，避免大工作区内存耗尽。
+- GUI inspector 现在区分 `onclick` 与 `onrightclick`：右键动作会保留单独语义、受限运行时计划和 HTML 模拟入口，避免与左键后果混淆。
+
+- GUI inspector 现在重放 `tooltip_visible`：字面量和提供的运行时事实为 `false` 时，`tooltipwidget` 覆盖层与纯文本 tooltip 都不会弹出。
+- GUI 预览新增 `color` 语义与运行时重放；`color` 和现有 `tintcolor` 都会实际着色已嵌入的纹理，HTML inspector 也会随提供的颜色事实重新着色。
+- GUI 预览新增 `grayscale` 布尔语义与运行时重放；肖像、按钮及其嵌入纹理会在原版条件为真时灰度化，条件变更后可恢复彩色。
+- GUI 预览实现网格 `layoutanchor` 对内容区域的定位，并在静态 PNG 与 inspector HTML 中与 `flipdirection`、`datamodel_wrap`、`addcolumn`、`addrow` 一起生效。
+- GUI 预览按正数 `layoutstretchfactor_horizontal` / `layoutstretchfactor_vertical` 权重分配流式扩展空间；HTML inspector 在显隐重排时使用相同的确定性余数分配。
+- GUI 预览把 `raw_text` 作为未本地化文本显示与尺寸测量的回退，同时继续与 `text` 本地化绑定分离。
+- GUI 摘要现在把已可重放的 `alpha`、`tintcolor`、`fonttintcolor`、`raw_text` 与本轮布局字段如实标为 simulated/rendered；同时修复字面量 RGBA 被二次解析而错误显示为 unknown 的问题。
+- GUI 预览实现 `fixedgridbox`/`dynamicgridbox` 的 `flipdirection=yes`：静态 PNG 与 inspector 动态重排都从远端网格角落反向填充，同时保留原始数据模型索引，不再把该原版布局字段误标为 approximate。
+
 ## 0.5.0 - Canonical MCP and diagnostic provenance (2026-07-24)
 
 - Remove the obsolete expert MCP profile and its 28 legacy specialist aliases. All supported capabilities remain available through the 30 canonical tools and their bounded operations.

@@ -6,7 +6,13 @@ import (
 	"strings"
 )
 
-const maxGUIExpansionDepth = 128
+const (
+	maxGUIExpansionDepth = 128
+	// maxGUIExpansionNodes bounds cloned GUI elements during one resolution.
+	// GUI inheritance forms a DAG in valid content, but flattening repeated
+	// template/type reuse can otherwise materialize it exponentially.
+	maxGUIExpansionNodes = 250_000
+)
 
 const (
 	guiSummaryPropertyLimit       = 40
@@ -23,9 +29,11 @@ type GUIResolution struct {
 	Templates   []GUITemplate     `json:"templates,omitempty"`
 	Roots       []GUIElement      `json:"roots,omitempty"`
 	Diagnostics []GUIDiagnostic   `json:"diagnostics,omitempty"`
+	truncated   bool
 }
 
 type GUIResolutionSummary struct {
+	ResolutionComplete bool                         `json:"resolution_complete"`
 	Types              int                          `json:"types"`
 	Templates          int                          `json:"templates"`
 	Roots              int                          `json:"roots"`
@@ -79,21 +87,95 @@ type guiTemplateDefinition struct {
 }
 
 type guiResolver struct {
-	types       map[string]guiTypeDefinition
-	templates   map[string]guiTemplateDefinition
-	resolved    map[string]ResolvedGUIType
-	resolvedTpl map[string]GUIElement
-	typeState   map[string]int
-	templateUse map[string]int
-	unresolved  map[string]bool
-	diagSeen    map[string]bool
-	diagnostics []GUIDiagnostic
+	types              map[string]guiTypeDefinition
+	templates          map[string]guiTemplateDefinition
+	resolved           map[string]ResolvedGUIType
+	resolvedTpl        map[string]GUIElement
+	typeState          map[string]int
+	templateUse        map[string]int
+	unresolved         map[string]bool
+	diagSeen           map[string]bool
+	diagnostics        []GUIDiagnostic
+	expansionNodes     int
+	expansionExhausted bool
+	truncated          bool
 }
 
 // ResolveGUIModels expands templates, custom type inheritance, and block
 // overrides into renderer-ready trees. Inputs are ordered from low to high
 // priority; later definitions replace earlier ones and produce a diagnostic.
 func ResolveGUIModels(inputs []GUIModelInput) GUIResolution {
+	resolver, roots := buildGUIResolver(inputs)
+	typeNames := sortedKeys(resolver.types)
+	resolution := GUIResolution{}
+	for _, name := range typeNames {
+		resolved, ok := resolver.resolveType(name, nil)
+		if ok {
+			resolution.Types = append(resolution.Types, resolved)
+		}
+	}
+	templateNames := sortedKeys(resolver.templates)
+	for _, name := range templateNames {
+		definition := resolver.templates[name]
+		template := definition.template
+		template.Element = resolver.resolveTemplate(name, nil)
+		resolution.Templates = append(resolution.Templates, template)
+	}
+	for index := range roots {
+		roots[index] = resolver.resolveElement(roots[index], nil)
+	}
+	resolution.Roots = roots
+	resolution.Diagnostics = resolver.diagnostics
+	resolution.truncated = resolver.truncated
+	return resolution
+}
+
+// ResolveGUIModelSymbol resolves only the requested public symbol and the
+// templates/types it actually reaches. QueryGUI uses this instead of
+// flattening every active GUI definition before selecting one result.
+func ResolveGUIModelSymbol(inputs []GUIModelInput, operation, symbol, prefix string) GUIResolution {
+	resolver, roots := buildGUIResolver(inputs)
+	resolution := GUIResolution{}
+	operation = strings.ToLower(strings.TrimSpace(operation))
+	symbol = strings.TrimSpace(symbol)
+	switch operation {
+	case "type":
+		if definition, exists := resolver.types[symbol]; exists && guiSourceMatchesPrefix(definition.source, prefix) {
+			if resolved, ok := resolver.resolveType(symbol, nil); ok {
+				resolution.Types = append(resolution.Types, resolved)
+			}
+		}
+	case "template":
+		if definition, exists := resolver.templates[symbol]; exists && guiSourceMatchesPrefix(definition.source, prefix) {
+			template := definition.template
+			template.Element = resolver.resolveTemplate(symbol, nil)
+			resolution.Templates = append(resolution.Templates, template)
+		}
+	case "preview":
+		if definition, exists := resolver.types[symbol]; exists && guiSourceMatchesPrefix(definition.source, prefix) {
+			if resolved, ok := resolver.resolveType(symbol, nil); ok {
+				resolution.Types = append(resolution.Types, resolved)
+			}
+		}
+		if len(resolution.Types) == 0 {
+			if definition, exists := resolver.templates[symbol]; exists && guiSourceMatchesPrefix(definition.source, prefix) {
+				template := definition.template
+				template.Element = resolver.resolveTemplate(symbol, nil)
+				resolution.Templates = append(resolution.Templates, template)
+			}
+		}
+		if len(resolution.Types) == 0 && len(resolution.Templates) == 0 {
+			if root, found := findNamedGUIElementInScope(roots, symbol, prefix); found {
+				resolution.Roots = append(resolution.Roots, resolver.resolveElement(root, nil))
+			}
+		}
+	}
+	resolution.Diagnostics = resolver.diagnostics
+	resolution.truncated = resolver.truncated
+	return resolution
+}
+
+func buildGUIResolver(inputs []GUIModelInput) (*guiResolver, []GUIElement) {
 	resolver := &guiResolver{
 		types: map[string]guiTypeDefinition{}, templates: map[string]guiTemplateDefinition{},
 		resolved: map[string]ResolvedGUIType{}, resolvedTpl: map[string]GUIElement{},
@@ -137,33 +219,13 @@ func ResolveGUIModels(inputs []GUIModelInput) GUIResolution {
 			roots = append(roots, root)
 		}
 	}
-
-	typeNames := sortedKeys(resolver.types)
-	resolution := GUIResolution{Diagnostics: resolver.diagnostics}
-	for _, name := range typeNames {
-		resolved, ok := resolver.resolveType(name, nil)
-		if ok {
-			resolution.Types = append(resolution.Types, resolved)
-		}
-	}
-	templateNames := sortedKeys(resolver.templates)
-	for _, name := range templateNames {
-		definition := resolver.templates[name]
-		template := definition.template
-		template.Element = resolver.resolveTemplate(name, nil)
-		resolution.Templates = append(resolution.Templates, template)
-	}
-	for index := range roots {
-		roots[index] = resolver.resolveElement(roots[index], nil)
-	}
-	resolution.Roots = roots
-	resolution.Diagnostics = resolver.diagnostics
-	return resolution
+	return resolver, roots
 }
 
 func (resolution GUIResolution) Summary() GUIResolutionSummary {
 	summary := GUIResolutionSummary{
-		Types: len(resolution.Types), Templates: len(resolution.Templates), Roots: len(resolution.Roots),
+		ResolutionComplete: !resolution.truncated,
+		Types:              len(resolution.Types), Templates: len(resolution.Templates), Roots: len(resolution.Roots),
 		Diagnostics: len(resolution.Diagnostics), DiagnosticsBy: map[string]int{}, Samples: map[string][]GUIDiagnostic{},
 	}
 	type diagnosticAggregate struct {
@@ -213,7 +275,7 @@ func (resolution GUIResolution) Summary() GUIResolutionSummary {
 	visitElement = func(element GUIElement) {
 		for _, property := range element.Properties {
 			name := strings.ToLower(strings.TrimSpace(property.Name))
-			if name == "" {
+			if name == "" || strings.HasPrefix(name, "@") {
 				continue
 			}
 			usage := propertyUsage[name]
@@ -244,7 +306,7 @@ func (resolution GUIResolution) Summary() GUIResolutionSummary {
 	}
 	for _, usage := range propertyUsage {
 		summary.PropertyUsage = append(summary.PropertyUsage, *usage)
-		if usage.Expressions > 0 && usage.Support != "simulated" {
+		if usage.Expressions > 0 && usage.Support == "unmodeled" {
 			summary.RuntimeHotspots = append(summary.RuntimeHotspots, *usage)
 		}
 	}
@@ -273,15 +335,20 @@ func guiPropertyHasRuntimeExpression(property GUIProperty) bool {
 
 func guiPreviewPropertySupport(name string) string {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "visible", "enabled", "down", "selected", "min", "max", "value", "onclick", "text", "tooltip":
+	case "visible", "enabled", "down", "selected", "checked", "trigger_when", "tooltip_visible", "grayscale", "allow_outside", "alpha", "scale", "rotate_uv", "position_x", "position_y", "min_width", "max_width", "min_height", "max_height", "margin_left", "margin_right", "margin_top", "margin_bottom", "fittype", "min", "max", "value", "animated_progress_value", "color", "tintcolor", "fonttintcolor", "fontcolor", "onclick", "onrightclick", "video", "portrait_texture", "coat_of_arms", "coat_of_arms_mask", "coat_of_arms_offset", "coat_of_arms_scale", "from", "to", "background_texture", "mask", "text", "raw_text", "tooltip", "raw_tooltip", "tooltip_when_disabled":
 		return "simulated"
 	case "position", "size", "minsize", "maxsize", "minimumsize", "maximumsize", "parentanchor", "widgetanchor",
 		"layoutpolicy_horizontal", "layoutpolicy_vertical", "margin", "margins", "spacing", "expand", "ignoreinvisible",
-		"datamodelwrap", "addcolumn", "addrow", "direction", "autoresize", "multiline", "texture", "progresstexture",
+		"layoutstretchfactor_horizontal", "layoutstretchfactor_vertical", "datamodel_wrap", "datamodelwrap", "addcolumn", "addrow", "layoutanchor", "flipdirection",
+		"direction", "autoresize", "multiline", "align", "texture", "progresstexture",
 		"noprogresstexture", "framesize", "frame", "upframe", "overframe", "downframe", "disableframe", "spriteborder",
 		"spritetype", "texture_density", "mirror":
 		return "rendered"
-	case "datacontext", "datamodel", "using", "state", "tooltipwidget":
+	case "datacontext", "datamodel", "selectedindex", "using", "state", "tooltipwidget",
+		"alwaystransparent", "button_ignore", "on_start", "on_finish", "oneditingfinished", "onvaluechanged", "oncreate", "ontextedited",
+		"onmousehierarchyenter", "onmousehierarchyleave", "onselectionchanged", "oneditingfinished_with_changes",
+		"onchangefinish", "onchangestart", "onreturnpressed", "onshift", "oncoloredited", "oncolorchanged", "ondefault", "ontextchanged",
+		"clicksound", "default_clicksound", "shortcut", "drag_drop_args", "index", "loop", "delay", "maxcharacters", "intersectionmask_texture":
 		return "preserved"
 	default:
 		return "unmodeled"
@@ -315,13 +382,22 @@ func (resolver *guiResolver) resolveType(name string, stack []string) (ResolvedG
 		})
 		return ResolvedGUIType{}, false
 	}
+	if resolver.expansionExhausted {
+		return resolver.incompleteResolvedType(name, definition)
+	}
 	resolver.typeState[name] = 1
 	typeRule := definition.typeRule
 	var element GUIElement
-	if base, exists := resolver.types[typeRule.Base]; exists {
+	baseName := strings.TrimSpace(typeRule.Base)
+	if strings.EqualFold(baseName, name) && guiBuiltinTypes[strings.ToLower(baseName)] {
+		// CK3 commonly declares defaults such as `type icon = icon`. The
+		// left side is the overrideable GUI type while the right side names
+		// the engine primitive, not an inheritance cycle through itself.
+		element.Kind = typeRule.Base
+	} else if base, exists := resolver.types[typeRule.Base]; exists {
 		resolvedBase, resolved := resolver.resolveType(base.typeRule.Name, append(stack, name))
 		if resolved {
-			element = cloneGUIElement(resolvedBase.Element)
+			element = resolver.cloneGUIElement(resolvedBase.Element)
 		} else {
 			element.incomplete = true
 			resolver.unresolved[name] = true
@@ -337,7 +413,13 @@ func (resolver *guiResolver) resolveType(name string, stack []string) (ResolvedG
 			Message: fmt.Sprintf("GUI type %q inherits unresolved external type %q; provide the defining GUI file for full slot validation", name, typeRule.Base), Span: typeRule.Span,
 		})
 	}
-	overlay := cloneGUIElement(typeRule.Element)
+	if resolver.expansionExhausted {
+		return resolver.incompleteResolvedType(name, definition)
+	}
+	overlay := resolver.cloneGUIElement(typeRule.Element)
+	if resolver.expansionExhausted {
+		return resolver.incompleteResolvedType(name, definition)
+	}
 	overlay.Kind = ""
 	element = resolver.resolveElementWithBase(overlay, element, name, append(stack, name))
 	normalizeGUIElement(&element)
@@ -350,9 +432,21 @@ func (resolver *guiResolver) resolveType(name string, stack []string) (ResolvedG
 	return resolved, true
 }
 
+func (resolver *guiResolver) incompleteResolvedType(name string, definition guiTypeDefinition) (ResolvedGUIType, bool) {
+	element := incompleteGUIElement(definition.typeRule.Element)
+	element.Kind = definition.typeRule.Base
+	element.TypeChain = appendGUITypeName(element.TypeChain, name)
+	resolved := ResolvedGUIType{
+		Name: name, Base: definition.typeRule.Base, Namespace: definition.typeRule.Namespace, Source: definition.source, Element: element,
+	}
+	resolver.typeState[name] = 2
+	resolver.resolved[name] = resolved
+	return resolved, true
+}
+
 func (resolver *guiResolver) resolveTemplate(name string, stack []string) GUIElement {
 	if resolved, ok := resolver.resolvedTpl[name]; ok {
-		return cloneGUIElement(resolved)
+		return resolver.cloneGUIElement(resolved)
 	}
 	definition, ok := resolver.templates[name]
 	if !ok {
@@ -365,11 +459,21 @@ func (resolver *guiResolver) resolveTemplate(name string, stack []string) GUIEle
 		})
 		return GUIElement{}
 	}
+	if resolver.expansionExhausted {
+		element := incompleteGUIElement(definition.template.Element)
+		resolver.resolvedTpl[name] = element
+		return element
+	}
 	resolver.templateUse[name] = 1
-	element := cloneGUIElement(definition.template.Element)
+	element := resolver.cloneGUIElement(definition.template.Element)
+	if resolver.expansionExhausted {
+		resolver.templateUse[name] = 2
+		resolver.resolvedTpl[name] = incompleteGUIElement(definition.template.Element)
+		return resolver.resolvedTpl[name]
+	}
 	element = resolver.resolveElementWithBase(element, GUIElement{}, name, append(stack, name))
 	resolver.templateUse[name] = 2
-	resolver.resolvedTpl[name] = cloneGUIElement(element)
+	resolver.resolvedTpl[name] = resolver.cloneGUIElement(element)
 	return element
 }
 
@@ -386,14 +490,24 @@ func (resolver *guiResolver) resolveElementWithBase(element, inherited GUIElemen
 			Code: "gui_expansion_depth", Severity: "info", Symbol: element.Kind, Source: element.Source,
 			Message: fmt.Sprintf("GUI expansion stopped after %d nested custom types/templates", maxGUIExpansionDepth), Span: element.Span,
 		})
+		resolver.truncated = true
 		element.resolved = true
 		element.incomplete = true
 		return element
 	}
-	base := cloneGUIElement(inherited)
+	if resolver.expansionExhausted {
+		return incompleteGUIElementWithBase(inherited, element)
+	}
+	base := resolver.cloneGUIElement(inherited)
+	if resolver.expansionExhausted {
+		return incompleteGUIElementWithBase(base, element)
+	}
 	for _, using := range guiUsingValues(element) {
 		if definition, exists := resolver.templates[using]; exists {
 			base = resolver.mergeElement(base, resolver.resolveTemplate(using, stack), using, definition.source)
+			if resolver.expansionExhausted {
+				return incompleteGUIElementWithBase(base, element)
+			}
 		} else {
 			element.incomplete = true
 			resolver.addDiagnostic(GUIDiagnostic{
@@ -424,6 +538,9 @@ func (resolver *guiResolver) resolveElementWithBase(element, inherited GUIElemen
 	if instanceType != "" {
 		if resolved, ok := resolver.resolveType(instanceType, stack); ok {
 			base = resolver.mergeElement(base, resolved.Element, instanceType, resolved.Source)
+			if resolver.expansionExhausted {
+				return incompleteGUIElementWithBase(base, element)
+			}
 		} else {
 			// The engine and base GUI can provide custom element types outside
 			// the selected file set. Without their slot definitions an override
@@ -437,6 +554,9 @@ func (resolver *guiResolver) resolveElementWithBase(element, inherited GUIElemen
 		element.incomplete = true
 	}
 	element = resolver.resolveLinkedGUIElements(element, stack)
+	if resolver.expansionExhausted {
+		return incompleteGUIElementWithBase(base, element)
+	}
 	// A sibling blockoverride may target a slot introduced by a custom child
 	// type. Expand ordinary children first so the slot search sees that type's
 	// inherited/template content. Override replacement bodies are resolved only
@@ -444,14 +564,24 @@ func (resolver *guiResolver) resolveElementWithBase(element, inherited GUIElemen
 	for index := range element.Children {
 		if !element.Children[index].Override {
 			element.Children[index] = resolver.resolveElement(element.Children[index], stack)
+			if resolver.expansionExhausted {
+				return incompleteGUIElementWithBase(base, element)
+			}
 		}
 	}
 	if owner == "" {
 		owner = element.Kind
 	}
 	element = resolver.mergeElement(base, element, owner, "")
+	if resolver.expansionExhausted {
+		return element
+	}
 	for index := range element.Children {
 		element.Children[index] = resolver.resolveElement(element.Children[index], stack)
+		if resolver.expansionExhausted {
+			element.incomplete = true
+			return element
+		}
 	}
 	normalizeGUIElement(&element)
 	element.resolved = true
@@ -477,6 +607,9 @@ var guiBuiltinOpaqueSlotTypes = map[string]bool{
 }
 
 func (resolver *guiResolver) resolveLinkedGUIElements(element GUIElement, stack []string) GUIElement {
+	if resolver.expansionExhausted {
+		return incompleteGUIElement(element)
+	}
 	for _, property := range element.Properties {
 		if !guiLinkedTypeProperties[strings.ToLower(property.Name)] || strings.TrimSpace(property.Value) == "" {
 			continue
@@ -501,8 +634,12 @@ func (resolver *guiResolver) resolveLinkedGUIElements(element GUIElement, stack 
 			continue
 		}
 		element.Linked = append(element.Linked, GUILinkedElement{
-			Property: property.Name, Target: target, Element: cloneGUIElement(linked),
+			Property: property.Name, Target: target, Element: resolver.cloneGUIElement(linked),
 		})
+		if resolver.expansionExhausted {
+			element.incomplete = true
+			return element
+		}
 	}
 	return element
 }
@@ -525,7 +662,13 @@ func guiStackContains(values []string, target string) bool {
 }
 
 func (resolver *guiResolver) mergeElement(base, overlay GUIElement, owner, source string) GUIElement {
-	result := cloneGUIElement(base)
+	if resolver.expansionExhausted {
+		return incompleteGUIElementWithBase(base, overlay)
+	}
+	result := resolver.cloneGUIElement(base)
+	if resolver.expansionExhausted {
+		return incompleteGUIElementWithBase(result, overlay)
+	}
 	result.resolved = false
 	result.incomplete = base.incomplete || overlay.incomplete
 	if result.Kind == "" && overlay.Kind != "template" && overlay.Kind != "blockoverride" {
@@ -553,7 +696,13 @@ func (resolver *guiResolver) mergeElement(base, overlay GUIElement, owner, sourc
 		result.TypeChain = appendGUITypeName(result.TypeChain, name)
 	}
 	result.Properties = mergeGUIProperties(result.Properties, overlay.Properties)
-	result.Linked = mergeGUILinkedElements(result.Linked, overlay.Linked)
+	result.Linked = resolver.mergeGUILinkedElements(result.Linked, overlay.Linked)
+	if resolver.expansionExhausted {
+		normalizeGUIElement(&result)
+		result.incomplete = true
+		result.resolved = true
+		return result
+	}
 	// Slot declarations and custom child instances are order-independent for
 	// override lookup. Build the complete ordinary child tree first, then apply
 	// every blockoverride, including overrides written before their target.
@@ -561,16 +710,34 @@ func (resolver *guiResolver) mergeElement(base, overlay GUIElement, owner, sourc
 		if child.Override {
 			continue
 		}
-		result.Children = append(result.Children, cloneGUIElement(child))
+		result.Children = append(result.Children, resolver.cloneGUIElement(child))
+		if resolver.expansionExhausted {
+			normalizeGUIElement(&result)
+			result.incomplete = true
+			result.resolved = true
+			return result
+		}
 	}
 	for _, child := range overlay.Children {
 		if !child.Override {
 			continue
 		}
-		found := replaceGUIBlockSlot(&result, child)
+		found := resolver.replaceGUIBlockSlot(&result, child)
+		if resolver.expansionExhausted {
+			normalizeGUIElement(&result)
+			result.incomplete = true
+			result.resolved = true
+			return result
+		}
 		if !found {
 			if resolver.unresolved[owner] || hasIncompleteGUIElement(result) || guiBuiltinOpaqueSlotTypes[strings.ToLower(result.Kind)] {
-				result.Children = append(result.Children, cloneGUIElement(child))
+				result.Children = append(result.Children, resolver.cloneGUIElement(child))
+				if resolver.expansionExhausted {
+					normalizeGUIElement(&result)
+					result.incomplete = true
+					result.resolved = true
+					return result
+				}
 				continue
 			}
 			diagnosticSource := child.Source
@@ -604,10 +771,17 @@ func hasIncompleteGUIElement(element GUIElement) bool {
 	return false
 }
 
-func replaceGUIBlockSlot(element *GUIElement, override GUIElement) bool {
+func (resolver *guiResolver) replaceGUIBlockSlot(element *GUIElement, override GUIElement) bool {
+	if resolver.expansionExhausted {
+		return false
+	}
 	for index := range element.Children {
 		if element.Children[index].Slot == override.Slot && !element.Children[index].Override {
-			replacement := cloneGUIElement(override)
+			replacement := resolver.cloneGUIElement(override)
+			if resolver.expansionExhausted {
+				element.incomplete = true
+				return false
+			}
 			replacement.Kind = element.Children[index].Kind
 			replacement.Override = false
 			// A CK3 block slot is an insertion point inside its containing
@@ -627,13 +801,13 @@ func replaceGUIBlockSlot(element *GUIElement, override GUIElement) bool {
 			element.resolved = false
 			return true
 		}
-		if replaceGUIBlockSlot(&element.Children[index], override) {
+		if resolver.replaceGUIBlockSlot(&element.Children[index], override) {
 			element.resolved = false
 			return true
 		}
 	}
 	for index := range element.Linked {
-		if replaceGUIBlockSlot(&element.Linked[index].Element, override) {
+		if resolver.replaceGUIBlockSlot(&element.Linked[index].Element, override) {
 			element.resolved = false
 			return true
 		}
@@ -641,19 +815,28 @@ func replaceGUIBlockSlot(element *GUIElement, override GUIElement) bool {
 	return false
 }
 
-func mergeGUILinkedElements(base, overlay []GUILinkedElement) []GUILinkedElement {
-	result := cloneGUILinkedElements(base)
+func (resolver *guiResolver) mergeGUILinkedElements(base, overlay []GUILinkedElement) []GUILinkedElement {
+	result := resolver.cloneGUILinkedElements(base)
+	if resolver.expansionExhausted {
+		return result
+	}
 	for _, linked := range overlay {
 		replaced := false
 		for index := range result {
 			if result[index].Property == linked.Property {
-				result[index] = GUILinkedElement{Property: linked.Property, Target: linked.Target, Element: cloneGUIElement(linked.Element)}
+				result[index] = GUILinkedElement{Property: linked.Property, Target: linked.Target, Element: resolver.cloneGUIElement(linked.Element)}
+				if resolver.expansionExhausted {
+					return result
+				}
 				replaced = true
 				break
 			}
 		}
 		if !replaced {
-			result = append(result, GUILinkedElement{Property: linked.Property, Target: linked.Target, Element: cloneGUIElement(linked.Element)})
+			result = append(result, GUILinkedElement{Property: linked.Property, Target: linked.Target, Element: resolver.cloneGUIElement(linked.Element)})
+			if resolver.expansionExhausted {
+				return result
+			}
 		}
 	}
 	return result
@@ -733,6 +916,104 @@ func normalizeGUIElement(element *GUIElement) {
 			element.Size = &value
 		}
 	}
+}
+
+func (resolver *guiResolver) cloneGUIElement(element GUIElement) GUIElement {
+	if !hasGUIElementContent(element) {
+		return element
+	}
+	if resolver.expansionNodes >= maxGUIExpansionNodes {
+		resolver.stopGUIExpansion(element)
+		return incompleteGUIElement(element)
+	}
+	resolver.expansionNodes++
+	clone := element
+	clone.TypeChain = append([]string(nil), element.TypeChain...)
+	clone.Properties = append([]GUIProperty(nil), element.Properties...)
+	clone.Children = nil
+	for index := range element.Children {
+		clone.Children = append(clone.Children, resolver.cloneGUIElement(element.Children[index]))
+		if resolver.expansionExhausted {
+			clone.incomplete = true
+			break
+		}
+	}
+	clone.Linked = resolver.cloneGUILinkedElements(element.Linked)
+	if resolver.expansionExhausted {
+		clone.incomplete = true
+	}
+	if element.Position != nil {
+		value := *element.Position
+		clone.Position = &value
+	}
+	if element.Size != nil {
+		value := *element.Size
+		clone.Size = &value
+	}
+	return clone
+}
+
+func (resolver *guiResolver) cloneGUILinkedElements(values []GUILinkedElement) []GUILinkedElement {
+	var cloned []GUILinkedElement
+	for index := range values {
+		cloned = append(cloned, GUILinkedElement{
+			Property: values[index].Property, Target: values[index].Target, Element: resolver.cloneGUIElement(values[index].Element),
+		})
+		if resolver.expansionExhausted {
+			break
+		}
+	}
+	return cloned
+}
+
+func (resolver *guiResolver) stopGUIExpansion(element GUIElement) {
+	if resolver.expansionExhausted {
+		return
+	}
+	resolver.expansionExhausted = true
+	resolver.truncated = true
+	symbol := strings.TrimSpace(element.Kind)
+	if symbol == "" {
+		symbol = strings.TrimSpace(element.Name)
+	}
+	resolver.addDiagnostic(GUIDiagnostic{
+		Code: "gui_expansion_limit", Severity: "warning", Symbol: symbol, Source: element.Source,
+		Message: fmt.Sprintf("GUI expansion stopped after %d cloned elements; query a focused symbol or reduce repeated nested template/type reuse", maxGUIExpansionNodes), Span: element.Span,
+	})
+}
+
+func incompleteGUIElement(element GUIElement) GUIElement {
+	clone := element
+	clone.TypeChain = append([]string(nil), element.TypeChain...)
+	clone.Properties = append([]GUIProperty(nil), element.Properties...)
+	clone.Children = nil
+	clone.Linked = nil
+	if element.Position != nil {
+		value := *element.Position
+		clone.Position = &value
+	}
+	if element.Size != nil {
+		value := *element.Size
+		clone.Size = &value
+	}
+	clone.incomplete = true
+	clone.resolved = true
+	return clone
+}
+
+func incompleteGUIElementWithBase(base, overlay GUIElement) GUIElement {
+	result := incompleteGUIElement(overlay)
+	if result.Kind == "" || result.Kind == "template" || result.Kind == "blockoverride" {
+		result.Kind = base.Kind
+	}
+	if result.Source == "" {
+		result.Source = base.Source
+	}
+	if result.Span.Line == 0 {
+		result.Span = base.Span
+	}
+	normalizeGUIElement(&result)
+	return result
 }
 
 func cloneGUIElement(element GUIElement) GUIElement {

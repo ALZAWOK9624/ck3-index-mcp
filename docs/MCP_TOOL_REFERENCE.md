@@ -208,7 +208,7 @@ ck3-index 公开 30 个规范工具。细分能力由各工具的受限 operatio
 | `path` | 否 | 字符串 |  | operation=file 使用的、相对于来源根目录的 gui/*.gui 路径。 |
 | `path_prefix` | 否 | 字符串 |  | 限定符号选择范围的可选 gui/ 源根相对前缀；类型和模板依赖仍会对全部活动 GUI 文件解析，响应分别报告 files 与 resolution_files。 |
 | `runtime_facts` | 否 | 数组 | 最多项数=64 | 可选的调用方原子事实，用于受限的 And/Or/Not 和比较求值；事实标记为 provided 而非游戏观察值，缺失事实保持 unknown。 |
-| `sample_values` | 否 | 数组 | 最多项数=32 | 可选的调用方精确 GUI 表达式样例结果；数值明确标记为 provided 而非游戏观察事实，未命中表达式会被报告，纹理样例必须指向已索引的 gfx 源根相对资源。 |
+| `sample_values` | 否 | 数组 | 最多项数=32 | 可选的调用方精确 GUI 表达式样例结果；数值明确标记为 provided 而非游戏观察事实，未命中表达式会被报告。带图像的 texture、video 与 coat_of_arms_mask 样例必须指向已索引的 gfx 源根相对资源。 |
 | `symbol` | 否 | 字符串 |  | preview 可使用精确的自定义类型、模板或具名 GUI 控件；type/template 保持原有窄语义。 |
 | `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
 | `width` | 否 | 整数 | 最小值=64; 最大值=3840 | 可选的 GUI 预览宽度（像素）。 |
@@ -466,9 +466,10 @@ ck3-index 公开 30 个规范工具。细分能力由各工具的受限 operatio
 | `corridor_radius_pixels` | 否 | 整数 | 最小值=1; 最大值=2048; 默认值=120 | 来源地图中的路线走廊半径。 |
 | `height` | 否 | 整数 | 最小值=1; 最大值=4096 | 可选的明确输出高度；同时省略 width 与 height 时自动确定尺寸。 |
 | `history_year` | 否 | 整数 | 最小值=1 | year 的废弃兼容别名；两者数值冲突时拒绝调用。 |
+| `hit_map` | 否 | 布尔值 |  | 随底图额外返回一张查找图，使网页能精确判定指针下的实体；返回的图像载荷大约翻倍。 |
 | `label_language` | 否 | 字符串 | 可选值=[chinese english bilingual] | — |
 | `layers` | 否 | 数组 | 最少项数=1; 最多项数=32 | — |
-| `layout` | 否 | 字符串 | 可选值=[map_only light_frame full_atlas] | — |
+| `layout` | 否 | 字符串 | 可选值=[map_only light_frame full_atlas basemap] | — |
 | `level` | 否 | 字符串 | 可选值=[province barony county duchy kingdom empire region] | 主要渲染层级。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
 | `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
@@ -477,7 +478,7 @@ ck3-index 公开 30 个规范工具。细分能力由各工具的受限 operatio
 | `relief_strength` | 否 | 字符串 | 可选值=[none subtle strong] | — |
 | `route` | 否 | 对象 |  | — |
 | `route_province_ids` | 否 | 数组 | 最多项数=5000 | 应纳入渲染视口的有序路线与端点省份 ID。 |
-| `style` | 否 | 字符串 | 可选值=[standard historical_atlas] | — |
+| `style` | 否 | 字符串 | 可选值=[parchment standard historical_atlas] | — |
 | `subtitle` | 否 | 字符串 |  | — |
 | `supersample` | 否 | 整数 | 可选值=[1 2] | — |
 | `target` | 否 | 字符串 |  | — |

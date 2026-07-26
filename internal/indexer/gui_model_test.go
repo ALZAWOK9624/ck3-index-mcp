@@ -92,3 +92,83 @@ func TestBuildGUIModelKeepsVisualVectorsAsProperties(t *testing.T) {
 		t.Fatalf("visual vectors leaked into layout children: %+v", element.Children)
 	}
 }
+
+func TestBuildGUIModelKeepsTextColorVectorsAsProperties(t *testing.T) {
+	model := BuildGUIModel(`types Defaults {
+	type textbox = textbox {
+		fontcolor = { 0.61 0.6 0.56 1.0 }
+		cursorcolor = { 1 1 1 0.6 }
+	}
+}`)
+	if len(model.Namespaces) != 1 || len(model.Namespaces[0].Types) != 1 {
+		t.Fatalf("type missing: %+v", model)
+	}
+	element := model.Namespaces[0].Types[0].Element
+	for _, expected := range []GUIProperty{
+		{Name: "fontcolor", Values: []string{"0.61", "0.6", "0.56", "1.0"}},
+		{Name: "cursorcolor", Values: []string{"1", "1", "1", "0.6"}},
+	} {
+		found := false
+		for _, property := range element.Properties {
+			if property.Name != expected.Name {
+				continue
+			}
+			found = true
+			if len(property.Values) != len(expected.Values) {
+				t.Fatalf("%s values=%q want %q", expected.Name, property.Values, expected.Values)
+			}
+			for index, value := range expected.Values {
+				if property.Values[index] != value {
+					t.Fatalf("%s values=%q want %q", expected.Name, property.Values, expected.Values)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("text color %q was not retained as a property: %+v", expected.Name, element)
+		}
+	}
+	if len(element.Children) != 0 {
+		t.Fatalf("text color vectors leaked into layout children: %+v", element.Children)
+	}
+}
+
+func TestBuildGUIModelKeepsUnlistedBareValueBlocksAsProperties(t *testing.T) {
+	model := BuildGUIModel(`types Lines {
+	type tree_link = line {
+		from = { 0 -8 }
+		to = { 0 12 }
+		uv_scale = { 0.1 1.0 }
+	}
+}`)
+	if len(model.Namespaces) != 1 || len(model.Namespaces[0].Types) != 1 {
+		t.Fatalf("type missing: %+v", model)
+	}
+	element := model.Namespaces[0].Types[0].Element
+	for _, expected := range []GUIProperty{
+		{Name: "from", Values: []string{"0", "-8"}},
+		{Name: "to", Values: []string{"0", "12"}},
+		{Name: "uv_scale", Values: []string{"0.1", "1.0"}},
+	} {
+		found := false
+		for _, property := range element.Properties {
+			if property.Name != expected.Name {
+				continue
+			}
+			found = true
+			if len(property.Values) != len(expected.Values) {
+				t.Fatalf("%s values=%q want %q", expected.Name, property.Values, expected.Values)
+			}
+			for index, value := range expected.Values {
+				if property.Values[index] != value {
+					t.Fatalf("%s values=%q want %q", expected.Name, property.Values, expected.Values)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("bare value block %q was not retained as a property: %+v", expected.Name, element)
+		}
+	}
+	if len(element.Children) != 0 {
+		t.Fatalf("bare value blocks leaked into GUI children: %+v", element.Children)
+	}
+}

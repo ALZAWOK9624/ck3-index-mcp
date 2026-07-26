@@ -116,20 +116,41 @@ type GUIRuntimeUnsupported struct {
 }
 
 type GUINodeRuntime struct {
-	Visible       *GUIRuntimeBinding        `json:"visible,omitempty"`
-	Enabled       *GUIRuntimeBinding        `json:"enabled,omitempty"`
-	Down          *GUIRuntimeBinding        `json:"down,omitempty"`
-	Selected      *GUIRuntimeBinding        `json:"selected,omitempty"`
-	Alpha         *GUIRuntimeNumberBinding  `json:"alpha,omitempty"`
-	Min           *GUIRuntimeNumberBinding  `json:"min,omitempty"`
-	Max           *GUIRuntimeNumberBinding  `json:"max,omitempty"`
-	Value         *GUIRuntimeNumberBinding  `json:"value,omitempty"`
-	TintColor     *GUIRuntimeColorBinding   `json:"tint_color,omitempty"`
-	FontTintColor *GUIRuntimeColorBinding   `json:"font_tint_color,omitempty"`
-	Text          *GUIRuntimeTextBindingSet `json:"text,omitempty"`
-	Tooltip       *GUIRuntimeTextBindingSet `json:"tooltip,omitempty"`
-	Action        *GUIRuntimeActionBinding  `json:"action,omitempty"`
-	Actions       []GUIRuntimeActionBinding `json:"actions,omitempty"`
+	Visible               *GUIRuntimeBinding        `json:"visible,omitempty"`
+	Enabled               *GUIRuntimeBinding        `json:"enabled,omitempty"`
+	Down                  *GUIRuntimeBinding        `json:"down,omitempty"`
+	Selected              *GUIRuntimeBinding        `json:"selected,omitempty"`
+	Checked               *GUIRuntimeBinding        `json:"checked,omitempty"`
+	StateTrigger          *GUIRuntimeBinding        `json:"state_trigger,omitempty"`
+	StatePositionX        *GUIRuntimeNumberBinding  `json:"state_position_x,omitempty"`
+	StatePositionY        *GUIRuntimeNumberBinding  `json:"state_position_y,omitempty"`
+	AllowOutside          *GUIRuntimeBinding        `json:"allow_outside,omitempty"`
+	TooltipVisible        *GUIRuntimeBinding        `json:"tooltip_visible,omitempty"`
+	Grayscale             *GUIRuntimeBinding        `json:"grayscale,omitempty"`
+	Alpha                 *GUIRuntimeNumberBinding  `json:"alpha,omitempty"`
+	Scale                 *GUIRuntimeNumberBinding  `json:"scale,omitempty"`
+	RotateUV              *GUIRuntimeNumberBinding  `json:"rotate_uv,omitempty"`
+	MinWidth              *GUIRuntimeNumberBinding  `json:"min_width,omitempty"`
+	MaxWidth              *GUIRuntimeNumberBinding  `json:"max_width,omitempty"`
+	MinHeight             *GUIRuntimeNumberBinding  `json:"min_height,omitempty"`
+	MaxHeight             *GUIRuntimeNumberBinding  `json:"max_height,omitempty"`
+	MarginLeft            *GUIRuntimeNumberBinding  `json:"margin_left,omitempty"`
+	MarginRight           *GUIRuntimeNumberBinding  `json:"margin_right,omitempty"`
+	MarginTop             *GUIRuntimeNumberBinding  `json:"margin_top,omitempty"`
+	MarginBottom          *GUIRuntimeNumberBinding  `json:"margin_bottom,omitempty"`
+	Min                   *GUIRuntimeNumberBinding  `json:"min,omitempty"`
+	Max                   *GUIRuntimeNumberBinding  `json:"max,omitempty"`
+	Value                 *GUIRuntimeNumberBinding  `json:"value,omitempty"`
+	AnimatedProgressValue *GUIRuntimeNumberBinding  `json:"animated_progress_value,omitempty"`
+	Color                 *GUIRuntimeColorBinding   `json:"color,omitempty"`
+	TintColor             *GUIRuntimeColorBinding   `json:"tint_color,omitempty"`
+	FontTintColor         *GUIRuntimeColorBinding   `json:"font_tint_color,omitempty"`
+	Text                  *GUIRuntimeTextBindingSet `json:"text,omitempty"`
+	Tooltip               *GUIRuntimeTextBindingSet `json:"tooltip,omitempty"`
+	TooltipWhenDisabled   *GUIRuntimeTextBindingSet `json:"tooltip_when_disabled,omitempty"`
+	Action                *GUIRuntimeActionBinding  `json:"action,omitempty"`
+	Actions               []GUIRuntimeActionBinding `json:"actions,omitempty"`
+	RightClickAction      *GUIRuntimeActionBinding  `json:"right_click_action,omitempty"`
 }
 
 type GUIRuntimeBinding struct {
@@ -215,7 +236,7 @@ type guiRuntimeValue struct {
 	text   string
 }
 
-// prepareGUIPreviewRuntime compiles visible/enabled/down/selected expressions into a small
+// prepareGUIPreviewRuntime compiles visibility, enabled, pressed, checked, state-trigger, grayscale, and tooltip-visible expressions into a small
 // RPN plan catalog and evaluates them with caller-provided atomic facts. The
 // same plans are embedded into inspector HTML for safe client-side replay.
 func prepareGUIPreviewRuntime(preview *GUIPreviewResult, inputs []GUIRuntimeFactInput) error {
@@ -266,6 +287,38 @@ func prepareGUIPreviewRuntimeWithActions(preview *GUIPreviewResult, inputs []GUI
 	for index := range preview.Nodes {
 		node := &preview.Nodes[index]
 		compiler.bindNodeRuntimeText(node)
+		if node.StateDefinition != nil {
+			if expression := strings.TrimSpace(node.StateDefinition.TriggerWhen); expression != "" {
+				planID := compiler.plan(expression)
+				compiler.referencePlan(planID)
+				if node.Runtime == nil {
+					node.Runtime = &GUINodeRuntime{}
+				}
+				node.Runtime.StateTrigger = &GUIRuntimeBinding{PlanID: planID}
+			}
+			if binding := compiler.dynamicNumberBinding(node.StateDefinition.PositionX); binding != nil {
+				if node.Runtime == nil {
+					node.Runtime = &GUINodeRuntime{}
+				}
+				node.Runtime.StatePositionX = binding
+			}
+			if binding := compiler.dynamicNumberBinding(node.StateDefinition.PositionY); binding != nil {
+				if node.Runtime == nil {
+					node.Runtime = &GUINodeRuntime{}
+				}
+				node.Runtime.StatePositionY = binding
+			}
+		}
+		if node.Layout != nil {
+			if expression := strings.TrimSpace(node.Layout.AllowOutsideExpr); expression != "" {
+				planID := compiler.plan(expression)
+				compiler.referencePlan(planID)
+				if node.Runtime == nil {
+					node.Runtime = &GUINodeRuntime{}
+				}
+				node.Runtime.AllowOutside = &GUIRuntimeBinding{PlanID: planID}
+			}
+		}
 		if node.Semantics == nil {
 			continue
 		}
@@ -301,6 +354,30 @@ func prepareGUIPreviewRuntimeWithActions(preview *GUIPreviewResult, inputs []GUI
 			}
 			node.Runtime.Selected = &GUIRuntimeBinding{PlanID: planID}
 		}
+		if expression := strings.TrimSpace(node.Semantics.Checked); expression != "" {
+			planID := compiler.plan(expression)
+			compiler.referencePlan(planID)
+			if node.Runtime == nil {
+				node.Runtime = &GUINodeRuntime{}
+			}
+			node.Runtime.Checked = &GUIRuntimeBinding{PlanID: planID}
+		}
+		if expression := strings.TrimSpace(node.Semantics.TooltipVisible); expression != "" {
+			planID := compiler.plan(expression)
+			compiler.referencePlan(planID)
+			if node.Runtime == nil {
+				node.Runtime = &GUINodeRuntime{}
+			}
+			node.Runtime.TooltipVisible = &GUIRuntimeBinding{PlanID: planID}
+		}
+		if expression := strings.TrimSpace(node.Semantics.Grayscale); expression != "" {
+			planID := compiler.plan(expression)
+			compiler.referencePlan(planID)
+			if node.Runtime == nil {
+				node.Runtime = &GUINodeRuntime{}
+			}
+			node.Runtime.Grayscale = &GUIRuntimeBinding{PlanID: planID}
+		}
 		if expression := strings.TrimSpace(node.Semantics.Alpha); expression != "" {
 			planID := compiler.numberPlan(expression)
 			compiler.referencePlan(planID)
@@ -308,6 +385,70 @@ func prepareGUIPreviewRuntimeWithActions(preview *GUIPreviewResult, inputs []GUI
 				node.Runtime = &GUINodeRuntime{}
 			}
 			node.Runtime.Alpha = &GUIRuntimeNumberBinding{PlanID: planID}
+		}
+		if expression := strings.TrimSpace(node.Semantics.Scale); expression != "" {
+			planID := compiler.numberPlan(expression)
+			compiler.referencePlan(planID)
+			if node.Runtime == nil {
+				node.Runtime = &GUINodeRuntime{}
+			}
+			node.Runtime.Scale = &GUIRuntimeNumberBinding{PlanID: planID}
+		}
+		if expression := strings.TrimSpace(node.Semantics.RotateUV); expression != "" {
+			planID := compiler.numberPlan(expression)
+			compiler.referencePlan(planID)
+			if node.Runtime == nil {
+				node.Runtime = &GUINodeRuntime{}
+			}
+			node.Runtime.RotateUV = &GUIRuntimeNumberBinding{PlanID: planID}
+		}
+		if binding := compiler.numberBinding(node.Semantics.MinWidth); binding != nil {
+			if node.Runtime == nil {
+				node.Runtime = &GUINodeRuntime{}
+			}
+			node.Runtime.MinWidth = binding
+		}
+		if binding := compiler.numberBinding(node.Semantics.MaxWidth); binding != nil {
+			if node.Runtime == nil {
+				node.Runtime = &GUINodeRuntime{}
+			}
+			node.Runtime.MaxWidth = binding
+		}
+		if binding := compiler.numberBinding(node.Semantics.MinHeight); binding != nil {
+			if node.Runtime == nil {
+				node.Runtime = &GUINodeRuntime{}
+			}
+			node.Runtime.MinHeight = binding
+		}
+		if binding := compiler.numberBinding(node.Semantics.MaxHeight); binding != nil {
+			if node.Runtime == nil {
+				node.Runtime = &GUINodeRuntime{}
+			}
+			node.Runtime.MaxHeight = binding
+		}
+		if binding := compiler.numberBinding(node.Semantics.MarginLeft); binding != nil {
+			if node.Runtime == nil {
+				node.Runtime = &GUINodeRuntime{}
+			}
+			node.Runtime.MarginLeft = binding
+		}
+		if binding := compiler.numberBinding(node.Semantics.MarginRight); binding != nil {
+			if node.Runtime == nil {
+				node.Runtime = &GUINodeRuntime{}
+			}
+			node.Runtime.MarginRight = binding
+		}
+		if binding := compiler.numberBinding(node.Semantics.MarginTop); binding != nil {
+			if node.Runtime == nil {
+				node.Runtime = &GUINodeRuntime{}
+			}
+			node.Runtime.MarginTop = binding
+		}
+		if binding := compiler.numberBinding(node.Semantics.MarginBottom); binding != nil {
+			if node.Runtime == nil {
+				node.Runtime = &GUINodeRuntime{}
+			}
+			node.Runtime.MarginBottom = binding
 		}
 		if expression := strings.TrimSpace(node.Semantics.Min); expression != "" {
 			planID := compiler.numberPlan(expression)
@@ -333,6 +474,22 @@ func prepareGUIPreviewRuntimeWithActions(preview *GUIPreviewResult, inputs []GUI
 			}
 			node.Runtime.Value = &GUIRuntimeNumberBinding{PlanID: planID}
 		}
+		if expression := strings.TrimSpace(node.Semantics.AnimatedProgressValue); expression != "" {
+			planID := compiler.numberPlan(expression)
+			compiler.referencePlan(planID)
+			if node.Runtime == nil {
+				node.Runtime = &GUINodeRuntime{}
+			}
+			node.Runtime.AnimatedProgressValue = &GUIRuntimeNumberBinding{PlanID: planID}
+		}
+		if expression := strings.TrimSpace(node.Semantics.Color); expression != "" {
+			planID := compiler.colorPlan(expression)
+			compiler.referencePlan(planID)
+			if node.Runtime == nil {
+				node.Runtime = &GUINodeRuntime{}
+			}
+			node.Runtime.Color = &GUIRuntimeColorBinding{PlanID: planID}
+		}
 		if expression := strings.TrimSpace(node.Semantics.TintColor); expression != "" {
 			planID := compiler.colorPlan(expression)
 			compiler.referencePlan(planID)
@@ -354,39 +511,29 @@ func prepareGUIPreviewRuntimeWithActions(preview *GUIPreviewResult, inputs []GUI
 			clickExpressions = []string{node.Semantics.OnClick}
 		}
 		for _, expression := range clickExpressions {
-			expression = strings.TrimSpace(expression)
-			if expression == "" {
+			binding, ok, err := compiler.actionBinding(expression, preparedEffects)
+			if err != nil {
+				return err
+			}
+			if !ok {
 				continue
 			}
-			if actionID, ok := compiler.action(expression); ok {
-				compiler.referenceAction(actionID)
-				if node.Runtime == nil {
-					node.Runtime = &GUINodeRuntime{}
-				}
-				binding := GUIRuntimeActionBinding{PlanID: actionID, Status: "compiled"}
-				node.Runtime.Actions = append(node.Runtime.Actions, binding)
-				if node.Runtime.Action == nil {
-					legacy := binding
-					node.Runtime.Action = &legacy
-				}
-				continue
+			if node.Runtime == nil {
+				node.Runtime = &GUINodeRuntime{}
 			}
-			if effect := preparedEffects[guiRuntimeFactKey(expression)]; effect != nil {
-				actionID, err := compiler.providedAction(expression, effect)
-				if err != nil {
-					return err
-				}
-				compiler.referenceAction(actionID)
-				if node.Runtime == nil {
-					node.Runtime = &GUINodeRuntime{}
-				}
-				binding := GUIRuntimeActionBinding{PlanID: actionID, Status: "compiled"}
-				node.Runtime.Actions = append(node.Runtime.Actions, binding)
-				if node.Runtime.Action == nil {
-					legacy := binding
-					node.Runtime.Action = &legacy
-				}
+			node.Runtime.Actions = append(node.Runtime.Actions, binding)
+			if node.Runtime.Action == nil {
+				legacy := binding
+				node.Runtime.Action = &legacy
 			}
+		}
+		if binding, ok, err := compiler.actionBinding(node.Semantics.OnRightClick, preparedEffects); err != nil {
+			return err
+		} else if ok {
+			if node.Runtime == nil {
+				node.Runtime = &GUINodeRuntime{}
+			}
+			node.Runtime.RightClickAction = &binding
 		}
 	}
 
@@ -454,14 +601,34 @@ func prepareGUIPreviewRuntimeWithActions(preview *GUIPreviewResult, inputs []GUI
 		bindGUIRuntimeResult(node.Runtime.Enabled, compiler.plans)
 		bindGUIRuntimeResult(node.Runtime.Down, compiler.plans)
 		bindGUIRuntimeResult(node.Runtime.Selected, compiler.plans)
+		bindGUIRuntimeResult(node.Runtime.Checked, compiler.plans)
+		bindGUIRuntimeResult(node.Runtime.StateTrigger, compiler.plans)
+		bindGUIRuntimeNumberResult(node.Runtime.StatePositionX, compiler.plans)
+		bindGUIRuntimeNumberResult(node.Runtime.StatePositionY, compiler.plans)
+		bindGUIRuntimeResult(node.Runtime.AllowOutside, compiler.plans)
+		bindGUIRuntimeResult(node.Runtime.TooltipVisible, compiler.plans)
+		bindGUIRuntimeResult(node.Runtime.Grayscale, compiler.plans)
 		bindGUIRuntimeNumberResult(node.Runtime.Alpha, compiler.plans)
+		bindGUIRuntimeNumberResult(node.Runtime.Scale, compiler.plans)
+		bindGUIRuntimeNumberResult(node.Runtime.RotateUV, compiler.plans)
+		bindGUIRuntimeNumberResult(node.Runtime.MinWidth, compiler.plans)
+		bindGUIRuntimeNumberResult(node.Runtime.MaxWidth, compiler.plans)
+		bindGUIRuntimeNumberResult(node.Runtime.MinHeight, compiler.plans)
+		bindGUIRuntimeNumberResult(node.Runtime.MaxHeight, compiler.plans)
+		bindGUIRuntimeNumberResult(node.Runtime.MarginLeft, compiler.plans)
+		bindGUIRuntimeNumberResult(node.Runtime.MarginRight, compiler.plans)
+		bindGUIRuntimeNumberResult(node.Runtime.MarginTop, compiler.plans)
+		bindGUIRuntimeNumberResult(node.Runtime.MarginBottom, compiler.plans)
 		bindGUIRuntimeNumberResult(node.Runtime.Min, compiler.plans)
 		bindGUIRuntimeNumberResult(node.Runtime.Max, compiler.plans)
 		bindGUIRuntimeNumberResult(node.Runtime.Value, compiler.plans)
+		bindGUIRuntimeNumberResult(node.Runtime.AnimatedProgressValue, compiler.plans)
+		bindGUIRuntimeColorResult(node.Runtime.Color, compiler.plans)
 		bindGUIRuntimeColorResult(node.Runtime.TintColor, compiler.plans)
 		bindGUIRuntimeColorResult(node.Runtime.FontTintColor, compiler.plans)
 		bindGUIRuntimeTextSet(node.Runtime.Text, compiler.textPlans)
 		bindGUIRuntimeTextSet(node.Runtime.Tooltip, compiler.textPlans)
+		bindGUIRuntimeTextSet(node.Runtime.TooltipWhenDisabled, compiler.textPlans)
 	}
 	for _, fact := range compiler.facts {
 		if fact.Provided {
@@ -521,6 +688,26 @@ func (compiler *guiRuntimeCompiler) referenceAction(actionID int) {
 	if action.Fact >= 0 && action.Fact < len(compiler.facts) {
 		compiler.facts[action.Fact].References++
 	}
+}
+
+func (compiler *guiRuntimeCompiler) actionBinding(expression string, preparedEffects map[string]*preparedGUIRuntimeActionEffect) (GUIRuntimeActionBinding, bool, error) {
+	expression = strings.TrimSpace(expression)
+	if expression == "" {
+		return GUIRuntimeActionBinding{}, false, nil
+	}
+	if actionID, ok := compiler.action(expression); ok {
+		compiler.referenceAction(actionID)
+		return GUIRuntimeActionBinding{PlanID: actionID, Status: "compiled"}, true, nil
+	}
+	if effect := preparedEffects[guiRuntimeFactKey(expression)]; effect != nil {
+		actionID, err := compiler.providedAction(expression, effect)
+		if err != nil {
+			return GUIRuntimeActionBinding{}, false, err
+		}
+		compiler.referenceAction(actionID)
+		return GUIRuntimeActionBinding{PlanID: actionID, Status: "compiled"}, true, nil
+	}
+	return GUIRuntimeActionBinding{}, false, nil
 }
 
 func prepareGUIRuntimeActionEffects(inputs []GUIRuntimeActionEffectInput) (map[string]*preparedGUIRuntimeActionEffect, error) {
@@ -613,6 +800,24 @@ func (compiler *guiRuntimeCompiler) providedAction(expression string, effect *pr
 	return plan.ID, nil
 }
 
+func (compiler *guiRuntimeCompiler) numberBinding(expression string) *GUIRuntimeNumberBinding {
+	expression = strings.TrimSpace(expression)
+	if expression == "" {
+		return nil
+	}
+	planID := compiler.numberPlan(expression)
+	compiler.referencePlan(planID)
+	return &GUIRuntimeNumberBinding{PlanID: planID}
+}
+
+func (compiler *guiRuntimeCompiler) dynamicNumberBinding(expression string) *GUIRuntimeNumberBinding {
+	expression = strings.TrimSpace(expression)
+	if !strings.Contains(expression, "[") && !strings.Contains(expression, "]") {
+		return nil
+	}
+	return compiler.numberBinding(expression)
+}
+
 func bindGUIRuntimeResult(binding *GUIRuntimeBinding, plans []GUIRuntimePlan) {
 	if binding == nil || binding.PlanID < 0 || binding.PlanID >= len(plans) {
 		return
@@ -677,8 +882,11 @@ func (compiler *guiRuntimeCompiler) planKind(expression, expectedKind string) in
 		var err error
 		if expectedKind == guiRuntimeKindColor {
 			compileKind = guiRuntimeKindString
-			if color, ok := normalizeGUIRuntimeColor(normalized); ok {
-				node = &guiExprNode{op: "literal", value: guiRuntimeValue{kind: guiRuntimeKindString, known: true, text: color}}
+			if _, ok := normalizeGUIRuntimeColor(normalized); ok {
+				// Keep the CK3 literal until evaluation. The evaluator performs the
+				// one canonical conversion to CSS; storing already-normalized rgba()
+				// here would make it fail the bounded CK3-color parser a second time.
+				node = &guiExprNode{op: "literal", value: guiRuntimeValue{kind: guiRuntimeKindString, known: true, text: normalized}}
 			} else {
 				node, err = compiler.compile(normalized, compileKind)
 			}
@@ -731,7 +939,7 @@ func (compiler *guiRuntimeCompiler) compileDepth(expression, expectedKind string
 		return nil, err
 	}
 	if isCall {
-		if strings.EqualFold(strings.TrimSpace(name), "Select_float") {
+		if isGUIRuntimeNumericSelect(name) {
 			if expectedKind != guiRuntimeKindNumber {
 				return nil, fmt.Errorf("%s is only supported for numeric properties", name)
 			}
@@ -833,6 +1041,15 @@ func (compiler *guiRuntimeCompiler) compileDepth(expression, expectedKind string
 		}
 	}
 	return compiler.fact(expression, expectedKind), nil
+}
+
+func isGUIRuntimeNumericSelect(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "select_float", "select_int32", "select_cfixedpoint":
+		return true
+	default:
+		return false
+	}
 }
 
 func (compiler *guiRuntimeCompiler) fact(expression, expectedKind string) *guiExprNode {

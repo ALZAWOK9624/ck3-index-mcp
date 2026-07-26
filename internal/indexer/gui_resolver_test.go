@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -141,6 +142,79 @@ func TestResolveGUIModelsExpandsCustomChildType(t *testing.T) {
 	}
 }
 
+func TestResolveGUIModelsTreatsBuiltinSelfDefinitionAsEngineBase(t *testing.T) {
+	model := BuildGUIModel(`types Defaults {
+	type icon = icon {
+		gfxtype = icongfx
+	}
+	type coat_of_arms_icon = icon {
+		shaderfile = "gfx/FX/gui_coatofarms.shader"
+	}
+}`)
+	resolved := ResolveGUIModels([]GUIModelInput{{Path: "gui/preload/defaults.gui", Model: model}})
+	for _, diagnostic := range resolved.Diagnostics {
+		if diagnostic.Code == "gui_inheritance_cycle" {
+			t.Fatalf("builtin self-definition was mistaken for an inheritance cycle: %+v", diagnostic)
+		}
+	}
+	var coat ResolvedGUIType
+	for _, item := range resolved.Types {
+		if item.Name == "coat_of_arms_icon" {
+			coat = item
+		}
+	}
+	if coat.Name == "" || coat.Element.Kind != "icon" || propertyValue(coat.Element.Properties, "gfxtype") != "icongfx" || propertyValue(coat.Element.Properties, "shaderfile") != "gfx/FX/gui_coatofarms.shader" {
+		t.Fatalf("builtin icon defaults did not resolve into the coat of arms type: %+v", coat)
+	}
+}
+
+func TestGUIBuiltinTypesCoverVanillaPrimitiveSelfDefaults(t *testing.T) {
+	for _, name := range []string{
+		"game_button", "button_group", "editbox", "textbox", "icon", "hbox", "vbox", "background", "window",
+		"progressbar", "checkbutton", "scrollbar", "scrollarea", "container", "widget", "flowcontainer", "drag_drop_icon", "line",
+	} {
+		if !guiBuiltinTypes[name] {
+			t.Errorf("vanilla primitive default %q is missing from guiBuiltinTypes", name)
+		}
+	}
+}
+
+func TestResolveGUIModelSymbolSkipsUnrelatedDefinitions(t *testing.T) {
+	model := BuildGUIModel(`types Demo {
+	type wanted_panel = widget { text = "Wanted" }
+	type unrelated_panel = widget { using = MissingUnrelatedTemplate }
+}`)
+	resolved := ResolveGUIModelSymbol([]GUIModelInput{{Path: "gui/focused.gui", Model: model}}, "preview", "wanted_panel", "")
+	if len(resolved.Types) != 1 || resolved.Types[0].Name != "wanted_panel" || resolved.Types[0].Element.Kind != "widget" {
+		t.Fatalf("focused resolver did not return the requested type: %+v", resolved.Types)
+	}
+	for _, diagnostic := range resolved.Diagnostics {
+		if diagnostic.Code == "gui_missing_template" {
+			t.Fatalf("focused resolver expanded an unrelated GUI definition: %+v", diagnostic)
+		}
+	}
+}
+
+func TestResolveGUIModelsBoundsRepeatedTypeExpansion(t *testing.T) {
+	var source strings.Builder
+	source.WriteString("types Demo {\n\ttype leaf = widget {}\n")
+	base := "leaf"
+	for index := 1; index <= 18; index++ {
+		name := "branch_" + strconv.Itoa(index)
+		source.WriteString("\ttype " + name + " = widget { " + base + " = {} " + base + " = {} }\n")
+		base = name
+	}
+	source.WriteString("}")
+	resolved := ResolveGUIModels([]GUIModelInput{{Path: "gui/repeated.gui", Model: BuildGUIModel(source.String())}})
+	found := false
+	for _, diagnostic := range resolved.Diagnostics {
+		found = found || diagnostic.Code == "gui_expansion_limit"
+	}
+	if !found || !resolved.truncated {
+		t.Fatalf("repeated type expansion was not bounded: diagnostics=%+v truncated=%t", resolved.Diagnostics, resolved.truncated)
+	}
+}
+
 func TestResolveGUIModelsBoundsRecursiveCustomInstances(t *testing.T) {
 	model := BuildGUIModel(`types Demo {
 	type recursive_item = container { recursive_item = {} }
@@ -206,6 +280,14 @@ func TestGUIResolutionSummaryRanksUnresolvedSymbolHotspots(t *testing.T) {
 	}
 }
 
+func TestGUIResolutionSummaryMarksExpansionTruncation(t *testing.T) {
+	resolution := GUIResolution{truncated: true, Diagnostics: []GUIDiagnostic{{Code: "gui_expansion_limit"}}}
+	summary := resolution.Summary()
+	if summary.ResolutionComplete || summary.DiagnosticsBy["gui_expansion_limit"] != 1 {
+		t.Fatalf("bounded GUI expansion was not surfaced in the summary: %+v", summary)
+	}
+}
+
 func TestGUIResolutionSummaryRanksRuntimePropertyGaps(t *testing.T) {
 	resolution := GUIResolution{
 		Types: []ResolvedGUIType{{Element: GUIElement{
@@ -214,6 +296,44 @@ func TestGUIResolutionSummaryRanksRuntimePropertyGaps(t *testing.T) {
 				{Name: "visible", Value: "[IsShown]"},
 				{Name: "alpha", Value: "[GetOpacity]"},
 				{Name: "alpha", Value: "[GetSecondaryOpacity]"},
+				{Name: "tintcolor", Value: "[GetTint]"},
+				{Name: "fonttintcolor", Value: "[GetFontTint]"},
+				{Name: "raw_text", Value: "[GetCaption]"},
+				{Name: "color", Values: []string{"0.1", "0.2", "0.3", "0.4"}},
+				{Name: "grayscale", Value: "[Not(IsSelectable)]"},
+				{Name: "checked", Value: "[IsChecked]"},
+				{Name: "tooltip_visible", Value: "[ShowTooltip]"},
+				{Name: "alwaystransparent", Value: "[IsSelected]"},
+				{Name: "button_ignore", Value: "[ShouldIgnoreParentButton]"},
+				{Name: "selectedindex", Value: "[CurrentSortIndex]"},
+				{Name: "on_start", Value: "[PdxGuiTriggerAllAnimations('show')]"},
+				{Name: "oneditingfinished", Value: "[CharacterSelectionList.FinishEdit]"},
+				{Name: "onreturnpressed", Value: "[AccoladeView.SubmitName]"},
+				{Name: "clicksound", Value: "[GetConfirmClickSound]"},
+				{Name: "shortcut", Value: "[GetShortcut]"},
+				{Name: "ondefault", Value: "[Submit]"},
+				{Name: "ontextchanged", Value: "[Filter.OnTextChanged]"},
+				{Name: "drag_drop_args", Value: "[CoatOfArmsDesignerEmblemInstance.GetIndexString]"},
+				{Name: "index", Value: "[PdxGuiWidget.GetIndexInDataModel]"},
+				{Name: "raw_tooltip", Value: "[GetRawTooltip]"},
+				{Name: "tooltip_when_disabled", Value: "[DisabledReason]"},
+				{Name: "animated_progress_value", Value: "[CurrentProgress]"},
+				{Name: "onrightclick", Value: "[OpenCharacterMenu]"},
+				{Name: "trigger_when", Value: "[IsModalOpen]"},
+				{Name: "portrait_texture", Value: "[Character.GetPortrait('environment_head', 'camera_head', 'idle', PdxGetWidgetScreenSize(PdxGuiWidget.Self))]"},
+				{Name: "coat_of_arms", Value: "[Title.GetTitleCoA.GetTexture('(int32)256','(int32)256')]"},
+				{Name: "coat_of_arms_mask", Value: "[GovernmentType.GetRealmMask]"},
+				{Name: "coat_of_arms_offset", Value: "[GovernmentType.GetRealmMaskOffset]"},
+				{Name: "coat_of_arms_scale", Value: "[GovernmentType.GetRealmMaskScale]"},
+				{Name: "background_texture", Value: "gfx/portraits/portrait_transparent.dds"},
+				{Name: "mask", Value: "gfx/portraits/portrait_mask_head.dds"},
+				{Name: "scale", Value: "[GetScale]"},
+				{Name: "rotate_uv", Value: "[GetRotation]"},
+				{Name: "fittype", Value: "centercrop"},
+				{Name: "align", Value: "left|top"},
+				{Name: "layoutstretchfactor_horizontal", Value: "2"},
+				{Name: "layoutanchor", Value: "bottomleft"},
+				{Name: "flipdirection", Value: "yes"},
 				{Name: "rotation", Value: "[GetRotation]"},
 				{Name: "texture", Value: "gfx/interface/panel.dds"},
 			},
@@ -221,15 +341,72 @@ func TestGUIResolutionSummaryRanksRuntimePropertyGaps(t *testing.T) {
 		}}},
 	}
 	summary := resolution.Summary()
-	if len(summary.RuntimeHotspots) != 2 {
+	if len(summary.RuntimeHotspots) != 1 {
 		t.Fatalf("unexpected runtime property hotspots: %+v", summary.RuntimeHotspots)
 	}
-	if summary.RuntimeHotspots[0].Name != "alpha" || summary.RuntimeHotspots[0].Count != 3 ||
-		summary.RuntimeHotspots[0].Expressions != 2 || summary.RuntimeHotspots[0].Support != "unmodeled" {
+	if summary.RuntimeHotspots[0].Name != "rotation" || summary.RuntimeHotspots[0].Expressions != 1 || summary.RuntimeHotspots[0].Support != "unmodeled" {
 		t.Fatalf("runtime property ranking is wrong: %+v", summary.RuntimeHotspots)
 	}
-	if summary.RuntimeHotspots[1].Name != "rotation" || summary.RuntimeHotspots[1].Expressions != 1 {
-		t.Fatalf("secondary runtime property ranking is wrong: %+v", summary.RuntimeHotspots)
+	usageByName := map[string]GUIPropertyUsage{}
+	for _, usage := range summary.PropertyUsage {
+		usageByName[usage.Name] = usage
+	}
+	for name, support := range map[string]string{
+		"alpha":                          "simulated",
+		"tintcolor":                      "simulated",
+		"fonttintcolor":                  "simulated",
+		"raw_text":                       "simulated",
+		"color":                          "simulated",
+		"grayscale":                      "simulated",
+		"checked":                        "simulated",
+		"tooltip_visible":                "simulated",
+		"alwaystransparent":              "preserved",
+		"button_ignore":                  "preserved",
+		"selectedindex":                  "preserved",
+		"on_start":                       "preserved",
+		"oneditingfinished":              "preserved",
+		"onreturnpressed":                "preserved",
+		"clicksound":                     "preserved",
+		"shortcut":                       "preserved",
+		"ondefault":                      "preserved",
+		"ontextchanged":                  "preserved",
+		"drag_drop_args":                 "preserved",
+		"index":                          "preserved",
+		"raw_tooltip":                    "simulated",
+		"tooltip_when_disabled":          "simulated",
+		"animated_progress_value":        "simulated",
+		"onrightclick":                   "simulated",
+		"trigger_when":                   "simulated",
+		"portrait_texture":               "simulated",
+		"coat_of_arms":                   "simulated",
+		"coat_of_arms_mask":              "simulated",
+		"coat_of_arms_offset":            "simulated",
+		"coat_of_arms_scale":             "simulated",
+		"background_texture":             "simulated",
+		"scale":                          "simulated",
+		"rotate_uv":                      "simulated",
+		"fittype":                        "simulated",
+		"align":                          "rendered",
+		"layoutstretchfactor_horizontal": "rendered",
+		"layoutanchor":                   "rendered",
+		"flipdirection":                  "rendered",
+	} {
+		usage, ok := usageByName[name]
+		if !ok || usage.Support != support {
+			t.Fatalf("property %q support=%q want %q; all=%+v", name, usage.Support, support, summary.PropertyUsage)
+		}
+	}
+}
+
+func TestGUIPreviewPropertySupportIncludesDynamicLayoutAndStateFields(t *testing.T) {
+	for _, name := range []string{
+		"min_width", "max_width", "min_height", "max_height",
+		"margin_left", "margin_right", "margin_top", "margin_bottom",
+		"position_x", "position_y", "allow_outside", "from", "to", "video",
+	} {
+		if got := guiPreviewPropertySupport(name); got != "simulated" {
+			t.Errorf("property %q support=%q want simulated", name, got)
+		}
 	}
 }
 

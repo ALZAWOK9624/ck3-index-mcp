@@ -25,7 +25,7 @@ func TestQueryGUILocalizationBindsBilingualValuesWithoutPathLeak(t *testing.T) {
 	type localized_panel = vbox {
 		size = { 420 160 }
 		text_single = { name = "heading" text = OPEN_BESTIARY }
-		button = { name = "action" text = "Literal" tooltip = OPEN_BESTIARY }
+		button = { name = "action" text = "Literal" tooltip = OPEN_BESTIARY tooltip_when_disabled = OPEN_BESTIARY }
 	}
 }`)
 	if _, err := db.sql.ExecContext(ctx, `INSERT INTO files(id,source_name,source_rank,path,rel_path,kind,mtime,sha256,overridden) VALUES(1,'project',1,?, 'gui/localized.gui','script',0,'gui',0)`, guiPath); err != nil {
@@ -69,7 +69,7 @@ func TestQueryGUILocalizationBindsBilingualValuesWithoutPathLeak(t *testing.T) {
 		t.Fatalf("localized preview missing: %+v", result.Preview)
 	}
 	stats := result.Preview.Localization
-	if stats.Bindings != 2 || stats.Resolved != 2 || stats.Bilingual != 2 || stats.Partial != 2 || stats.Missing != 0 {
+	if stats.Bindings != 3 || stats.Resolved != 3 || stats.Bilingual != 3 || stats.Partial != 3 || stats.Missing != 0 {
 		t.Fatalf("unexpected localization stats: %+v", stats)
 	}
 	heading := result.Preview.Nodes[1]
@@ -84,6 +84,16 @@ func TestQueryGUILocalizationBindsBilingualValuesWithoutPathLeak(t *testing.T) {
 	}
 	if !strings.Contains(heading.TextLocalization.English.ResolvedValue, "Monsters") || strings.Contains(heading.TextLocalization.English.ResolvedValue, "[monsters") {
 		t.Fatalf("nested indexed localization was not expanded: %+v", heading.TextLocalization.English)
+	}
+	var action *GUIPreviewNode
+	for index := range result.Preview.Nodes {
+		if result.Preview.Nodes[index].Name == "action" {
+			action = &result.Preview.Nodes[index]
+			break
+		}
+	}
+	if action == nil || action.TooltipWhenDisabledLocalization == nil || action.TooltipWhenDisabledLocalization.English == nil || action.TooltipWhenDisabledLocalization.SimpChinese == nil {
+		t.Fatalf("disabled tooltip localization binding missing: %+v", action)
 	}
 	document := result.Preview.HTML.Document
 	if result.Preview.HTML.Behaviors.DynamicTexts != 1 {

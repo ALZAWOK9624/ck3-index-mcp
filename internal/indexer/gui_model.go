@@ -93,7 +93,7 @@ var guiVectorProperties = map[string]bool{
 	"position": true, "size": true, "minsize": true, "maxsize": true,
 	"minimumsize": true, "maximumsize": true,
 	"margin": true, "margins": true, "padding": true, "expand": true,
-	"spriteborder": true, "framesize": true, "color": true, "tintcolor": true, "fonttintcolor": true,
+	"spriteborder": true, "framesize": true, "color": true, "tintcolor": true, "fontcolor": true, "fonttintcolor": true, "cursorcolor": true,
 }
 
 // BuildGUIModel parses a CK3 GUI file into a stable tree suitable for a layer
@@ -166,7 +166,24 @@ func guiElementFromNode(node *script.Node) GUIElement {
 }
 
 func isGUIPropertyBlock(node *script.Node) bool {
-	return guiVectorProperties[strings.ToLower(node.Key)]
+	if guiVectorProperties[strings.ToLower(node.Key)] {
+		return true
+	}
+	// Jomini GUI uses bare scalar lists for more than just layout and color
+	// vectors, including line endpoints and UV values. Treating an otherwise
+	// unknown `property = { value value }` as a child GUI control invents a
+	// structural node and loses the original property. Nested or named blocks
+	// remain ordinary GUI children unless they are one of the explicit compound
+	// properties above.
+	if len(node.Children) == 0 {
+		return false
+	}
+	for _, child := range node.Children {
+		if child.Kind != "bare" {
+			return false
+		}
+	}
+	return true
 }
 
 func guiPropertyFromNode(node *script.Node) GUIProperty {

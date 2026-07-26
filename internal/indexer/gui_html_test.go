@@ -157,6 +157,210 @@ func TestRenderGUIHTMLPreviewKeepsRuntimeExpressionsAsData(t *testing.T) {
 	}
 }
 
+func TestRenderGUIHTMLPreviewPreservesSelectedIndexAsModelMetadata(t *testing.T) {
+	root := GUIElement{
+		Kind: "dropdown", Name: "sort_order", Size: &GUIVector{Width: "200", Height: "30"},
+		Properties: []GUIProperty{
+			{Name: "datamodel", Value: "[SortOptions]"},
+			{Name: "selectedindex", Value: "[CurrentSortIndex]"},
+		},
+	}
+	preview, err := RenderGUIPreview("sort_order", "element", "gui/settings.gui", root, 400, 200, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := RenderGUIHTMLPreviewWithOptions(preview, GUIHTMLRenderOptions{Mode: GUIHTMLModeInspector})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{`data-ck3-selected-index="[CurrentSortIndex]"`, `selectedindex [CurrentSortIndex]`} {
+		if !strings.Contains(result.Document, expected) {
+			t.Errorf("HTML missing selectedindex model metadata %q", expected)
+		}
+	}
+}
+
+func TestRenderGUIHTMLInspectorKeepsRawTooltipLiteralAndReadable(t *testing.T) {
+	root := GUIElement{
+		Kind:       "button",
+		Name:       "raw_tooltip_owner",
+		Properties: []GUIProperty{{Name: "raw_tooltip", Value: "#X Direct tooltip#!"}},
+	}
+	preview, err := RenderGUIPreview("raw_tooltip_owner", "element", "gui/runtime.gui", root, 400, 200, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := RenderGUIHTMLPreviewWithOptions(preview, GUIHTMLRenderOptions{Mode: GUIHTMLModeInspector})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`data-ck3-raw-tooltip="#X Direct tooltip#!"`,
+		`data-ck3-raw-tooltip-display="Direct tooltip"`,
+		`node.dataset.ck3RawTooltipDisplay`,
+	} {
+		if !strings.Contains(result.Document, expected) {
+			t.Errorf("HTML missing raw tooltip support %q", expected)
+		}
+	}
+	if strings.Contains(result.Document, `data-ck3-tooltip="#X Direct tooltip#!"`) {
+		t.Fatal("raw_tooltip was emitted as a localization tooltip")
+	}
+}
+
+func TestRenderGUIHTMLInspectorReplaysTooltipWhenDisabled(t *testing.T) {
+	root := GUIElement{
+		Kind: "button",
+		Name: "disabled_action",
+		Properties: []GUIProperty{
+			{Name: "enabled", Value: "[CanTakeAction]"},
+			{Name: "tooltip", Value: "normal_action_tooltip"},
+			{Name: "tooltip_when_disabled", Value: "[DisabledActionReason]"},
+		},
+	}
+	preview, err := RenderGUIPreview("disabled_action", "element", "gui/runtime.gui", root, 400, 200, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareGUIPreviewRuntime(&preview, []GUIRuntimeFactInput{
+		{Expression: "CanTakeAction", Value: false},
+		{Expression: "DisabledActionReason", Value: "Requires a hook"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := RenderGUIHTMLPreviewWithOptions(preview, GUIHTMLRenderOptions{Mode: GUIHTMLModeInspector})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"data-ck3-tooltip-when-disabled=\"[DisabledActionReason]\"",
+		"data-ck3-tooltip-when-disabled-plan-raw=\"0\"",
+		"data-sim-tooltip-when-disabled=\"Requires a hook\"",
+		"function disabledTooltipFor(node)",
+		"node.dataset.simTooltipWhenDisabled",
+		"prefix==='tooltipWhenDisabled'?'TooltipWhenDisabled':'Tooltip'",
+	} {
+		if !strings.Contains(result.Document, expected) {
+			t.Errorf("disabled tooltip inspector missing %q", expected)
+		}
+	}
+}
+
+func TestRenderGUIHTMLInspectorReplaysAnimatedProgressValue(t *testing.T) {
+	root := GUIElement{
+		Kind: "progresspie",
+		Properties: []GUIProperty{
+			{Name: "min", Value: "0"},
+			{Name: "max", Value: "100"},
+			{Name: "animated_progress_value", Value: "[CurrentProgress]"},
+		},
+	}
+	preview, err := RenderGUIPreview("animated_progress", "element", "gui/runtime.gui", root, 400, 200, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareGUIPreviewRuntime(&preview, []GUIRuntimeFactInput{{Expression: "CurrentProgress", Value: 62.5}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := RenderGUIHTMLPreviewWithOptions(preview, GUIHTMLRenderOptions{Mode: GUIHTMLModeInspector})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"data-ck3-animated-progress-value=\"[CurrentProgress]\"",
+		"data-ck3-animated-progress-value-plan=\"2\"",
+		"data-sim-animated-progress-value=\"62.5\"",
+		"--ck3-progress:0.625",
+		"runtimeNodeNumber(node,'animatedProgressValue',NaN)",
+		"['min','max','value','animatedProgressValue','alpha','scale','rotateUv','minWidth','maxWidth','minHeight','maxHeight','marginLeft','marginRight','marginTop','marginBottom','statePositionX','statePositionY']",
+	} {
+		if !strings.Contains(result.Document, expected) {
+			t.Errorf("animated progress inspector missing %q", expected)
+		}
+	}
+}
+
+func TestRenderGUIHTMLInspectorReplaysDynamicLayoutProperties(t *testing.T) {
+	root := GUIElement{
+		Kind: "flowcontainer", Size: &GUIVector{Width: "240", Height: "60"},
+		Properties: []GUIProperty{{Name: "direction", Value: "horizontal"}},
+		Children: []GUIElement{{
+			Kind: "button", Name: "dynamic_layout", Size: &GUIVector{Width: "160", Height: "28"},
+			Properties: []GUIProperty{
+				{Name: "max_width", Value: "[Select_int32( IsCompact, '(int32)72', '(int32)128' )]"},
+				{Name: "margin_left", Value: "[Select_int32( IsCompact, '(int32)-14', '(int32)6' )]"},
+			},
+		}},
+	}
+	preview, err := RenderGUIPreview("dynamic_layout", "type", "gui/event_windows/character_event.gui", root, 400, 200, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareGUIPreviewRuntime(&preview, []GUIRuntimeFactInput{{Expression: "IsCompact", Value: true}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := RenderGUIHTMLPreviewWithOptions(preview, GUIHTMLRenderOptions{Mode: GUIHTMLModeInspector})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`data-ck3-max-width="[Select_int32( IsCompact, &#39;(int32)72&#39;, &#39;(int32)128&#39; )]"`,
+		`data-ck3-max-width-plan="0"`, `data-sim-max-width="72"`,
+		`data-ck3-margin-left-plan="1"`, `data-sim-margin-left="-14"`,
+		`function runtimeLayoutNumber`, `function applyRuntimeLayoutConstraints`,
+		`runtimeLayoutNumber(item,horizontal?'marginLeft':'marginTop',0)`,
+		`target.width=clampRuntimeLayoutDimension(item,target.width,true)`,
+	} {
+		if !strings.Contains(result.Document, expected) {
+			t.Errorf("dynamic layout inspector missing %q", expected)
+		}
+	}
+	if result.Behaviors.RuntimeEvaluated != 2 {
+		t.Fatalf("dynamic layout runtime summary is incomplete: %+v", result.Behaviors)
+	}
+}
+
+func TestRenderGUIHTMLInspectorReplaysDynamicAllowOutside(t *testing.T) {
+	root := GUIElement{
+		Kind: "scrollarea", TypeChain: []string{"scrollbox"}, Name: "event_options", Size: &GUIVector{Width: "180", Height: "80"},
+		Children: []GUIElement{{
+			Kind: "scrollwidget",
+			Children: []GUIElement{{
+				Kind: "vbox", Size: &GUIVector{Width: "180", Height: "120"},
+				Children: []GUIElement{{
+					Kind: "widget", Name: "event_tools", Size: &GUIVector{Width: "180", Height: "30"},
+					Properties: []GUIProperty{{Name: "allow_outside", Value: "[EventWindowData.ShowEventTools]"}},
+				}},
+			}},
+		}},
+	}
+	preview, err := RenderGUIPreview("event_options", "element", "gui/shared/event_windows.gui", root, 640, 360, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareGUIPreviewRuntime(&preview, []GUIRuntimeFactInput{{Expression: "EventWindowData.ShowEventTools", Value: true}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := RenderGUIHTMLPreviewWithOptions(preview, GUIHTMLRenderOptions{Mode: GUIHTMLModeInspector})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`data-ck3-allow-outside="[EventWindowData.ShowEventTools]"`,
+		`data-ck3-allow-outside-plan="0"`,
+		`data-sim-allow-outside="true"`,
+		`data-ck3-initial-sim-allow-outside="true"`,
+		`function runtimeAllowOutside(node)`,
+		`function hasAllowOutsideAncestor(node,viewport)`,
+		`!hasAllowOutsideAncestor(item,container)`,
+		`'allowOutside'`,
+	} {
+		if !strings.Contains(result.Document, expected) {
+			t.Errorf("dynamic allow_outside inspector missing %q", expected)
+		}
+	}
+}
+
 func TestRenderGUIHTMLInspectorReplaysBoundedRuntimeFacts(t *testing.T) {
 	root := GUIElement{Kind: "widget", Size: &GUIVector{Width: "300", Height: "120"}, Children: []GUIElement{{
 		Kind: "button", Name: "runtime_button", Size: &GUIVector{Width: "160", Height: "32"},
@@ -269,6 +473,143 @@ func TestRenderGUIHTMLInspectorReplaysNumericProgress(t *testing.T) {
 	}
 }
 
+func TestRenderGUIHTMLInspectorRendersPortraitBackgroundAndMask(t *testing.T) {
+	mainDataURI := "data:image/png;base64,bWFpbg=="
+	backgroundDataURI := "data:image/png;base64,YmFja2dyb3VuZA=="
+	maskDataURI := "data:image/png;base64,bWFzaw=="
+	preview := GUIPreviewResult{Width: 320, Height: 180, Nodes: []GUIPreviewNode{{
+		Index: 0, Parent: -1, Kind: "portrait_button", Bounds: GUIPreviewRect{Width: 120, Height: 160},
+		Texture: "gfx/portraits/portrait_sample.dds", TextureRef: &GUITextureRef{Path: "gfx/portraits/portrait_sample.dds", Resolved: true, Embedded: true, dataURI: mainDataURI},
+		BackgroundTexture: "gfx/portraits/portrait_background.dds", BackgroundTextureRef: &GUITextureRef{Path: "gfx/portraits/portrait_background.dds", Resolved: true, Embedded: true, dataURI: backgroundDataURI},
+		MaskTexture: "gfx/portraits/portrait_mask_head.dds", MaskTextureRef: &GUITextureRef{Path: "gfx/portraits/portrait_mask_head.dds", Resolved: true, Embedded: true, dataURI: maskDataURI},
+	}}}
+	result, err := RenderGUIHTMLPreviewWithOptions(preview, GUIHTMLRenderOptions{Mode: GUIHTMLModeInspector})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`data-ck3-background-texture="gfx/portraits/portrait_background.dds"`,
+		`data-ck3-mask="gfx/portraits/portrait_mask_head.dds"`,
+		`data-ck3-background-texture-resolved="true"`,
+		`data-ck3-mask-resolved="true"`,
+		`class="ck3-texture ck3-texture-a1 ck3-background"`,
+		`class="ck3-texture ck3-texture-a0"`,
+		`mask-image:var(--ck3-texture-image-a2)`,
+		`mask-size:100% 100%`,
+	} {
+		if !strings.Contains(result.Document, expected) {
+			t.Errorf("portrait layer inspector missing %q", expected)
+		}
+	}
+	backgroundIndex := strings.Index(result.Document, `class="ck3-texture ck3-texture-a1 ck3-background"`)
+	portraitIndex := strings.Index(result.Document, `class="ck3-texture ck3-texture-a0"`)
+	if backgroundIndex < 0 || portraitIndex < 0 || backgroundIndex >= portraitIndex {
+		t.Fatalf("portrait background was not emitted before the primary texture")
+	}
+}
+
+func TestRenderGUIHTMLInspectorComposesProvidedCoatOfArmsMaskAndTransform(t *testing.T) {
+	textureSample := "gfx/interface/coat_of_arms/title_sample.dds"
+	preview := GUIPreviewResult{Width: 320, Height: 180, Nodes: []GUIPreviewNode{{
+		Index: 0, Parent: -1, Kind: "coat_of_arms_icon", Bounds: GUIPreviewRect{Width: 120, Height: 120},
+		Texture:              textureSample,
+		TextureRef:           &GUITextureRef{Path: textureSample, Resolved: true, Embedded: true, dataURI: "data:image/png;base64,Y29hdA=="},
+		BackgroundTexture:    "gfx/interface/coat_of_arms/background.dds",
+		BackgroundTextureRef: &GUITextureRef{Path: "gfx/interface/coat_of_arms/background.dds", Resolved: true, Embedded: true, dataURI: "data:image/png;base64,YmFja2dyb3VuZA=="},
+		CoatOfArmsMask:       "gfx/interface/coat_of_arms/title_mask.dds",
+		CoatOfArmsMaskRef:    &GUITextureRef{Path: "gfx/interface/coat_of_arms/title_mask.dds", Resolved: true, Embedded: true, dataURI: "data:image/png;base64,bWFzaw=="},
+		CoatOfArmsOffset:     &GUIVector{X: "0", Y: "0.07"},
+		CoatOfArmsScale:      &GUIVector{X: "0.9", Y: "0.9"},
+		Semantics:            &GUISemantics{CoatOfArmsTexture: "[Title.GetTitleCoA.GetTexture('(int32)256','(int32)256')]"},
+		Scenario:             &GUINodeScenario{Source: "provided", Texture: &textureSample, CoatOfArms: true},
+	}}}
+	result, err := RenderGUIHTMLPreviewWithOptions(preview, GUIHTMLRenderOptions{Mode: GUIHTMLModeInspector})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`data-ck3-coat-of-arms-mask-resource="gfx/interface/coat_of_arms/title_mask.dds"`,
+		`data-ck3-coat-of-arms-mask-resource-resolved="true"`,
+		`class="ck3-texture ck3-texture-a1 ck3-background"`,
+		`class="ck3-coa-layer"`,
+		`class="ck3-coa-mask"`,
+		`class="ck3-texture ck3-coa-content ck3-texture-a0"`,
+		`mask-image:var(--ck3-texture-image-a2)`,
+		`--ck3-coa-offset-x:0.000%`,
+		`--ck3-coa-offset-y:7.000%`,
+		`--ck3-coa-scale-x:0.900`,
+		`--ck3-coa-scale-y:0.900`,
+	} {
+		if !strings.Contains(result.Document, expected) {
+			t.Errorf("coat-of-arms composition preview missing %q", expected)
+		}
+	}
+	if strings.Count(result.Document, `class="ck3-coa-layer"`) != 1 {
+		t.Fatal("background texture incorrectly inherited coat-of-arms composition")
+	}
+}
+
+func TestRenderGUIHTMLInspectorReplaysFitType(t *testing.T) {
+	dataURI := "data:image/png;base64,ZmFsbGJhY2s="
+	preview := GUIPreviewResult{Width: 320, Height: 180, Nodes: []GUIPreviewNode{
+		{Index: 0, Parent: -1, Kind: "icon", Bounds: GUIPreviewRect{Width: 100, Height: 60}, TextureRef: &GUITextureRef{Embedded: true, dataURI: dataURI}, FitType: "centercrop"},
+		{Index: 1, Parent: -1, Kind: "icon", Bounds: GUIPreviewRect{X: 105, Width: 100, Height: 60}, TextureRef: &GUITextureRef{Embedded: true, dataURI: dataURI}, FitType: "start"},
+		{Index: 2, Parent: -1, Kind: "icon", Bounds: GUIPreviewRect{X: 210, Width: 100, Height: 60}, TextureRef: &GUITextureRef{Embedded: true, dataURI: dataURI}, FitType: "end"},
+	}}
+	result, err := RenderGUIHTMLPreviewWithOptions(preview, GUIHTMLRenderOptions{Mode: GUIHTMLModeInspector})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`data-ck3-fit-type="centercrop"`,
+		`data-ck3-fit-type="start"`,
+		`data-ck3-fit-type="end"`,
+		`background-size:cover;background-position:center`,
+		`background-size:cover;background-position:left top`,
+		`background-size:cover;background-position:right bottom`,
+		`fittype centercrop`,
+	} {
+		if !strings.Contains(result.Document, expected) {
+			t.Errorf("fittype inspector missing %q", expected)
+		}
+	}
+}
+
+func TestRenderGUIHTMLReplaysAlign(t *testing.T) {
+	preview := GUIPreviewResult{Width: 320, Height: 180, Nodes: []GUIPreviewNode{
+		{Index: 0, Parent: -1, Kind: "button", Bounds: GUIPreviewRect{Width: 100, Height: 30}, Align: "left|top", Text: "Left"},
+		{Index: 1, Parent: -1, Kind: "button", Bounds: GUIPreviewRect{X: 105, Width: 100, Height: 30}, Align: "center|vcenter", Text: "Center"},
+		{Index: 2, Parent: -1, Kind: "button", Bounds: GUIPreviewRect{X: 210, Width: 100, Height: 30}, Align: "right|bottom|nobaseline", Text: "Right"},
+	}}
+	for _, test := range []struct {
+		name string
+		mode string
+	}{
+		{name: "static", mode: GUIHTMLModeStatic},
+		{name: "inspector", mode: GUIHTMLModeInspector},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := RenderGUIHTMLPreviewWithOptions(preview, GUIHTMLRenderOptions{Mode: test.mode})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, expected := range []string{
+				`data-ck3-align="left|top"`,
+				`data-ck3-align="center|vcenter"`,
+				`data-ck3-align="right|bottom|nobaseline"`,
+				`text-align:left;justify-content:flex-start;align-items:flex-start`,
+				`text-align:center;justify-content:center;align-items:center`,
+				`text-align:right;justify-content:flex-end;align-items:flex-end`,
+				`align left|top`,
+			} {
+				if !strings.Contains(result.Document, expected) {
+					t.Errorf("%s align preview missing %q", test.name, expected)
+				}
+			}
+		})
+	}
+}
+
 func TestRenderGUIHTMLInspectorReplaysPressedStateAndGameViewData(t *testing.T) {
 	root := GUIElement{
 		Kind: "button", Name: "traveling", Size: &GUIVector{Width: "160", Height: "32"},
@@ -316,6 +657,110 @@ func TestRenderGUIHTMLInspectorReplaysPressedStateAndGameViewData(t *testing.T) 
 	}
 	if result.Behaviors.DownExpressions != 1 || result.Behaviors.SelectedExpressions != 1 || result.Behaviors.ClickActions != 3 || result.Behaviors.RuntimeActions != 2 {
 		t.Fatalf("pressed-state behavior summary is incomplete: %+v", result.Behaviors)
+	}
+}
+
+func TestRenderGUIHTMLInspectorReplaysProvidedRightClick(t *testing.T) {
+	const actionExpression = "[DefaultOnCharacterRightClick(Character.GetID)]"
+	root := GUIElement{Kind: "button", Name: "portrait", Size: &GUIVector{Width: "64", Height: "64"}, Properties: []GUIProperty{{Name: "onrightclick", Value: actionExpression}}}
+	preview, err := RenderGUIPreview("portrait", "element", "gui/shared/portraits.gui", root, 640, 360, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareGUIPreviewRuntimeWithActions(&preview, []GUIRuntimeFactInput{
+		{Expression: "CharacterContextMenuOpen", Value: false},
+	}, []GUIRuntimeActionEffectInput{{
+		Expression: actionExpression,
+		Updates:    []GUIRuntimeActionUpdateInput{{Expression: "CharacterContextMenuOpen", Operation: "set", Value: true}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := RenderGUIHTMLPreviewWithOptions(preview, GUIHTMLRenderOptions{Mode: GUIHTMLModeInspector})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`data-ck3-on-right-click="[DefaultOnCharacterRightClick(Character.GetID)]"`,
+		`data-ck3-right-click-action-plan="0"`,
+		`id="ck3-sim-right-click"`,
+		`function actionOwnerFor(node,kind)`,
+		`canvas.addEventListener('contextmenu'`,
+		`applyRuntimeAction(actionOwner,'right')`,
+		`applyRuntimeAction(selected,'right')`,
+		`data-ck3-runtime-operation="provided_effect"`,
+	} {
+		if !strings.Contains(result.Document, expected) {
+			t.Errorf("right-click inspector missing %q", expected)
+		}
+	}
+	if result.Behaviors.RightClickActions != 1 || result.Behaviors.RuntimeActions != 1 || result.Behaviors.RuntimeActionEffects != 1 {
+		t.Fatalf("right-click behavior summary is incomplete: %+v", result.Behaviors)
+	}
+}
+
+func TestRenderGUIHTMLInspectorReplaysScaleProperty(t *testing.T) {
+	root := GUIElement{Kind: "widget", Name: "barber_head", Size: &GUIVector{Width: "60", Height: "60"}, Properties: []GUIProperty{{Name: "scale", Value: "[PortraitScale]"}}}
+	preview, err := RenderGUIPreview("barber_head", "element", "gui/types_FB.gui", root, 640, 360, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareGUIPreviewRuntime(&preview, []GUIRuntimeFactInput{{Expression: "PortraitScale", Value: 1.35}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := RenderGUIHTMLPreviewWithOptions(preview, GUIHTMLRenderOptions{Mode: GUIHTMLModeInspector})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`data-ck3-scale="[PortraitScale]"`,
+		`data-ck3-scale-plan="0"`,
+		`data-sim-scale="1.35"`,
+		`--ck3-scale:1.350`,
+		`function refreshRuntimeScale`,
+		`['min','max','value','animatedProgressValue','alpha','scale','rotateUv','minWidth','maxWidth','minHeight','maxHeight','marginLeft','marginRight','marginTop','marginBottom','statePositionX','statePositionY']`,
+		`scale(var(--ck3-scale,1)) scale(var(--ck3-state-scale,1))`,
+	} {
+		if !strings.Contains(result.Document, expected) {
+			t.Errorf("scale inspector missing %q", expected)
+		}
+	}
+	if result.Behaviors.ScaleExpressions != 1 {
+		t.Fatalf("scale behavior count=%d want 1", result.Behaviors.ScaleExpressions)
+	}
+}
+
+func TestRenderGUIHTMLInspectorReplaysRotateUV(t *testing.T) {
+	root := GUIElement{Kind: "modify_texture", Name: "wheel", Size: &GUIVector{Width: "60", Height: "60"}, Properties: []GUIProperty{
+		{Name: "rotate_uv", Value: "[WheelRotation]"},
+		{Name: "mirror", Value: "horizontal"},
+	}}
+	preview, err := RenderGUIPreview("wheel", "element", "gui/window_tgp_dynastic_cycle.gui", root, 640, 360, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareGUIPreviewRuntime(&preview, []GUIRuntimeFactInput{{Expression: "WheelRotation", Value: -90}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := RenderGUIHTMLPreviewWithOptions(preview, GUIHTMLRenderOptions{Mode: GUIHTMLModeInspector})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`data-ck3-rotate-uv="[WheelRotation]"`,
+		`data-ck3-rotate-uv-plan="0"`,
+		`data-sim-rotate-uv="-90"`,
+		`--ck3-rotate-uv:-90.000deg`,
+		`function refreshRuntimeRotateUV`,
+		`['min','max','value','animatedProgressValue','alpha','scale','rotateUv','minWidth','maxWidth','minHeight','maxHeight','marginLeft','marginRight','marginTop','marginBottom','statePositionX','statePositionY']`,
+		`rotate(var(--ck3-rotate-uv,0deg)) scale(var(--ck3-mirror-x,1),var(--ck3-mirror-y,1))`,
+		`.ck3-texture.ck3-mirror-horizontal{--ck3-mirror-x:-1}`,
+	} {
+		if !strings.Contains(result.Document, expected) {
+			t.Errorf("rotate_uv inspector missing %q", expected)
+		}
+	}
+	if result.Behaviors.RotateUVExpressions != 1 {
+		t.Fatalf("rotate_uv behavior count=%d want 1", result.Behaviors.RotateUVExpressions)
 	}
 }
 
@@ -449,7 +894,7 @@ func TestRenderGUIHTMLInspectorReplaysTypedVariableSystemState(t *testing.T) {
 		`bounded '+action.operation`,
 		`function actionOwnerFor`,
 		`root.classList.contains('visual-mode')`,
-		`applyRuntimeAction(actionOwner)`,
+		`applyRuntimeAction(actionOwner,'left')`,
 	} {
 		if !strings.Contains(result.Document, expected) {
 			t.Errorf("typed variable inspector missing %q", expected)
@@ -496,6 +941,79 @@ func TestRenderGUIHTMLInspectorReflowsIgnoreInvisibleContainers(t *testing.T) {
 	} {
 		if !strings.Contains(result.Document, expected) {
 			t.Errorf("dynamic flow inspector missing %q", expected)
+		}
+	}
+}
+
+func TestRenderGUIHTMLInspectorReflowsWeightedExpandingItems(t *testing.T) {
+	root := GUIElement{
+		Kind: "hbox", Size: &GUIVector{Width: "300", Height: "40"},
+		Children: []GUIElement{
+			{Kind: "widget", Name: "short", Size: &GUIVector{Width: "20", Height: "20"}, Properties: []GUIProperty{
+				{Name: "layoutpolicy_horizontal", Value: "expanding"},
+				{Name: "layoutstretchfactor_horizontal", Value: "1"},
+			}},
+			{Kind: "widget", Name: "long", Size: &GUIVector{Width: "20", Height: "20"}, Properties: []GUIProperty{
+				{Name: "layoutpolicy_horizontal", Value: "expanding"},
+				{Name: "layoutstretchfactor_horizontal", Value: "2"},
+			}},
+		},
+	}
+	preview, err := RenderGUIPreview("weighted_flow", "type", "gui/test.gui", root, 400, 200, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := RenderGUIHTMLPreviewWithOptions(preview, GUIHTMLRenderOptions{Mode: GUIHTMLModeInspector})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`data-ck3-stretch-horizontal="1"`,
+		`data-ck3-stretch-horizontal="2"`,
+		`function mainAxisStretch(node,horizontal)`,
+		`var stretchTotal=0`,
+		`allocation=Math.floor(remainingExtra*stretch/remainingStretch)`,
+	} {
+		if !strings.Contains(result.Document, expected) {
+			t.Errorf("weighted flow inspector missing %q", expected)
+		}
+	}
+}
+
+func TestRenderGUIHTMLInspectorReflowsFlippedGrid(t *testing.T) {
+	root := GUIElement{
+		Kind: "fixedgridbox", Size: &GUIVector{Width: "80", Height: "40"},
+		Properties: []GUIProperty{
+			{Name: "datamodel_wrap", Value: "2"},
+			{Name: "addcolumn", Value: "40"},
+			{Name: "addrow", Value: "20"},
+			{Name: "flipdirection", Value: "yes"},
+			{Name: "layoutanchor", Value: "bottomleft"},
+		},
+		Children: []GUIElement{
+			{Kind: "button", Name: "one", Size: &GUIVector{Width: "20", Height: "10"}},
+			{Kind: "button", Name: "two", Size: &GUIVector{Width: "20", Height: "10"}},
+		},
+	}
+	preview, err := RenderGUIPreview("flipped_grid", "type", "gui/test.gui", root, 400, 200, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := RenderGUIHTMLPreviewWithOptions(preview, GUIHTMLRenderOptions{Mode: GUIHTMLModeInspector})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`data-ck3-grid-flip="true"`,
+		`data-ck3-grid-layout-anchor="bottomleft"`,
+		`var flip=container.dataset.ck3GridFlip==='true'`,
+		`var rows=Math.ceil(visible.length/columns)`,
+		`function gridOrigin(container,parent,contentWidth,contentHeight)`,
+		`var origin=gridOrigin(container,parent,columns*columnStep,rows*rowStep)`,
+		`if(flip){row=rows-1-row;column=columns-1-column;}`,
+	} {
+		if !strings.Contains(result.Document, expected) {
+			t.Errorf("flipped grid inspector missing %q", expected)
 		}
 	}
 }
@@ -597,6 +1115,199 @@ func TestRenderGUIHTMLInspectorShowsTooltipOverlayOnlyOnHover(t *testing.T) {
 	}
 	if result.Behaviors.TooltipOverlays != 1 {
 		t.Fatalf("tooltip overlay behavior count=%d want 1", result.Behaviors.TooltipOverlays)
+	}
+}
+
+func TestRenderGUIHTMLInspectorHonorsTooltipVisible(t *testing.T) {
+	root := GUIElement{
+		Kind: "widget", Name: "owner", Size: &GUIVector{Width: "80", Height: "30"},
+		Properties: []GUIProperty{{Name: "tooltip_visible", Value: "[ShowTooltip]"}},
+		Children: []GUIElement{{
+			Kind:     "tooltipwidget",
+			Children: []GUIElement{{Kind: "vbox", Name: "tooltip_panel", Size: &GUIVector{Width: "180", Height: "90"}}},
+		}},
+	}
+	preview, err := RenderGUIPreview("tooltip_owner", "type", "gui/runtime.gui", root, 500, 300, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareGUIPreviewRuntime(&preview, []GUIRuntimeFactInput{{Expression: "ShowTooltip", Value: false}}); err != nil {
+		t.Fatal(err)
+	}
+	if binding := preview.Nodes[0].Runtime; binding == nil || binding.TooltipVisible == nil || binding.TooltipVisible.Result == nil || *binding.TooltipVisible.Result {
+		t.Fatalf("tooltip_visible runtime binding = %#v", binding)
+	}
+	result, err := RenderGUIHTMLPreviewWithOptions(preview, GUIHTMLRenderOptions{Mode: GUIHTMLModeInspector})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`data-ck3-tooltip-visible="[ShowTooltip]"`,
+		`data-ck3-tooltip-visible-plan="0"`,
+		`data-sim-tooltip-visible="false"`,
+		`data-ck3-initial-sim-tooltip-visible="false"`,
+		`function tooltipAvailable(owner)`,
+		`if(!tooltipAvailable(owner)||owner.dataset.ck3EffectiveHidden==='true'`,
+		`if(!runtimeTooltip||!tooltipAvailable(owner)||owner.dataset.ck3EffectiveHidden==='true'`,
+		`['visible','enabled','down','selected','checked','stateTrigger','allowOutside','tooltipVisible','grayscale']`,
+	} {
+		if !strings.Contains(result.Document, expected) {
+			t.Errorf("tooltip_visible inspector missing %q", expected)
+		}
+	}
+}
+
+func TestRenderGUIHTMLInspectorReplaysCheckedState(t *testing.T) {
+	root := GUIElement{
+		Kind: "checkbutton", Name: "cloud_save", Size: &GUIVector{Width: "30", Height: "30"},
+		Properties: []GUIProperty{{Name: "checked", Value: "[CloudSaveData.ShouldSaveToCloud]"}},
+	}
+	preview, err := RenderGUIPreview("cloud_save", "type", "gui/frontend_ingame_menu.gui", root, 300, 160, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareGUIPreviewRuntime(&preview, []GUIRuntimeFactInput{{Expression: "CloudSaveData.ShouldSaveToCloud", Value: true}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := RenderGUIHTMLPreviewWithOptions(preview, GUIHTMLRenderOptions{Mode: GUIHTMLModeInspector})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`data-ck3-checked="[CloudSaveData.ShouldSaveToCloud]"`,
+		`data-ck3-checked-plan="0"`,
+		`data-sim-checked="true"`,
+		`data-ck3-initial-sim-checked="true"`,
+		`data-ck3-checkable="true"`,
+		`ck3-checkable`,
+		`is-sim-checked`,
+		`ck3-checkmark`,
+		`ck3-sim-checked`,
+		`function syncChecked(node)`,
+		`['visible','enabled','down','selected','checked','stateTrigger','allowOutside','tooltipVisible','grayscale']`,
+	} {
+		if !strings.Contains(result.Document, expected) {
+			t.Errorf("checked inspector missing %q", expected)
+		}
+	}
+	if result.Behaviors.CheckedExpressions != 1 {
+		t.Fatalf("checked behavior count=%d want 1", result.Behaviors.CheckedExpressions)
+	}
+}
+
+func TestRenderGUIHTMLInspectorReplaysStateTrigger(t *testing.T) {
+	root := GUIElement{
+		Kind: "widget", Name: "stateful", Size: &GUIVector{Width: "100", Height: "40"},
+		Children: []GUIElement{{
+			Kind: "state", Name: "hide_when_modal", Properties: []GUIProperty{
+				{Name: "alpha", Value: "0"},
+				{Name: "scale", Value: "0.9"},
+				{Name: "duration", Value: "0.2"},
+				{Name: "trigger_when", Value: "[IsModalOpen]"},
+			},
+		}},
+	}
+	preview, err := RenderGUIPreview("stateful", "type", "gui/hud_outliner.gui", root, 300, 160, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareGUIPreviewRuntime(&preview, []GUIRuntimeFactInput{{Expression: "IsModalOpen", Value: true}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := RenderGUIHTMLPreviewWithOptions(preview, GUIHTMLRenderOptions{Mode: GUIHTMLModeInspector})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`data-ck3-state-trigger="[IsModalOpen]"`,
+		`data-ck3-state-trigger-plan="0"`,
+		`data-sim-state-trigger="true"`,
+		`data-ck3-initial-sim-state-trigger="true"`,
+		`function applyStateTriggers()`,
+		`applyState(definition,'Triggered','trigger')`,
+		`['visible','enabled','down','selected','checked','stateTrigger','allowOutside','tooltipVisible','grayscale']`,
+		`<span>TW 1</span>`,
+	} {
+		if !strings.Contains(result.Document, expected) {
+			t.Errorf("state trigger inspector missing %q", expected)
+		}
+	}
+	if result.Behaviors.StateTriggers != 1 {
+		t.Fatalf("state trigger behavior count=%d want 1", result.Behaviors.StateTriggers)
+	}
+}
+
+func TestRenderGUIHTMLInspectorRendersColorProperty(t *testing.T) {
+	root := GUIElement{
+		Kind: "icon", Name: "divider", Size: &GUIVector{Width: "60", Height: "3"},
+		Properties: []GUIProperty{{Name: "color", Values: []string{"0.1", "0.2", "0.3", "0.4"}}},
+	}
+	preview, err := RenderGUIPreview("divider", "type", "gui/shared/windows.gui", root, 200, 100, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareGUIPreviewRuntime(&preview, nil); err != nil {
+		t.Fatal(err)
+	}
+	if binding := preview.Nodes[0].Runtime; binding == nil || binding.Color == nil || binding.Color.Result == nil || *binding.Color.Result != "rgba(26,51,77,0.400)" {
+		t.Fatalf("color runtime binding = %#v", binding)
+	}
+	result, err := RenderGUIHTMLPreviewWithOptions(preview, GUIHTMLRenderOptions{Mode: GUIHTMLModeInspector})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`data-ck3-color="{ 0.1 0.2 0.3 0.4 }"`,
+		`data-ck3-color-plan="0"`,
+		`data-sim-color="rgba(26,51,77,0.400)"`,
+		`--ck3-tint-color:rgba(26,51,77,0.400)`,
+		`function normalizeRuntimeColor(raw)`,
+		`function applyRuntimeColor(node,property)`,
+		`['color','tintColor','fontTintColor']`,
+	} {
+		if !strings.Contains(result.Document, expected) {
+			t.Errorf("color inspector missing %q", expected)
+		}
+	}
+	if result.Behaviors.ColorExpressions != 1 {
+		t.Fatalf("color behavior count=%d want 1", result.Behaviors.ColorExpressions)
+	}
+}
+
+func TestRenderGUIHTMLInspectorReplaysGrayscale(t *testing.T) {
+	root := GUIElement{
+		Kind: "button", Name: "commander", Size: &GUIVector{Width: "100", Height: "40"},
+		Properties: []GUIProperty{{Name: "grayscale", Value: "[Not(CharacterListItem.IsSelectable)]"}},
+	}
+	preview, err := RenderGUIPreview("commander", "type", "gui/window_army_select_commander.gui", root, 300, 160, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareGUIPreviewRuntime(&preview, []GUIRuntimeFactInput{{Expression: "CharacterListItem.IsSelectable", Value: false}}); err != nil {
+		t.Fatal(err)
+	}
+	if binding := preview.Nodes[0].Runtime; binding == nil || binding.Grayscale == nil || binding.Grayscale.Result == nil || !*binding.Grayscale.Result {
+		t.Fatalf("grayscale runtime binding = %#v", binding)
+	}
+	result, err := RenderGUIHTMLPreviewWithOptions(preview, GUIHTMLRenderOptions{Mode: GUIHTMLModeInspector})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`data-ck3-grayscale="[Not(CharacterListItem.IsSelectable)]"`,
+		`data-ck3-grayscale-plan="0"`,
+		`data-sim-grayscale="true"`,
+		`data-ck3-initial-sim-grayscale="true"`,
+		`filter:grayscale(1)`,
+		`property==='grayscale'`,
+		`['visible','enabled','down','selected','checked','stateTrigger','allowOutside','tooltipVisible','grayscale']`,
+	} {
+		if !strings.Contains(result.Document, expected) {
+			t.Errorf("grayscale inspector missing %q", expected)
+		}
+	}
+	if result.Behaviors.GrayscaleExpressions != 1 {
+		t.Fatalf("grayscale behavior count=%d want 1", result.Behaviors.GrayscaleExpressions)
 	}
 }
 

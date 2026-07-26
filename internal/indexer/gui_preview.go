@@ -70,43 +70,78 @@ type GUIPreviewTextures struct {
 }
 
 type GUIPreviewNode struct {
-	Index                 int                 `json:"index"`
-	Parent                int                 `json:"parent"`
-	Depth                 int                 `json:"depth"`
-	Kind                  string              `json:"kind"`
-	TypeChain             []string            `json:"type_chain,omitempty"`
-	Name                  string              `json:"name,omitempty"`
-	Source                string              `json:"source,omitempty"`
-	Line                  int                 `json:"line,omitempty"`
-	Bounds                GUIPreviewRect      `json:"bounds"`
-	DeclaredPosition      *GUIVector          `json:"declared_position,omitempty"`
-	DeclaredSize          *GUIVector          `json:"declared_size,omitempty"`
-	Texture               string              `json:"texture,omitempty"`
-	TextureRef            *GUITextureRef      `json:"texture_ref,omitempty"`
-	NoProgressTextureRef  *GUITextureRef      `json:"no_progress_texture_ref,omitempty"`
-	TextureFrames         *GUITextureFrames   `json:"texture_frames,omitempty"`
-	TextureSlice          *GUITextureSlice    `json:"texture_slice,omitempty"`
-	TextureBlendMode      string              `json:"texture_blend_mode,omitempty"`
-	TextureBlendSupported bool                `json:"texture_blend_supported,omitempty"`
-	Mirror                string              `json:"mirror,omitempty"`
-	Text                  string              `json:"text,omitempty"`
-	TextLocalization      *GUILocalizedText   `json:"text_localization,omitempty"`
-	TooltipLocalization   *GUILocalizedText   `json:"tooltip_localization,omitempty"`
-	Scenario              *GUINodeScenario    `json:"scenario,omitempty"`
-	ModelRow              *GUIPreviewModelRow `json:"model_row,omitempty"`
-	Runtime               *GUINodeRuntime     `json:"runtime,omitempty"`
-	Semantics             *GUISemantics       `json:"semantics,omitempty"`
-	StateDefinition       *GUIStateDefinition `json:"state_definition,omitempty"`
-	Layout                *GUIPreviewLayout   `json:"layout,omitempty"`
-	Overlay               *GUIPreviewOverlay  `json:"overlay,omitempty"`
-	ClipBounds            *GUIPreviewRect     `json:"clip_bounds,omitempty"`
-	BehaviorOnly          bool                `json:"behavior_only,omitempty"`
-	Approximate           bool                `json:"approximate,omitempty"`
+	Index                           int                     `json:"index"`
+	Parent                          int                     `json:"parent"`
+	Depth                           int                     `json:"depth"`
+	Kind                            string                  `json:"kind"`
+	TypeChain                       []string                `json:"type_chain,omitempty"`
+	Name                            string                  `json:"name,omitempty"`
+	Source                          string                  `json:"source,omitempty"`
+	Line                            int                     `json:"line,omitempty"`
+	Bounds                          GUIPreviewRect          `json:"bounds"`
+	DeclaredPosition                *GUIVector              `json:"declared_position,omitempty"`
+	DeclaredSize                    *GUIVector              `json:"declared_size,omitempty"`
+	Texture                         string                  `json:"texture,omitempty"`
+	TextureRef                      *GUITextureRef          `json:"texture_ref,omitempty"`
+	BackgroundTexture               string                  `json:"background_texture,omitempty"`
+	BackgroundTextureRef            *GUITextureRef          `json:"background_texture_ref,omitempty"`
+	MaskTexture                     string                  `json:"mask_texture,omitempty"`
+	MaskTextureRef                  *GUITextureRef          `json:"mask_texture_ref,omitempty"`
+	LineGeometry                    *GUIPreviewLineGeometry `json:"line_geometry,omitempty"`
+	CoatOfArmsMask                  string                  `json:"coat_of_arms_mask,omitempty"`
+	CoatOfArmsMaskRef               *GUITextureRef          `json:"coat_of_arms_mask_ref,omitempty"`
+	CoatOfArmsOffset                *GUIVector              `json:"coat_of_arms_offset,omitempty"`
+	CoatOfArmsScale                 *GUIVector              `json:"coat_of_arms_scale,omitempty"`
+	NoProgressTextureRef            *GUITextureRef          `json:"no_progress_texture_ref,omitempty"`
+	TextureFrames                   *GUITextureFrames       `json:"texture_frames,omitempty"`
+	TextureSlice                    *GUITextureSlice        `json:"texture_slice,omitempty"`
+	TextureBlendMode                string                  `json:"texture_blend_mode,omitempty"`
+	TextureBlendSupported           bool                    `json:"texture_blend_supported,omitempty"`
+	Mirror                          string                  `json:"mirror,omitempty"`
+	FitType                         string                  `json:"fit_type,omitempty"`
+	Align                           string                  `json:"align,omitempty"`
+	Text                            string                  `json:"text,omitempty"`
+	TextLocalization                *GUILocalizedText       `json:"text_localization,omitempty"`
+	TooltipLocalization             *GUILocalizedText       `json:"tooltip_localization,omitempty"`
+	TooltipWhenDisabledLocalization *GUILocalizedText       `json:"tooltip_when_disabled_localization,omitempty"`
+	Scenario                        *GUINodeScenario        `json:"scenario,omitempty"`
+	ModelRow                        *GUIPreviewModelRow     `json:"model_row,omitempty"`
+	Runtime                         *GUINodeRuntime         `json:"runtime,omitempty"`
+	Semantics                       *GUISemantics           `json:"semantics,omitempty"`
+	StateDefinition                 *GUIStateDefinition     `json:"state_definition,omitempty"`
+	Layout                          *GUIPreviewLayout       `json:"layout,omitempty"`
+	Overlay                         *GUIPreviewOverlay      `json:"overlay,omitempty"`
+	ClipBounds                      *GUIPreviewRect         `json:"clip_bounds,omitempty"`
+	BehaviorOnly                    bool                    `json:"behavior_only,omitempty"`
+	Approximate                     bool                    `json:"approximate,omitempty"`
 
 	// textureMaskDataURI is linked from the nearest textured ancestor only
 	// while generating self-contained HTML. It preserves modify_texture alpha
 	// semantics without exposing embedded image data in the preview JSON.
 	textureMaskDataURI string
+}
+
+// GUIPreviewPoint is an absolute coordinate in the native preview canvas.
+// It deliberately uses finite numeric values rather than source strings so
+// HTML and PNG renderers can share one deterministic line stroke.
+type GUIPreviewPoint struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
+
+// GUIPreviewLineGeometry is the bounded visual subset of CK3's line
+// primitive. From and To are present only when both original literal vectors
+// or caller-provided exact scenario samples are available. Origin records the
+// parent-local anchor used to turn the source vectors into preview points.
+// It is intentionally not a claim to reproduce the engine's shader, UV
+// animation, or resizeparent layout behavior.
+type GUIPreviewLineGeometry struct {
+	From            *GUIPreviewPoint `json:"from,omitempty"`
+	To              *GUIPreviewPoint `json:"to,omitempty"`
+	Origin          GUIPreviewPoint  `json:"origin"`
+	Width           float64          `json:"width"`
+	LineCap         bool             `json:"line_cap,omitempty"`
+	CoordinateSpace string           `json:"coordinate_space"`
 }
 
 // GUIPreviewOverlay identifies visual subtrees that the engine displays
@@ -121,44 +156,52 @@ type GUIPreviewOverlay struct {
 // the inspector needs to recompute a container after a visible expression
 // changes. Values are converted into final preview pixels before HTML output.
 type GUIPreviewLayout struct {
-	FlowDirection    string `json:"flow_direction,omitempty"`
-	IgnoreInvisible  bool   `json:"ignore_invisible,omitempty"`
-	Spacing          int    `json:"spacing,omitempty"`
-	FlowItem         bool   `json:"flow_item,omitempty"`
-	FillParent       bool   `json:"fill_parent,omitempty"`
-	MarginLeft       int    `json:"margin_left,omitempty"`
-	MarginRight      int    `json:"margin_right,omitempty"`
-	MarginTop        int    `json:"margin_top,omitempty"`
-	MarginBottom     int    `json:"margin_bottom,omitempty"`
-	ExpandHorizontal bool   `json:"expand_horizontal,omitempty"`
-	ExpandVertical   bool   `json:"expand_vertical,omitempty"`
-	AllowOutside     bool   `json:"allow_outside,omitempty"`
-	ScrollViewport   bool   `json:"scroll_viewport,omitempty"`
-	ScrollDirection  string `json:"scroll_direction,omitempty"`
-	ScrollContentW   int    `json:"scroll_content_width,omitempty"`
-	ScrollContentH   int    `json:"scroll_content_height,omitempty"`
-	ScrollStep       int    `json:"scroll_step,omitempty"`
-	AutoResize       bool   `json:"auto_resize,omitempty"`
-	Multiline        bool   `json:"multiline,omitempty"`
-	MinWidth         int    `json:"min_width,omitempty"`
-	MaxWidth         int    `json:"max_width,omitempty"`
-	MinHeight        int    `json:"min_height,omitempty"`
-	MaxHeight        int    `json:"max_height,omitempty"`
-	GridColumns      int    `json:"grid_columns,omitempty"`
-	GridColumnStep   int    `json:"grid_column_step,omitempty"`
-	GridRowStep      int    `json:"grid_row_step,omitempty"`
-	GridFlip         bool   `json:"grid_flip,omitempty"`
-	GridItem         bool   `json:"grid_item,omitempty"`
-	GridRow          int    `json:"grid_row,omitempty"`
-	GridColumn       int    `json:"grid_column,omitempty"`
+	FlowDirection     string `json:"flow_direction,omitempty"`
+	IgnoreInvisible   bool   `json:"ignore_invisible,omitempty"`
+	Spacing           int    `json:"spacing,omitempty"`
+	FlowItem          bool   `json:"flow_item,omitempty"`
+	FillParent        bool   `json:"fill_parent,omitempty"`
+	MarginLeft        int    `json:"margin_left,omitempty"`
+	MarginRight       int    `json:"margin_right,omitempty"`
+	MarginTop         int    `json:"margin_top,omitempty"`
+	MarginBottom      int    `json:"margin_bottom,omitempty"`
+	ExpandHorizontal  bool   `json:"expand_horizontal,omitempty"`
+	ExpandVertical    bool   `json:"expand_vertical,omitempty"`
+	StretchHorizontal int    `json:"stretch_horizontal,omitempty"`
+	StretchVertical   int    `json:"stretch_vertical,omitempty"`
+	AllowOutside      bool   `json:"allow_outside,omitempty"`
+	AllowOutsideExpr  string `json:"allow_outside_expression,omitempty"`
+	ScrollViewport    bool   `json:"scroll_viewport,omitempty"`
+	ScrollDirection   string `json:"scroll_direction,omitempty"`
+	ScrollContentW    int    `json:"scroll_content_width,omitempty"`
+	ScrollContentH    int    `json:"scroll_content_height,omitempty"`
+	ScrollStep        int    `json:"scroll_step,omitempty"`
+	AutoResize        bool   `json:"auto_resize,omitempty"`
+	Multiline         bool   `json:"multiline,omitempty"`
+	MinWidth          int    `json:"min_width,omitempty"`
+	MaxWidth          int    `json:"max_width,omitempty"`
+	MinHeight         int    `json:"min_height,omitempty"`
+	MaxHeight         int    `json:"max_height,omitempty"`
+	GridColumns       int    `json:"grid_columns,omitempty"`
+	GridColumnStep    int    `json:"grid_column_step,omitempty"`
+	GridRowStep       int    `json:"grid_row_step,omitempty"`
+	GridFlip          bool   `json:"grid_flip,omitempty"`
+	GridLayoutAnchor  string `json:"grid_layout_anchor,omitempty"`
+	GridItem          bool   `json:"grid_item,omitempty"`
+	GridRow           int    `json:"grid_row,omitempty"`
+	GridColumn        int    `json:"grid_column,omitempty"`
 }
 
 // GUIStateDefinition is a conservative subset of a Jomini state block that
-// the HTML inspector can replay visually without evaluating script.
+// the HTML inspector can replay visually with bounded runtime facts.
 type GUIStateDefinition struct {
-	Name     string `json:"name"`
-	Alpha    string `json:"alpha,omitempty"`
-	Duration string `json:"duration,omitempty"`
+	Name        string `json:"name"`
+	Alpha       string `json:"alpha,omitempty"`
+	Scale       string `json:"scale,omitempty"`
+	PositionX   string `json:"position_x,omitempty"`
+	PositionY   string `json:"position_y,omitempty"`
+	Duration    string `json:"duration,omitempty"`
+	TriggerWhen string `json:"trigger_when,omitempty"`
 }
 
 // GUISemantics preserves the runtime-facing expressions that are most useful
@@ -166,25 +209,52 @@ type GUIStateDefinition struct {
 // evaluator may compose a safe subset from explicit facts; arbitrary Jomini
 // code and engine data contexts are never executed.
 type GUISemantics struct {
-	Visible           string   `json:"visible,omitempty"`
-	Enabled           string   `json:"enabled,omitempty"`
-	Down              string   `json:"down,omitempty"`
-	Selected          string   `json:"selected,omitempty"`
-	Alpha             string   `json:"alpha,omitempty"`
-	Min               string   `json:"min,omitempty"`
-	Max               string   `json:"max,omitempty"`
-	Value             string   `json:"value,omitempty"`
-	TintColor         string   `json:"tint_color,omitempty"`
-	FontTintColor     string   `json:"font_tint_color,omitempty"`
-	DataContext       string   `json:"data_context,omitempty"`
-	DataModel         string   `json:"data_model,omitempty"`
-	OnClick           string   `json:"on_click,omitempty"`
-	OnClicks          []string `json:"on_clicks,omitempty"`
-	Tooltip           string   `json:"tooltip,omitempty"`
-	RawText           string   `json:"raw_text,omitempty"`
-	RawTexture        string   `json:"raw_texture,omitempty"`
-	NoProgressTexture string   `json:"no_progress_texture,omitempty"`
-	State             string   `json:"state,omitempty"`
+	Visible               string   `json:"visible,omitempty"`
+	Enabled               string   `json:"enabled,omitempty"`
+	Down                  string   `json:"down,omitempty"`
+	Selected              string   `json:"selected,omitempty"`
+	SelectedIndex         string   `json:"selected_index,omitempty"`
+	Checked               string   `json:"checked,omitempty"`
+	Grayscale             string   `json:"grayscale,omitempty"`
+	Alpha                 string   `json:"alpha,omitempty"`
+	Scale                 string   `json:"scale,omitempty"`
+	RotateUV              string   `json:"rotate_uv,omitempty"`
+	LineFrom              string   `json:"from,omitempty"`
+	LineTo                string   `json:"to,omitempty"`
+	MinWidth              string   `json:"min_width,omitempty"`
+	MaxWidth              string   `json:"max_width,omitempty"`
+	MinHeight             string   `json:"min_height,omitempty"`
+	MaxHeight             string   `json:"max_height,omitempty"`
+	MarginLeft            string   `json:"margin_left,omitempty"`
+	MarginRight           string   `json:"margin_right,omitempty"`
+	MarginTop             string   `json:"margin_top,omitempty"`
+	MarginBottom          string   `json:"margin_bottom,omitempty"`
+	Min                   string   `json:"min,omitempty"`
+	Max                   string   `json:"max,omitempty"`
+	Value                 string   `json:"value,omitempty"`
+	AnimatedProgressValue string   `json:"animated_progress_value,omitempty"`
+	Color                 string   `json:"color,omitempty"`
+	TintColor             string   `json:"tint_color,omitempty"`
+	FontTintColor         string   `json:"font_tint_color,omitempty"`
+	DataContext           string   `json:"data_context,omitempty"`
+	DataModel             string   `json:"data_model,omitempty"`
+	OnClick               string   `json:"on_click,omitempty"`
+	OnClicks              []string `json:"on_clicks,omitempty"`
+	OnRightClick          string   `json:"on_right_click,omitempty"`
+	Tooltip               string   `json:"tooltip,omitempty"`
+	TooltipWhenDisabled   string   `json:"tooltip_when_disabled,omitempty"`
+	RawTooltip            string   `json:"raw_tooltip,omitempty"`
+	TooltipVisible        string   `json:"tooltip_visible,omitempty"`
+	RawText               string   `json:"raw_text,omitempty"`
+	RawTexture            string   `json:"raw_texture,omitempty"`
+	Video                 string   `json:"video,omitempty"`
+	PortraitTexture       string   `json:"portrait_texture,omitempty"`
+	CoatOfArmsTexture     string   `json:"coat_of_arms,omitempty"`
+	CoatOfArmsMask        string   `json:"coat_of_arms_mask,omitempty"`
+	CoatOfArmsOffset      string   `json:"coat_of_arms_offset,omitempty"`
+	CoatOfArmsScale       string   `json:"coat_of_arms_scale,omitempty"`
+	NoProgressTexture     string   `json:"no_progress_texture,omitempty"`
+	State                 string   `json:"state,omitempty"`
 }
 
 type GUITextureRef struct {
@@ -367,6 +437,20 @@ func fitGUIPreviewNodes(nodes []GUIPreviewNode, width, height int) ([]GUIPreview
 			layout.GridRowStep = guiPreviewScaleLayoutValue(layout.GridRowStep, scale)
 			transformed[index].Layout = &layout
 		}
+		if node.LineGeometry != nil {
+			geometry := *node.LineGeometry
+			geometry.Origin = guiPreviewScalePoint(geometry.Origin, scale, offsetX, offsetY)
+			if geometry.From != nil {
+				from := guiPreviewScalePoint(*geometry.From, scale, offsetX, offsetY)
+				geometry.From = &from
+			}
+			if geometry.To != nil {
+				to := guiPreviewScalePoint(*geometry.To, scale, offsetX, offsetY)
+				geometry.To = &to
+			}
+			geometry.Width = math.Max(1, geometry.Width*scale)
+			transformed[index].LineGeometry = &geometry
+		}
 		if node.ClipBounds != nil {
 			transformed[index].ClipBounds = &GUIPreviewRect{
 				X:      offsetX + int(math.Round(float64(node.ClipBounds.X)*scale)),
@@ -377,6 +461,13 @@ func fitGUIPreviewNodes(nodes []GUIPreviewNode, width, height int) ([]GUIPreview
 		}
 	}
 	return transformed, native, scale, offsetX, offsetY
+}
+
+func guiPreviewScalePoint(point GUIPreviewPoint, scale float64, offsetX, offsetY int) GUIPreviewPoint {
+	return GUIPreviewPoint{
+		X: float64(offsetX) + point.X*scale,
+		Y: float64(offsetY) + point.Y*scale,
+	}
 }
 
 func guiPreviewScaleDimension(value int, scale float64) int {
@@ -421,6 +512,10 @@ func (layout *guiPreviewLayout) layoutElement(element GUIElement, parent GUIPrev
 	}
 	size := layout.measure(element, parent.Width, parent.Height, depth)
 	bounds := layout.position(element, parent, size)
+	lineGeometry := guiPreviewLineGeometry(element, parent)
+	if guiPreviewLineGeometryReady(lineGeometry) {
+		bounds = guiPreviewLineBounds(*lineGeometry)
+	}
 	if forced != nil {
 		bounds = *forced
 		if bounds.Width <= 0 {
@@ -432,15 +527,28 @@ func (layout *guiPreviewLayout) layoutElement(element GUIElement, parent GUIPrev
 	}
 	text := guiPreviewProperty(element, "text")
 	texture := guiPreviewPrimaryTexture(element)
+	backgroundTexture := guiPreviewProperty(element, "background_texture")
+	maskTexture := guiPreviewProperty(element, "mask")
+	fitType := guiPreviewFitType(element)
+	align := guiPreviewAlign(element)
 	textureBlendMode := guiPreviewTextureBlendMode(element)
 	textureBlendSupported := guiPreviewTextureBlendSupported(textureBlendMode)
-	approximate := size.approximate || (textureBlendMode != "" && !textureBlendSupported)
+	textureFrames := guiPreviewTextureFrames(element)
+	textureSlice := guiPreviewTextureSlice(element)
+	fitTypeApproximate := fitType != "" && (!guiPreviewFitTypeSupported(fitType) || textureFrames != nil || textureSlice != nil)
+	alignApproximate := align != "" && !guiPreviewAlignSupported(align)
+	approximate := size.approximate || lineGeometry != nil || (textureBlendMode != "" && !textureBlendSupported) || fitTypeApproximate || alignApproximate
 	node := GUIPreviewNode{
 		Index: len(layout.nodes), Parent: parentIndex, Depth: depth, Kind: element.Kind, TypeChain: append([]string(nil), element.TypeChain...), Name: element.Name,
 		Source: element.Source, Line: element.Span.Line, Bounds: bounds, Texture: texture,
+		BackgroundTexture: backgroundTexture, MaskTexture: maskTexture,
+		LineGeometry:     lineGeometry,
+		CoatOfArmsMask:   guiPreviewProperty(element, "coat_of_arms_mask"),
+		CoatOfArmsOffset: guiPreviewLiteralVectorProperty(element, "coat_of_arms_offset"),
+		CoatOfArmsScale:  guiPreviewLiteralVectorProperty(element, "coat_of_arms_scale"),
 		DeclaredPosition: cloneGUIVector(element.Position), DeclaredSize: cloneGUIVector(element.Size),
-		TextureFrames: guiPreviewTextureFrames(element), TextureSlice: guiPreviewTextureSlice(element),
-		TextureBlendMode: textureBlendMode, TextureBlendSupported: textureBlendSupported, Mirror: guiPreviewMirror(element),
+		TextureFrames: textureFrames, TextureSlice: textureSlice,
+		TextureBlendMode: textureBlendMode, TextureBlendSupported: textureBlendSupported, Mirror: guiPreviewMirror(element), FitType: fitType, Align: align,
 		Text: text, Semantics: guiPreviewSemantics(element), StateDefinition: guiPreviewStateDefinition(element),
 		Layout:       guiPreviewElementLayout(element),
 		BehaviorOnly: strings.EqualFold(strings.TrimSpace(element.Kind), "state"), Approximate: approximate,
@@ -461,12 +569,26 @@ func (layout *guiPreviewLayout) layoutElement(element GUIElement, parent GUIPrev
 	}
 	layout.nodes = append(layout.nodes, node)
 	currentIndex := node.Index
+	if node.Approximate {
+		layout.approximate = true
+	}
 	if size.approximate {
 		layout.approximate = true
 	}
 	if textureBlendMode != "" && !textureBlendSupported {
 		layout.approximate = true
 		layout.warn("texture_blend", "Some GUI texture blend modes are preserved as metadata but are not visually replayed")
+	}
+	if guiPreviewLineGeometryReady(lineGeometry) {
+		layout.warn("line_geometry", "GUI line endpoints are drawn as a bounded parent-local stroke; shader, UV, and resizeparent behavior remain approximate")
+	}
+	if fitType != "" && !guiPreviewFitTypeSupported(fitType) {
+		layout.warn("texture_fittype", "Some GUI fittype values are preserved as metadata but are not visually replayed")
+	} else if fitType != "" && (textureFrames != nil || textureSlice != nil) {
+		layout.warn("texture_fittype_frame", "GUI fittype combined with framesize or spriteborder remains approximate because the existing frame renderer takes precedence")
+	}
+	if align != "" && !guiPreviewAlignSupported(align) {
+		layout.warn("text_align", "Some GUI align tokens are preserved as metadata but are not visually replayed")
 	}
 
 	if isGUIPreviewGrid(element) {
@@ -492,6 +614,127 @@ func (layout *guiPreviewLayout) layoutElement(element GUIElement, parent GUIPrev
 		}
 		layout.layoutElement(element.Children[index], bounds, nil, depth+1, currentIndex)
 	}
+}
+
+// guiPreviewLineGeometry converts the literal vector endpoints of a CK3 line
+// into the preview's parent-local coordinate plane. Dynamic endpoints remain
+// intentionally unset until the caller supplies exact scenario samples.
+func guiPreviewLineGeometry(element GUIElement, parent GUIPreviewRect) *GUIPreviewLineGeometry {
+	if !strings.EqualFold(strings.TrimSpace(element.Kind), "line") {
+		return nil
+	}
+	parentX, parentY := guiPreviewAnchor(guiPreviewProperty(element, "parentanchor"), parent.Width, parent.Height)
+	positionX, positionXKnown := guiPreviewVectorNumber(element.Position, true)
+	positionY, positionYKnown := guiPreviewVectorNumber(element.Position, false)
+	if !positionXKnown {
+		positionX = 0
+	}
+	if !positionYKnown {
+		positionY = 0
+	}
+	geometry := &GUIPreviewLineGeometry{
+		Origin:          GUIPreviewPoint{X: float64(parent.X + parentX + positionX), Y: float64(parent.Y + parentY + positionY)},
+		Width:           guiPreviewLineWidth(element),
+		LineCap:         guiPreviewBool(guiPreviewProperty(element, "line_cap")),
+		CoordinateSpace: "parent_anchor",
+	}
+	if point, ok := guiPreviewLinePropertyPoint(element, "from"); ok {
+		geometry.From = guiPreviewLineAbsolutePoint(geometry.Origin, point)
+	}
+	if point, ok := guiPreviewLinePropertyPoint(element, "to"); ok {
+		geometry.To = guiPreviewLineAbsolutePoint(geometry.Origin, point)
+	}
+	return geometry
+}
+
+func guiPreviewLineGeometryReady(geometry *GUIPreviewLineGeometry) bool {
+	return geometry != nil && geometry.From != nil && geometry.To != nil
+}
+
+func guiPreviewLineAbsolutePoint(origin GUIPreviewPoint, relative GUIPreviewPoint) *GUIPreviewPoint {
+	return &GUIPreviewPoint{X: origin.X + relative.X, Y: origin.Y + relative.Y}
+}
+
+func guiPreviewLinePropertyPoint(element GUIElement, name string) (GUIPreviewPoint, bool) {
+	for index := len(element.Properties) - 1; index >= 0; index-- {
+		property := element.Properties[index]
+		if !strings.EqualFold(property.Name, name) || len(property.Values) != 2 {
+			continue
+		}
+		values := [2]float64{}
+		for valueIndex, raw := range property.Values {
+			parsed, err := strconv.ParseFloat(strings.Trim(strings.TrimSpace(raw), "\""), 64)
+			if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
+				return GUIPreviewPoint{}, false
+			}
+			values[valueIndex] = parsed
+		}
+		return GUIPreviewPoint{X: values[0], Y: values[1]}, true
+	}
+	return GUIPreviewPoint{}, false
+}
+
+func guiPreviewLineWidth(element GUIElement) float64 {
+	raw := strings.Trim(strings.TrimSpace(guiPreviewProperty(element, "width")), "\"")
+	width, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(width) || math.IsInf(width, 0) || width <= 0 {
+		return 1
+	}
+	return width
+}
+
+func guiPreviewLineBounds(geometry GUIPreviewLineGeometry) GUIPreviewRect {
+	if !guiPreviewLineGeometryReady(&geometry) {
+		return GUIPreviewRect{}
+	}
+	halfWidth := math.Max(0.5, geometry.Width/2)
+	minX := math.Floor(math.Min(geometry.From.X, geometry.To.X) - halfWidth)
+	maxX := math.Ceil(math.Max(geometry.From.X, geometry.To.X) + halfWidth)
+	minY := math.Floor(math.Min(geometry.From.Y, geometry.To.Y) - halfWidth)
+	maxY := math.Ceil(math.Max(geometry.From.Y, geometry.To.Y) + halfWidth)
+	return GUIPreviewRect{
+		X:      int(minX),
+		Y:      int(minY),
+		Width:  maxInt(1, int(maxX-minX)),
+		Height: maxInt(1, int(maxY-minY)),
+	}
+}
+
+func guiPreviewSetLineEndpoint(node *GUIPreviewNode, from bool, vector GUIVector) {
+	if node == nil || node.LineGeometry == nil {
+		return
+	}
+	point, ok := guiPreviewVectorPoint(vector)
+	if !ok {
+		return
+	}
+	absolute := guiPreviewLineAbsolutePoint(node.LineGeometry.Origin, point)
+	if from {
+		node.LineGeometry.From = absolute
+	} else {
+		node.LineGeometry.To = absolute
+	}
+	if guiPreviewLineGeometryReady(node.LineGeometry) {
+		node.Bounds = guiPreviewLineBounds(*node.LineGeometry)
+		node.Approximate = true
+	}
+}
+
+func guiPreviewVectorPoint(vector GUIVector) (GUIPreviewPoint, bool) {
+	values := []string{vector.X, vector.Y}
+	point := GUIPreviewPoint{}
+	for index, raw := range values {
+		value, err := strconv.ParseFloat(strings.Trim(strings.TrimSpace(raw), "\""), 64)
+		if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+			return GUIPreviewPoint{}, false
+		}
+		if index == 0 {
+			point.X = value
+		} else {
+			point.Y = value
+		}
+	}
+	return point, true
 }
 
 func cloneGUIVector(value *GUIVector) *GUIVector {
@@ -620,44 +863,122 @@ func guiPreviewMirror(element GUIElement) string {
 	}
 }
 
+func guiPreviewFitType(element GUIElement) string {
+	return strings.ToLower(strings.Trim(strings.TrimSpace(guiPreviewProperty(element, "fittype")), "\""))
+}
+
+func guiPreviewFitTypeSupported(fitType string) bool {
+	switch strings.ToLower(strings.TrimSpace(fitType)) {
+	case "", "centercrop", "start", "end":
+		return true
+	default:
+		return false
+	}
+}
+
+func guiPreviewAlign(element GUIElement) string {
+	return strings.ToLower(strings.Trim(strings.TrimSpace(guiPreviewProperty(element, "align")), "\""))
+}
+
+func guiPreviewAlignSupported(align string) bool {
+	found := false
+	for _, part := range strings.Split(strings.ToLower(strings.TrimSpace(align)), "|") {
+		token := strings.TrimSpace(part)
+		if token == "" {
+			continue
+		}
+		found = true
+		switch token {
+		case "left", "right", "center", "top", "bottom", "vcenter", "nobaseline":
+		default:
+			return false
+		}
+	}
+	return found
+}
+
 func guiPreviewSemantics(element GUIElement) *GUISemantics {
 	onClicks := guiPreviewProperties(element, "onclick")
-	alpha := ""
+	alpha, scale := "", ""
 	if !strings.EqualFold(strings.TrimSpace(element.Kind), "state") {
 		alpha = guiPreviewProperty(element, "alpha")
+		scale = guiPreviewProperty(element, "scale")
 	}
 	rawTexture := strings.TrimSpace(guiPreviewPrimaryTexture(element))
 	if !strings.Contains(rawTexture, "[") && !strings.Contains(rawTexture, "]") {
 		rawTexture = ""
 	}
+	portraitTexture := strings.TrimSpace(guiPreviewProperty(element, "portrait_texture"))
+	if !strings.Contains(portraitTexture, "[") && !strings.Contains(portraitTexture, "]") {
+		portraitTexture = ""
+	}
+	coatOfArmsTexture := strings.TrimSpace(guiPreviewProperty(element, "coat_of_arms"))
+	if !strings.Contains(coatOfArmsTexture, "[") && !strings.Contains(coatOfArmsTexture, "]") {
+		coatOfArmsTexture = ""
+	}
+	coatOfArmsMask := guiPreviewRuntimeProperty(element, "coat_of_arms_mask")
+	coatOfArmsOffset := guiPreviewRuntimeProperty(element, "coat_of_arms_offset")
+	coatOfArmsScale := guiPreviewRuntimeProperty(element, "coat_of_arms_scale")
+	fontTintColor := guiPreviewColorProperty(element, "fonttintcolor")
+	if fontTintColor == "" {
+		fontTintColor = guiPreviewColorProperty(element, "fontcolor")
+	}
 	semantics := GUISemantics{
-		Visible:           guiPreviewProperty(element, "visible"),
-		Enabled:           guiPreviewProperty(element, "enabled"),
-		Down:              guiPreviewProperty(element, "down"),
-		Selected:          guiPreviewProperty(element, "selected"),
-		Alpha:             alpha,
-		Min:               guiPreviewProperty(element, "min"),
-		Max:               guiPreviewProperty(element, "max"),
-		Value:             guiPreviewProperty(element, "value"),
-		TintColor:         guiPreviewColorProperty(element, "tintcolor"),
-		FontTintColor:     guiPreviewColorProperty(element, "fonttintcolor"),
-		DataContext:       guiPreviewProperty(element, "datacontext"),
-		DataModel:         guiPreviewProperty(element, "datamodel"),
-		OnClick:           guiPreviewProperty(element, "onclick"),
-		Tooltip:           guiPreviewProperty(element, "tooltip"),
-		RawText:           guiPreviewProperty(element, "raw_text"),
-		RawTexture:        rawTexture,
-		NoProgressTexture: guiPreviewProgressTextureProperty(element, "noprogresstexture"),
-		State:             guiPreviewProperty(element, "state"),
+		Visible:               guiPreviewProperty(element, "visible"),
+		Enabled:               guiPreviewProperty(element, "enabled"),
+		Down:                  guiPreviewProperty(element, "down"),
+		Selected:              guiPreviewProperty(element, "selected"),
+		SelectedIndex:         guiPreviewProperty(element, "selectedindex"),
+		Checked:               guiPreviewProperty(element, "checked"),
+		Grayscale:             guiPreviewProperty(element, "grayscale"),
+		Alpha:                 alpha,
+		Scale:                 scale,
+		RotateUV:              guiPreviewProperty(element, "rotate_uv"),
+		LineFrom:              guiPreviewPropertyExpression(element, "from"),
+		LineTo:                guiPreviewPropertyExpression(element, "to"),
+		MinWidth:              guiPreviewRuntimeProperty(element, "min_width"),
+		MaxWidth:              guiPreviewRuntimeProperty(element, "max_width"),
+		MinHeight:             guiPreviewRuntimeProperty(element, "min_height"),
+		MaxHeight:             guiPreviewRuntimeProperty(element, "max_height"),
+		MarginLeft:            guiPreviewRuntimeProperty(element, "margin_left"),
+		MarginRight:           guiPreviewRuntimeProperty(element, "margin_right"),
+		MarginTop:             guiPreviewRuntimeProperty(element, "margin_top"),
+		MarginBottom:          guiPreviewRuntimeProperty(element, "margin_bottom"),
+		Min:                   guiPreviewProperty(element, "min"),
+		Max:                   guiPreviewProperty(element, "max"),
+		Value:                 guiPreviewProperty(element, "value"),
+		AnimatedProgressValue: guiPreviewProperty(element, "animated_progress_value"),
+		Color:                 guiPreviewColorProperty(element, "color"),
+		TintColor:             guiPreviewColorProperty(element, "tintcolor"),
+		FontTintColor:         fontTintColor,
+		DataContext:           guiPreviewProperty(element, "datacontext"),
+		DataModel:             guiPreviewProperty(element, "datamodel"),
+		OnClick:               guiPreviewProperty(element, "onclick"),
+		OnRightClick:          guiPreviewProperty(element, "onrightclick"),
+		Tooltip:               guiPreviewProperty(element, "tooltip"),
+		TooltipWhenDisabled:   guiPreviewProperty(element, "tooltip_when_disabled"),
+		RawTooltip:            guiPreviewProperty(element, "raw_tooltip"),
+		TooltipVisible:        guiPreviewProperty(element, "tooltip_visible"),
+		RawText:               guiPreviewProperty(element, "raw_text"),
+		RawTexture:            rawTexture,
+		Video:                 guiPreviewProperty(element, "video"),
+		PortraitTexture:       portraitTexture,
+		CoatOfArmsTexture:     coatOfArmsTexture,
+		CoatOfArmsMask:        coatOfArmsMask,
+		CoatOfArmsOffset:      coatOfArmsOffset,
+		CoatOfArmsScale:       coatOfArmsScale,
+		NoProgressTexture:     guiPreviewProgressTextureProperty(element, "noprogresstexture"),
+		State:                 guiPreviewProperty(element, "state"),
 	}
 	if len(onClicks) > 1 {
 		semantics.OnClicks = onClicks
 	}
-	if semantics.Visible == "" && semantics.Enabled == "" && semantics.Down == "" && semantics.Selected == "" && semantics.Alpha == "" &&
-		semantics.Min == "" && semantics.Max == "" && semantics.Value == "" &&
-		semantics.TintColor == "" && semantics.FontTintColor == "" &&
-		semantics.DataContext == "" && semantics.DataModel == "" && semantics.OnClick == "" &&
-		semantics.Tooltip == "" && semantics.RawText == "" && semantics.RawTexture == "" &&
+	if semantics.Visible == "" && semantics.Enabled == "" && semantics.Down == "" && semantics.Selected == "" && semantics.SelectedIndex == "" && semantics.Checked == "" && semantics.Grayscale == "" && semantics.Alpha == "" && semantics.Scale == "" && semantics.RotateUV == "" && semantics.LineFrom == "" && semantics.LineTo == "" &&
+		semantics.MinWidth == "" && semantics.MaxWidth == "" && semantics.MinHeight == "" && semantics.MaxHeight == "" && semantics.MarginLeft == "" && semantics.MarginRight == "" && semantics.MarginTop == "" && semantics.MarginBottom == "" &&
+		semantics.Min == "" && semantics.Max == "" && semantics.Value == "" && semantics.AnimatedProgressValue == "" &&
+		semantics.Color == "" && semantics.TintColor == "" && semantics.FontTintColor == "" &&
+		semantics.DataContext == "" && semantics.DataModel == "" && semantics.OnClick == "" && semantics.OnRightClick == "" &&
+		semantics.Tooltip == "" && semantics.TooltipWhenDisabled == "" && semantics.RawTooltip == "" && semantics.TooltipVisible == "" && semantics.RawText == "" && semantics.RawTexture == "" && semantics.Video == "" && semantics.PortraitTexture == "" && semantics.CoatOfArmsTexture == "" && semantics.CoatOfArmsMask == "" && semantics.CoatOfArmsOffset == "" && semantics.CoatOfArmsScale == "" &&
 		semantics.NoProgressTexture == "" && semantics.State == "" {
 		return nil
 	}
@@ -686,9 +1007,13 @@ func guiPreviewStateDefinition(element GUIElement) *GUIStateDefinition {
 		return nil
 	}
 	return &GUIStateDefinition{
-		Name:     strings.TrimSpace(element.Name),
-		Alpha:    guiPreviewProperty(element, "alpha"),
-		Duration: guiPreviewProperty(element, "duration"),
+		Name:        strings.TrimSpace(element.Name),
+		Alpha:       guiPreviewProperty(element, "alpha"),
+		Scale:       guiPreviewProperty(element, "scale"),
+		PositionX:   guiPreviewProperty(element, "position_x"),
+		PositionY:   guiPreviewProperty(element, "position_y"),
+		Duration:    guiPreviewProperty(element, "duration"),
+		TriggerWhen: guiPreviewProperty(element, "trigger_when"),
 	}
 }
 
@@ -720,10 +1045,11 @@ func (layout *guiPreviewLayout) layoutFlowChildren(element GUIElement, bounds GU
 		size      guiPreviewSize
 		margins   guiPreviewMargins
 		expanding bool
+		stretch   int
 	}
 	measured := make([]measuredChild, len(flowIndices))
 	fixedSize := 0
-	expanding := 0
+	stretchTotal := 0
 	for index, childIndex := range flowIndices {
 		child := children[childIndex]
 		margins := guiPreviewElementMargins(child)
@@ -733,14 +1059,16 @@ func (layout *guiPreviewLayout) layoutFlowChildren(element GUIElement, bounds GU
 			policy = "layoutpolicy_horizontal"
 		}
 		isExpanding := strings.EqualFold(guiPreviewProperty(child, policy), "expanding") || strings.EqualFold(child.Kind, "expand")
-		measured[index] = measuredChild{size: size, margins: margins, expanding: isExpanding}
+		stretch := 0
 		if isExpanding {
-			expanding++
+			stretch = guiPreviewStretchFactor(child, horizontal)
+			stretchTotal += stretch
 		} else if horizontal {
 			fixedSize += size.w + margins.left + margins.right
 		} else {
 			fixedSize += size.h + margins.top + margins.bottom
 		}
+		measured[index] = measuredChild{size: size, margins: margins, expanding: isExpanding, stretch: stretch}
 	}
 	if len(flowIndices) > 1 {
 		fixedSize += spacing * (len(flowIndices) - 1)
@@ -749,21 +1077,28 @@ func (layout *guiPreviewLayout) layoutFlowChildren(element GUIElement, bounds GU
 	if horizontal {
 		available = bounds.Width
 	}
-	extra := 0
-	if expanding > 0 && available > fixedSize {
-		extra = (available - fixedSize) / expanding
+	remainingExtra := 0
+	if stretchTotal > 0 && available > fixedSize {
+		remainingExtra = available - fixedSize
 	}
+	remainingStretch := stretchTotal
 	scrollViewport := isGUIPreviewScrollViewport(element)
 	cursor := 0
 	for index, childIndex := range flowIndices {
 		child := children[childIndex]
 		item := measured[index]
 		childBounds := GUIPreviewRect{}
+		allocation := 0
+		if item.expanding && remainingStretch > 0 {
+			allocation = remainingExtra * item.stretch / remainingStretch
+			remainingExtra -= allocation
+			remainingStretch -= item.stretch
+		}
 		if horizontal {
 			cursor += item.margins.left
 			childBounds = GUIPreviewRect{X: bounds.X + cursor, Y: bounds.Y + item.margins.top, Width: item.size.w, Height: item.size.h}
-			if item.expanding && extra > 0 {
-				childBounds.Width = extra
+			if item.expanding && allocation > 0 {
+				childBounds.Width = allocation
 				if scrollViewport && !strings.EqualFold(strings.TrimSpace(child.Kind), "expand") {
 					childBounds.Width = maxInt(item.size.w, childBounds.Width)
 				}
@@ -775,8 +1110,8 @@ func (layout *guiPreviewLayout) layoutFlowChildren(element GUIElement, bounds GU
 		} else {
 			cursor += item.margins.top
 			childBounds = GUIPreviewRect{X: bounds.X + item.margins.left, Y: bounds.Y + cursor, Width: item.size.w, Height: item.size.h}
-			if item.expanding && extra > 0 {
-				childBounds.Height = extra
+			if item.expanding && allocation > 0 {
+				childBounds.Height = allocation
 				if scrollViewport && !strings.EqualFold(strings.TrimSpace(child.Kind), "expand") {
 					childBounds.Height = maxInt(item.size.h, childBounds.Height)
 				}
@@ -895,10 +1230,7 @@ func (layout *guiPreviewLayout) layoutGridChildren(element GUIElement, bounds GU
 	if len(children) == 0 {
 		return
 	}
-	if guiPreviewBool(guiPreviewProperty(element, "flipdirection")) {
-		layout.approximate = true
-		layout.warn("grid-flip", "Grid flipdirection is preserved as metadata; the bounded preview keeps source-order cells until engine direction semantics are available")
-	}
+	flipDirection := guiPreviewBool(guiPreviewProperty(element, "flipdirection"))
 	items := make([]GUIElement, 0, len(children))
 	for index := range children {
 		if isGUIPreviewFillParentElement(children[index]) {
@@ -918,14 +1250,24 @@ func (layout *guiPreviewLayout) layoutGridChildren(element GUIElement, bounds GU
 		return
 	}
 	columns, columnStep, rowStep := guiPreviewGridMetrics(element, items, bounds.Width, bounds.Height, layout, depth)
+	rows := (len(items) + columns - 1) / columns
+	contentWidth, contentHeight := columns*columnStep, rows*rowStep
+	originX, originY := guiPreviewGridOrigin(guiPreviewProperty(element, "layoutanchor"), bounds, contentWidth, contentHeight)
 	for index := range items {
 		row, column := index/columns, index%columns
+		if flipDirection {
+			// CK3 fills a flipped grid from its far corner. Keeping the
+			// coordinate transform here, rather than reversing the model, also
+			// preserves the data-model index used by dynamic item bindings.
+			row = rows - 1 - row
+			column = columns - 1 - column
+		}
 		item := items[index]
 		size := layout.measure(item, bounds.Width, bounds.Height, depth)
 		margins := guiPreviewElementMargins(item)
 		itemBounds := GUIPreviewRect{
-			X:     bounds.X + column*columnStep + margins.left,
-			Y:     bounds.Y + row*rowStep + margins.top,
+			X:     originX + column*columnStep + margins.left,
+			Y:     originY + row*rowStep + margins.top,
 			Width: size.w, Height: size.h,
 		}
 		if strings.EqualFold(guiPreviewProperty(item, "layoutpolicy_horizontal"), "expanding") && columnStep > margins.left+margins.right {
@@ -938,6 +1280,16 @@ func (layout *guiPreviewLayout) layoutGridChildren(element GUIElement, bounds GU
 		layout.layoutElement(item, bounds, &itemBounds, depth, parentIndex)
 		layout.markGUIPreviewGridItem(childNodeIndex, parentIndex, row, column, margins)
 	}
+}
+
+func guiPreviewGridOrigin(raw string, bounds GUIPreviewRect, contentWidth, contentHeight int) (int, int) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return bounds.X, bounds.Y
+	}
+	parentX, parentY := guiPreviewAnchor(raw, bounds.Width, bounds.Height)
+	contentX, contentY := guiPreviewAnchor(raw, contentWidth, contentHeight)
+	return bounds.X + parentX - contentX, bounds.Y + parentY - contentY
 }
 
 func (layout *guiPreviewLayout) markGUIPreviewGridItem(nodeIndex, parentIndex, row, column int, margins guiPreviewMargins) {
@@ -1004,12 +1356,20 @@ func (layout *guiPreviewLayout) markGUIPreviewFillParent(nodeIndex, parentIndex 
 }
 
 func guiPreviewElementLayout(element GUIElement) *GUIPreviewLayout {
+	allowOutside := guiPreviewProperty(element, "allow_outside")
 	result := GUIPreviewLayout{
 		ExpandHorizontal: strings.EqualFold(strings.TrimSpace(guiPreviewProperty(element, "layoutpolicy_horizontal")), "expanding"),
 		ExpandVertical:   strings.EqualFold(strings.TrimSpace(guiPreviewProperty(element, "layoutpolicy_vertical")), "expanding"),
-		AllowOutside:     guiPreviewBool(guiPreviewProperty(element, "allow_outside")),
+		AllowOutside:     guiPreviewBool(allowOutside),
+		AllowOutsideExpr: guiPreviewRuntimeProperty(element, "allow_outside"),
 		AutoResize:       guiPreviewBool(guiPreviewProperty(element, "autoresize")),
 		Multiline:        strings.EqualFold(strings.TrimSpace(element.Kind), "text_multi") || guiPreviewBool(guiPreviewProperty(element, "multiline")),
+	}
+	if value, ok := guiPreviewNumber(guiPreviewProperty(element, "layoutstretchfactor_horizontal")); ok && value > 0 {
+		result.StretchHorizontal = value
+	}
+	if value, ok := guiPreviewNumber(guiPreviewProperty(element, "layoutstretchfactor_vertical")); ok && value > 0 {
+		result.StretchVertical = value
 	}
 	result.MinWidth, result.MaxWidth = guiPreviewDimensionConstraints(element, true)
 	result.MinHeight, result.MaxHeight = guiPreviewDimensionConstraints(element, false)
@@ -1021,6 +1381,7 @@ func guiPreviewElementLayout(element GUIElement) *GUIPreviewLayout {
 		result.GridColumnStep, _ = guiPreviewNumber(guiPreviewProperty(element, "addcolumn"))
 		result.GridRowStep, _ = guiPreviewNumber(guiPreviewProperty(element, "addrow"))
 		result.GridFlip = guiPreviewBool(guiPreviewProperty(element, "flipdirection"))
+		result.GridLayoutAnchor = strings.TrimSpace(guiPreviewProperty(element, "layoutanchor"))
 		result.IgnoreInvisible = guiPreviewBool(guiPreviewProperty(element, "ignoreinvisible"))
 	}
 	if isGUIPreviewScrollViewport(element) {
@@ -1040,12 +1401,27 @@ func guiPreviewElementLayout(element GUIElement) *GUIPreviewLayout {
 		result.IgnoreInvisible = guiPreviewBool(guiPreviewProperty(element, "ignoreinvisible"))
 		result.Spacing, _ = guiPreviewNumber(guiPreviewProperty(element, "spacing"))
 	}
-	if result.FlowDirection == "" && !result.ExpandHorizontal && !result.ExpandVertical && !result.AllowOutside && !result.ScrollViewport &&
+	if result.FlowDirection == "" && !result.ExpandHorizontal && !result.ExpandVertical && result.StretchHorizontal == 0 && result.StretchVertical == 0 && !result.AllowOutside && result.AllowOutsideExpr == "" && !result.ScrollViewport &&
 		!result.AutoResize && !result.Multiline && result.MinWidth == 0 && result.MaxWidth == 0 && result.MinHeight == 0 && result.MaxHeight == 0 &&
 		!isGUIPreviewGrid(element) {
 		return nil
 	}
 	return &result
+}
+
+// guiPreviewStretchFactor returns the positive, literal flow weight used for
+// an expanding item. Missing, dynamic, and non-positive values deliberately
+// retain the historic equal-share layout instead of inventing engine state.
+func guiPreviewStretchFactor(element GUIElement, horizontal bool) int {
+	name := "layoutstretchfactor_vertical"
+	if horizontal {
+		name = "layoutstretchfactor_horizontal"
+	}
+	value, ok := guiPreviewNumber(guiPreviewProperty(element, name))
+	if !ok || value <= 0 {
+		return 1
+	}
+	return value
 }
 
 func guiPreviewBool(raw string) bool {
@@ -1561,6 +1937,13 @@ func guiPreviewClampDimension(value, minimum, maximum int) int {
 
 func guiPreviewAnchor(raw string, width, height int) (int, int) {
 	raw = strings.ToLower(strings.Trim(strings.TrimSpace(raw), "\""))
+	for _, replacement := range []struct{ from, to string }{
+		{"bottomleft", "bottom|left"}, {"bottomright", "bottom|right"},
+		{"topleft", "top|left"}, {"topright", "top|right"},
+		{"centerleft", "vcenter|left"}, {"centerright", "vcenter|right"},
+	} {
+		raw = strings.ReplaceAll(raw, replacement.from, replacement.to)
+	}
 	x, y := 0, 0
 	if raw == "center" {
 		return width / 2, height / 2
@@ -1617,6 +2000,80 @@ func guiPreviewProperty(element GUIElement, name string) string {
 	return ""
 }
 
+// guiPreviewPropertyExpression preserves either a scalar or the source form
+// of a brace-delimited vector. It is used for endpoint metadata and exact
+// scenario matching; layout keeps using typed values instead.
+func guiPreviewPropertyExpression(element GUIElement, name string) string {
+	for index := len(element.Properties) - 1; index >= 0; index-- {
+		property := element.Properties[index]
+		if !strings.EqualFold(property.Name, name) {
+			continue
+		}
+		if value := strings.TrimSpace(property.Value); value != "" {
+			return value
+		}
+		if len(property.Values) > 0 {
+			return "{ " + strings.Join(property.Values, " ") + " }"
+		}
+		return ""
+	}
+	return ""
+}
+
+func guiPreviewRuntimeProperty(element GUIElement, name string) string {
+	value := strings.TrimSpace(guiPreviewProperty(element, name))
+	if strings.Contains(value, "[") || strings.Contains(value, "]") {
+		return value
+	}
+	return ""
+}
+
+func guiPreviewLiteralVectorProperty(element GUIElement, name string) *GUIVector {
+	for index := len(element.Properties) - 1; index >= 0; index-- {
+		property := element.Properties[index]
+		if !strings.EqualFold(property.Name, name) || len(property.Values) != 2 {
+			continue
+		}
+		x := strings.Trim(strings.TrimSpace(property.Values[0]), "\"")
+		y := strings.Trim(strings.TrimSpace(property.Values[1]), "\"")
+		xValue, err := strconv.ParseFloat(x, 64)
+		if err != nil || math.IsNaN(xValue) || math.IsInf(xValue, 0) {
+			return nil
+		}
+		yValue, err := strconv.ParseFloat(y, 64)
+		if err != nil || math.IsNaN(yValue) || math.IsInf(yValue, 0) {
+			return nil
+		}
+		return &GUIVector{X: x, Y: y}
+	}
+	return nil
+}
+
+// guiPreviewDisplayText keeps `raw_text` separate from localization lookup
+// while still making its literal CK3 caption visible in the bounded preview.
+// A regular `text` property takes precedence when a widget happens to carry
+// both fields.
+func guiPreviewDisplayText(element GUIElement) string {
+	if text := guiPreviewProperty(element, "text"); strings.TrimSpace(text) != "" {
+		return text
+	}
+	return guiPreviewProperty(element, "raw_text")
+}
+
+// guiPreviewTooltipText mirrors the regular/raw split used for captions. A
+// regular tooltip can name a localization key, while raw_tooltip is already
+// the literal text intended for display. Keep the latter separate so binding
+// localization never turns an ordinary raw string into a missing key.
+func guiPreviewTooltipText(semantics *GUISemantics) string {
+	if semantics == nil {
+		return ""
+	}
+	if tooltip := strings.TrimSpace(semantics.Tooltip); tooltip != "" {
+		return tooltip
+	}
+	return semantics.RawTooltip
+}
+
 func guiPreviewProperties(element GUIElement, name string) []string {
 	values := make([]string, 0, 2)
 	for _, property := range element.Properties {
@@ -1631,7 +2088,7 @@ func guiPreviewDefaultSize(element GUIElement, horizontal bool) int {
 	kind := strings.ToLower(element.Kind)
 	if strings.Contains(kind, "text") {
 		if horizontal {
-			text := guiPreviewProperty(element, "text")
+			text := guiPreviewDisplayText(element)
 			return maxInt(80, minInt(320, len([]rune(text))*7+16))
 		}
 		return 24
@@ -1704,6 +2161,10 @@ func renderGUIPreviewPNG(width, height int, nodes []GUIPreviewNode) ([]byte, err
 		if rect.Empty() {
 			continue
 		}
+		if guiPreviewLineGeometryReady(node.LineGeometry) {
+			drawGUIPreviewLine(canvas, *node.LineGeometry, rect, guiPreviewLineColor(node))
+			continue
+		}
 		fill, border := guiPreviewColors(node.Kind, node.Approximate)
 		if node.Scenario != nil && node.Scenario.Enabled != nil && !*node.Scenario.Enabled {
 			border = color.RGBA{217, 107, 107, 255}
@@ -1732,15 +2193,105 @@ func renderGUIPreviewPNG(width, height int, nodes []GUIPreviewNode) ([]byte, err
 	return output.Bytes(), nil
 }
 
+func drawGUIPreviewLine(canvas *image.RGBA, geometry GUIPreviewLineGeometry, clip image.Rectangle, stroke color.RGBA) {
+	if canvas == nil || !guiPreviewLineGeometryReady(&geometry) {
+		return
+	}
+	clip = clip.Intersect(canvas.Bounds())
+	if clip.Empty() {
+		return
+	}
+	from, to := *geometry.From, *geometry.To
+	deltaX, deltaY := to.X-from.X, to.Y-from.Y
+	lengthSquared := deltaX*deltaX + deltaY*deltaY
+	radius := math.Max(0.5, geometry.Width/2)
+	radiusSquared := radius * radius
+	for y := clip.Min.Y; y < clip.Max.Y; y++ {
+		for x := clip.Min.X; x < clip.Max.X; x++ {
+			pointX, pointY := float64(x)+0.5, float64(y)+0.5
+			closestX, closestY := from.X, from.Y
+			if lengthSquared > 0 {
+				progress := ((pointX-from.X)*deltaX + (pointY-from.Y)*deltaY) / lengthSquared
+				if geometry.LineCap {
+					progress = math.Max(0, math.Min(1, progress))
+				} else if progress < 0 || progress > 1 {
+					continue
+				}
+				closestX = from.X + progress*deltaX
+				closestY = from.Y + progress*deltaY
+			}
+			distanceX, distanceY := pointX-closestX, pointY-closestY
+			if distanceX*distanceX+distanceY*distanceY > radiusSquared {
+				continue
+			}
+			draw.Draw(canvas, image.Rect(x, y, x+1, y+1), image.NewUniform(stroke), image.Point{}, draw.Over)
+		}
+	}
+}
+
+func guiPreviewLineColor(node GUIPreviewNode) color.RGBA {
+	if node.Runtime != nil {
+		if node.Runtime.TintColor != nil && node.Runtime.TintColor.Result != nil {
+			if parsed, ok := guiPreviewRGBA(*node.Runtime.TintColor.Result); ok {
+				return parsed
+			}
+		}
+		if node.Runtime.Color != nil && node.Runtime.Color.Result != nil {
+			if parsed, ok := guiPreviewRGBA(*node.Runtime.Color.Result); ok {
+				return parsed
+			}
+		}
+	}
+	if node.Semantics != nil {
+		for _, raw := range []string{node.Semantics.TintColor, node.Semantics.Color} {
+			if normalized, ok := normalizeGUIRuntimeColor(raw); ok {
+				if parsed, ok := guiPreviewRGBA(normalized); ok {
+					return parsed
+				}
+			}
+		}
+	}
+	return color.RGBA{177, 122, 229, 255}
+}
+
+func guiPreviewRGBA(raw string) (color.RGBA, bool) {
+	raw = strings.TrimSpace(raw)
+	if !strings.HasPrefix(raw, "rgba(") || !strings.HasSuffix(raw, ")") {
+		return color.RGBA{}, false
+	}
+	parts := strings.Split(strings.TrimSuffix(strings.TrimPrefix(raw, "rgba("), ")"), ",")
+	if len(parts) != 4 {
+		return color.RGBA{}, false
+	}
+	channels := [4]float64{}
+	for index, part := range parts {
+		value, err := strconv.ParseFloat(strings.TrimSpace(part), 64)
+		if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+			return color.RGBA{}, false
+		}
+		channels[index] = value
+	}
+	return color.RGBA{
+		R: uint8(math.Max(0, math.Min(255, math.Round(channels[0])))),
+		G: uint8(math.Max(0, math.Min(255, math.Round(channels[1])))),
+		B: uint8(math.Max(0, math.Min(255, math.Round(channels[2])))),
+		A: uint8(math.Max(0, math.Min(255, math.Round(channels[3]*255)))),
+	}, true
+}
+
 func refreshGUIPreviewPNG(preview *GUIPreviewResult) error {
 	if preview == nil {
 		return nil
 	}
-	displayNodes, _, _, _, _ := fitGUIPreviewNodes(preview.Nodes, preview.Width, preview.Height)
+	displayNodes, nativeBounds, viewScale, viewOffsetX, viewOffsetY := fitGUIPreviewNodes(preview.Nodes, preview.Width, preview.Height)
 	pngData, err := renderGUIPreviewPNG(preview.Width, preview.Height, displayNodes)
 	if err != nil {
 		return err
 	}
+	preview.NativeBounds = nativeBounds
+	preview.ViewScale = viewScale
+	preview.ViewOffsetX = viewOffsetX
+	preview.ViewOffsetY = viewOffsetY
 	preview.PNG = pngData
 	preview.Bytes = len(pngData)
 	return nil
@@ -1762,7 +2313,13 @@ func guiPreviewNodeDisplayText(node GUIPreviewNode) string {
 	if node.TextLocalization != nil && node.TextLocalization.SelectedLanguage != GUIPreviewLanguageRaw && node.TextLocalization.SelectedText != "" {
 		return node.TextLocalization.SelectedText
 	}
-	return node.Text
+	if strings.TrimSpace(node.Text) != "" {
+		return node.Text
+	}
+	if node.Semantics != nil {
+		return node.Semantics.RawText
+	}
+	return ""
 }
 
 func guiPreviewColors(kind string, approximate bool) (color.RGBA, color.RGBA) {

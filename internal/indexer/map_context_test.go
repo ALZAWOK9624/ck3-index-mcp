@@ -456,7 +456,7 @@ func TestMapIntegrityWarningsAreDeterministicAndRendered(t *testing.T) {
 	}
 	foundLegend := false
 	for _, item := range first.Legend {
-		foundLegend = foundLegend || item.Color == "#ff00ff"
+		foundLegend = foundLegend || strings.Contains(item.Label, "归属冲突")
 	}
 	if !foundLegend {
 		t.Fatalf("integrity conflict legend missing: %+v", first.Legend)

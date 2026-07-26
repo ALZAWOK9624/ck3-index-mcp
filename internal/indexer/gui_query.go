@@ -35,20 +35,21 @@ type GUIQueryOptions struct {
 }
 
 type GUIQueryResult struct {
-	Operation       string                `json:"operation"`
-	Query           string                `json:"query,omitempty"`
-	Files           int                   `json:"files"`
-	ResolutionFiles int                   `json:"resolution_files,omitempty"`
-	CacheHit        bool                  `json:"cache_hit,omitempty"`
-	Found           bool                  `json:"found,omitempty"`
-	File            *GUIFileModel         `json:"file,omitempty"`
-	Type            *ResolvedGUIType      `json:"type,omitempty"`
-	Template        *GUITemplate          `json:"template,omitempty"`
-	Preview         *GUIPreviewResult     `json:"preview,omitempty"`
-	Summary         *GUIResolutionSummary `json:"summary,omitempty"`
-	Tree            *GUITreeStats         `json:"tree,omitempty"`
-	Diagnostics     []GUIDiagnostic       `json:"diagnostics,omitempty"`
-	Guidance        []string              `json:"guidance,omitempty"`
+	Operation           string                `json:"operation"`
+	Query               string                `json:"query,omitempty"`
+	Files               int                   `json:"files"`
+	ResolutionFiles     int                   `json:"resolution_files,omitempty"`
+	ResolutionTruncated bool                  `json:"resolution_truncated,omitempty"`
+	CacheHit            bool                  `json:"cache_hit,omitempty"`
+	Found               bool                  `json:"found,omitempty"`
+	File                *GUIFileModel         `json:"file,omitempty"`
+	Type                *ResolvedGUIType      `json:"type,omitempty"`
+	Template            *GUITemplate          `json:"template,omitempty"`
+	Preview             *GUIPreviewResult     `json:"preview,omitempty"`
+	Summary             *GUIResolutionSummary `json:"summary,omitempty"`
+	Tree                *GUITreeStats         `json:"tree,omitempty"`
+	Diagnostics         []GUIDiagnostic       `json:"diagnostics,omitempty"`
+	Guidance            []string              `json:"guidance,omitempty"`
 }
 
 type GUITreeStats struct {
@@ -148,8 +149,21 @@ func (db *DB) QueryGUI(ctx context.Context, options GUIQueryOptions) (GUIQueryRe
 	if err != nil {
 		return result, err
 	}
+	result.Files = len(files)
+	if operation == "summary" {
+		summary, err := db.summarizeActiveGUIFiles(ctx, files)
+		if err != nil {
+			return result, err
+		}
+		result.Summary = &summary
+		result.Found = len(files) > 0
+		result.Guidance = []string{
+			"GUI summary streams raw active-file models and does not resolve the full cross-file inheritance graph.",
+			"resolution_complete=false means missing-template, unresolved-type, inheritance, and blockoverride diagnostics require a bounded type, template, or preview query.",
+		}
+		return result, nil
+	}
 	resolutionFiles := files
-	resolutionPrefix := prefix
 	if prefix != "" && operation != "summary" {
 		// path_prefix scopes the requested symbol, but custom types and
 		// templates are global CK3 GUI dependencies. Resolve the symbol
@@ -159,27 +173,23 @@ func (db *DB) QueryGUI(ctx context.Context, options GUIQueryOptions) (GUIQueryRe
 		if err != nil {
 			return result, err
 		}
-		resolutionPrefix = ""
 	}
-	resolution, cacheHit, err := db.resolveActiveGUIFiles(ctx, resolutionFiles, resolutionPrefix, options.AllowProject)
+	resolution, cacheHit, err := db.resolveActiveGUIFiles(ctx, resolutionFiles, prefix, operation, strings.TrimSpace(options.Symbol), options.AllowProject)
 	if err != nil {
 		return result, err
 	}
-	result.Files = len(files)
 	if len(resolutionFiles) != len(files) {
 		result.ResolutionFiles = len(resolutionFiles)
 	}
 	result.CacheHit = cacheHit
+	result.ResolutionTruncated = resolution.truncated
+	if resolution.truncated {
+		result.Guidance = append(result.Guidance,
+			"GUI dependency resolution reached a declared expansion bound; the returned symbol is partial. Inspect gui_expansion_limit or gui_expansion_depth before treating it as a complete preview.",
+		)
+	}
 
 	switch operation {
-	case "summary":
-		summary := resolution.Summary()
-		result.Summary = &summary
-		result.Found = len(files) > 0
-		result.Guidance = []string{
-			"GUI resolution reuses active file override state from ck3-index; it does not create a second index.",
-			"Missing templates and unresolved external types are informational because some GUI primitives are engine-provided.",
-		}
 	case "type":
 		result.Query = strings.TrimSpace(options.Symbol)
 		for index := range resolution.Types {
@@ -479,13 +489,12 @@ func (db *DB) activeGUIFiles(ctx context.Context, prefix string, allowProject bo
 
 const guiResolutionCacheLimit = 8
 
-// resolveActiveGUIFiles keeps the expensive cross-file inheritance/template
+// resolveActiveGUIFiles keeps focused cross-file inheritance/template
 // resolution warm for long-lived MCP sessions. The key is derived from the
-// authoritative files-table hashes and selection rules, so a scan that changes
-// any active GUI input naturally selects a new cache entry. There is no path-
-// based fallback and no second on-disk GUI database.
-func (db *DB) resolveActiveGUIFiles(ctx context.Context, files []activeGUIFile, prefix string, allowProject bool) (GUIResolution, bool, error) {
-	key := guiResolutionCacheKey(files, prefix, allowProject)
+// authoritative files-table hashes plus the selected public symbol, so a scan
+// that changes any active GUI input naturally selects a new cache entry.
+func (db *DB) resolveActiveGUIFiles(ctx context.Context, files []activeGUIFile, scopePrefix, operation, symbol string, allowProject bool) (GUIResolution, bool, error) {
+	key := guiResolutionCacheKey(files, scopePrefix, operation, symbol, allowProject)
 	db.guiResolutionMu.Lock()
 	if cached, ok := db.guiResolutionCache[key]; ok {
 		db.guiResolutionMu.Unlock()
@@ -504,7 +513,7 @@ func (db *DB) resolveActiveGUIFiles(ctx context.Context, files []activeGUIFile, 
 		}
 		inputs = append(inputs, GUIModelInput{Path: file.relPath, Model: BuildGUIModel(string(data))})
 	}
-	resolution := ResolveGUIModels(inputs)
+	resolution := ResolveGUIModelSymbol(inputs, operation, symbol, scopePrefix)
 
 	db.guiResolutionMu.Lock()
 	if db.guiResolutionCache == nil {
@@ -523,9 +532,100 @@ func (db *DB) resolveActiveGUIFiles(ctx context.Context, files []activeGUIFile, 
 	return resolution, false, nil
 }
 
-func guiResolutionCacheKey(files []activeGUIFile, prefix string, allowProject bool) string {
+// summarizeActiveGUIFiles streams raw parsed GUI models without expanding
+// cross-file inheritance. A global workspace can contain enough GUI templates
+// and nested block overrides that resolving every definition just to count
+// fields is disproportionately expensive. The returned summary marks this
+// boundary with ResolutionComplete=false; focused queries resolve only their
+// requested symbol and its reachable type/template dependencies.
+func (db *DB) summarizeActiveGUIFiles(ctx context.Context, files []activeGUIFile) (GUIResolutionSummary, error) {
+	summary := GUIResolutionSummary{
+		ResolutionComplete: false,
+		DiagnosticsBy:      map[string]int{},
+		Samples:            map[string][]GUIDiagnostic{},
+	}
+	propertyUsage := map[string]*GUIPropertyUsage{}
+	var visitElement func(GUIElement)
+	visitElement = func(element GUIElement) {
+		for _, property := range element.Properties {
+			name := strings.ToLower(strings.TrimSpace(property.Name))
+			if name == "" || strings.HasPrefix(name, "@") {
+				continue
+			}
+			usage := propertyUsage[name]
+			if usage == nil {
+				usage = &GUIPropertyUsage{Name: name, Support: guiPreviewPropertySupport(name)}
+				propertyUsage[name] = usage
+			}
+			usage.Count++
+			if guiPropertyHasRuntimeExpression(property) {
+				usage.Expressions++
+			}
+		}
+		for _, child := range element.Children {
+			visitElement(child)
+		}
+		for _, linked := range element.Linked {
+			visitElement(linked.Element)
+		}
+	}
+	addDiagnostic := func(diagnostic GUIDiagnostic) {
+		summary.Diagnostics++
+		summary.DiagnosticsBy[diagnostic.Code]++
+		if len(summary.Samples[diagnostic.Code]) < 3 {
+			summary.Samples[diagnostic.Code] = append(summary.Samples[diagnostic.Code], diagnostic)
+		}
+	}
+	for _, file := range files {
+		if err := ctx.Err(); err != nil {
+			return GUIResolutionSummary{}, err
+		}
+		data, err := os.ReadFile(file.path)
+		if err != nil {
+			return GUIResolutionSummary{}, fmt.Errorf("read indexed GUI file %s: %w", file.relPath, err)
+		}
+		model := BuildGUIModel(string(data))
+		for _, parseErr := range model.ParseErrors {
+			addDiagnostic(GUIDiagnostic{
+				Code: "gui_parse_error", Severity: "error", Source: file.relPath, Message: parseErr.Message,
+				Span: SourceSpan{Line: parseErr.Line, Column: parseErr.Col, EndLine: parseErr.Line, EndCol: parseErr.Col},
+			})
+		}
+		for _, namespace := range model.Namespaces {
+			summary.Types += len(namespace.Types)
+			for _, typeRule := range namespace.Types {
+				visitElement(typeRule.Element)
+			}
+		}
+		summary.Templates += len(model.Templates)
+		for _, template := range model.Templates {
+			visitElement(template.Element)
+		}
+		summary.Roots += len(model.Roots)
+		for _, root := range model.Roots {
+			visitElement(root)
+		}
+	}
+	for _, usage := range propertyUsage {
+		summary.PropertyUsage = append(summary.PropertyUsage, *usage)
+		if usage.Expressions > 0 && usage.Support == "unmodeled" {
+			summary.RuntimeHotspots = append(summary.RuntimeHotspots, *usage)
+		}
+	}
+	sortGUIPropertyUsage(summary.PropertyUsage)
+	sortGUIPropertyUsage(summary.RuntimeHotspots)
+	if len(summary.PropertyUsage) > guiSummaryPropertyLimit {
+		summary.PropertyUsage = summary.PropertyUsage[:guiSummaryPropertyLimit]
+	}
+	if len(summary.RuntimeHotspots) > guiSummaryRuntimeHotspotLimit {
+		summary.RuntimeHotspots = summary.RuntimeHotspots[:guiSummaryRuntimeHotspotLimit]
+	}
+	return summary, nil
+}
+
+func guiResolutionCacheKey(files []activeGUIFile, prefix, operation, symbol string, allowProject bool) string {
 	hash := sha256.New()
-	fmt.Fprintf(hash, "v1\x00%s\x00%t\x00", prefix, allowProject)
+	fmt.Fprintf(hash, "v2\x00%s\x00%s\x00%s\x00%t\x00", prefix, operation, symbol, allowProject)
 	for _, file := range files {
 		fmt.Fprintf(hash, "%s\x00%s\x00%d\x00%s\x00", file.relPath, file.sourceName, file.sourceRank, file.sha256)
 	}
@@ -557,7 +657,7 @@ func normalizeGUIQueryPath(value string, exact bool) (string, error) {
 func selectGUIDiagnostics(values []GUIDiagnostic, symbol, source string, limit int) []GUIDiagnostic {
 	selected := make([]GUIDiagnostic, 0, limit)
 	for _, diagnostic := range values {
-		if diagnostic.Symbol != symbol && (source == "" || diagnostic.Source != source) {
+		if !guiResolutionLimitDiagnostic(diagnostic.Code) && diagnostic.Symbol != symbol && (source == "" || diagnostic.Source != source) {
 			continue
 		}
 		selected = append(selected, diagnostic)
@@ -599,7 +699,7 @@ func selectGUIPreviewDiagnostics(values []GUIDiagnostic, symbol string, nodes []
 	}
 	selected := make([]GUIDiagnostic, 0, limit)
 	for _, diagnostic := range values {
-		include := diagnostic.Symbol == symbol
+		include := diagnostic.Symbol == symbol || guiResolutionLimitDiagnostic(diagnostic.Code)
 		if span, ok := ranges[diagnostic.Source]; ok {
 			end := diagnostic.Span.EndLine
 			if end <= 0 {
@@ -625,6 +725,10 @@ func selectGUIPreviewDiagnostics(values []GUIDiagnostic, symbol string, nodes []
 		return selected[i].Span.Line < selected[j].Span.Line
 	})
 	return selected
+}
+
+func guiResolutionLimitDiagnostic(code string) bool {
+	return code == "gui_expansion_limit" || code == "gui_expansion_depth"
 }
 
 const (

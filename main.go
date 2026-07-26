@@ -1066,18 +1066,20 @@ func run(ctx context.Context, args []string) error {
 			return printJSON(result)
 		case "render":
 			if len(args) < 4 {
-				return errors.New("usage: ck3-index map render <spec.json> --out <file.png> [--meta <sidecar.json>]")
+				return errors.New("usage: ck3-index map render <spec.json> --out <file.png> [--meta <sidecar.json>] [--hit-out <hit.png>]")
 			}
-			outputPath, metadataPath := "", ""
+			outputPath, metadataPath, hitPath := "", "", ""
 			for index := 2; index < len(args); index += 2 {
 				if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
-					return errors.New("usage: ck3-index map render <spec.json> --out <file.png> [--meta <sidecar.json>]")
+					return errors.New("usage: ck3-index map render <spec.json> --out <file.png> [--meta <sidecar.json>] [--hit-out <hit.png>]")
 				}
 				switch args[index] {
 				case "--out":
 					outputPath = args[index+1]
 				case "--meta":
 					metadataPath = args[index+1]
+				case "--hit-out":
+					hitPath = args[index+1]
 				default:
 					return fmt.Errorf("unknown map render flag %q", args[index])
 				}
@@ -1101,7 +1103,16 @@ func run(ctx context.Context, args []string) error {
 			if err := os.WriteFile(outputPath, result.PNG, 0644); err != nil {
 				return err
 			}
+			if hitPath != "" {
+				if len(result.HitPNG) == 0 {
+					return errors.New("--hit-out requires layout \"basemap\" with hit_map enabled in the spec")
+				}
+				if err := os.WriteFile(hitPath, result.HitPNG, 0644); err != nil {
+					return err
+				}
+			}
 			result.PNG = nil
+			result.HitPNG = nil
 			if metadataPath != "" {
 				data, err := json.MarshalIndent(result, "", "  ")
 				if err != nil {

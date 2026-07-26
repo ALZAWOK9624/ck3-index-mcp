@@ -115,10 +115,16 @@ func (db *DB) bindGUIPreviewLocalization(ctx context.Context, preview *GUIPrevie
 			if key, ok := guiPreviewLocalizationKey(node.Semantics.Tooltip); ok {
 				keys[key] = struct{}{}
 			}
+			if key, ok := guiPreviewLocalizationKey(node.Semantics.TooltipWhenDisabled); ok {
+				keys[key] = struct{}{}
+			}
 			for key := range guiConditionalLocalizationKeys(node.Semantics.RawText) {
 				keys[key] = struct{}{}
 			}
 			for key := range guiConditionalLocalizationKeys(node.Semantics.Tooltip) {
+				keys[key] = struct{}{}
+			}
+			for key := range guiConditionalLocalizationKeys(node.Semantics.TooltipWhenDisabled) {
 				keys[key] = struct{}{}
 			}
 		}
@@ -147,6 +153,13 @@ func (db *DB) bindGUIPreviewLocalization(ctx context.Context, preview *GUIPrevie
 				if binding := cloneGUILocalizedText(bindings[key]); binding != nil {
 					preview.Localization.Bindings++
 					node.TooltipLocalization = binding
+					preview.recordGUIPreviewLocalization(binding)
+				}
+			}
+			if key, ok := guiPreviewLocalizationKey(node.Semantics.TooltipWhenDisabled); ok {
+				if binding := cloneGUILocalizedText(bindings[key]); binding != nil {
+					preview.Localization.Bindings++
+					node.TooltipWhenDisabledLocalization = binding
 					preview.recordGUIPreviewLocalization(binding)
 				}
 			}

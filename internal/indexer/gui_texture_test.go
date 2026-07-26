@@ -145,6 +145,38 @@ func TestEmbedGUIPreviewTexturesProducesBoundedDataPNG(t *testing.T) {
 	}
 }
 
+func TestEmbedGUIPreviewTexturesIncludesPortraitLayers(t *testing.T) {
+	block := make([]byte, 16)
+	block[0] = 255
+	binary.LittleEndian.PutUint16(block[8:10], 0x001f)
+	binary.LittleEndian.PutUint16(block[10:12], 0)
+	filePath := filepath.Join(t.TempDir(), "portrait-layer.dds")
+	if err := os.WriteFile(filePath, makeGUIDDSTestData("DXT5", block, 4, 4), 0600); err != nil {
+		t.Fatal(err)
+	}
+	makeRef := func(path string) *GUITextureRef {
+		return &GUITextureRef{Path: path, Resolved: true, Kind: "dds", filePath: filePath}
+	}
+	preview := GUIPreviewResult{Nodes: []GUIPreviewNode{{
+		Kind: "portrait_button", Bounds: GUIPreviewRect{Width: 48, Height: 72},
+		TextureRef:           makeRef("gfx/portraits/portrait_sample.dds"),
+		BackgroundTextureRef: makeRef("gfx/portraits/portrait_background.dds"),
+		MaskTextureRef:       makeRef("gfx/portraits/portrait_mask_head.dds"),
+	}}, Textures: GUIPreviewTextures{Total: 3, Resolved: 3}}
+	if err := embedGUIPreviewTextures(context.Background(), &preview); err != nil {
+		t.Fatal(err)
+	}
+	node := preview.Nodes[0]
+	for _, ref := range []*GUITextureRef{node.TextureRef, node.BackgroundTextureRef, node.MaskTextureRef} {
+		if ref == nil || !ref.Embedded || !strings.HasPrefix(ref.dataURI, "data:image/png;base64,") {
+			t.Fatalf("portrait texture layer was not embedded: stats=%+v node=%+v", preview.Textures, node)
+		}
+	}
+	if preview.Textures.Embedded != 3 {
+		t.Fatalf("embedded portrait layer count=%d want 3", preview.Textures.Embedded)
+	}
+}
+
 func TestEmbedGUIPreviewTexturesPreservesProgressFillAndEmptyLayers(t *testing.T) {
 	block := make([]byte, 16)
 	block[0] = 255

@@ -153,7 +153,13 @@ func guiNodeTextureRefs(node *GUIPreviewNode) []*GUITextureRef {
 	if node == nil {
 		return nil
 	}
-	return []*GUITextureRef{node.TextureRef, node.NoProgressTextureRef}
+	return []*GUITextureRef{
+		node.TextureRef,
+		node.BackgroundTextureRef,
+		node.MaskTextureRef,
+		node.CoatOfArmsMaskRef,
+		node.NoProgressTextureRef,
+	}
 }
 
 func guiEmbeddedTextureBytes(texture guiEmbeddedTexture) int {

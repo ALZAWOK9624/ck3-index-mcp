@@ -29,7 +29,43 @@ const (
 	MapRenderMaxHeight        = 4096
 	mapRenderMaxPixels        = int64(MapRenderMaxWidth * MapRenderMaxHeight)
 	mapRenderMaxWorkingPixels = int64(48 * 1024 * 1024)
+	// Above this output size deflate at its default level costs several seconds
+	// and dominates the whole request, so large plates default to the fast level.
+	mapRenderFastEncodePixels = int64(8 << 20)
 )
+
+// mapRenderPNGEncoder picks the deflate level for the finished plate.
+// CK3_INDEX_MAP_PNG_COMPRESSION overrides the choice: "default" always uses
+// deflate's default level for the smallest file, "fast" always trades roughly
+// 15% more bytes for a 4x quicker encode, "best" and "none" are the remaining
+// image/png levels. The zero value, "auto", uses "fast" only for large plates.
+func mapRenderPNGEncoder(pixels int64) (png.Encoder, string) {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("CK3_INDEX_MAP_PNG_COMPRESSION")))
+	if mode == "" || mode == "auto" {
+		if pixels >= mapRenderFastEncodePixels {
+			mode = "fast"
+		} else {
+			mode = "default"
+		}
+	}
+	switch mode {
+	case "fast":
+		return png.Encoder{CompressionLevel: png.BestSpeed}, "fast"
+	case "best":
+		return png.Encoder{CompressionLevel: png.BestCompression}, "best"
+	case "none":
+		return png.Encoder{CompressionLevel: png.NoCompression}, "none"
+	default:
+		return png.Encoder{CompressionLevel: png.DefaultCompression}, "default"
+	}
+}
+
+func minInt64(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
+}
 
 type MapRenderEdge struct {
 	From  string  `json:"from"`
@@ -60,36 +96,40 @@ type MapRenderLayer struct {
 }
 
 type MapRenderSpec struct {
-	Recipe               string           `json:"recipe,omitempty"`
-	Theme                string           `json:"theme,omitempty"`
-	Level                string           `json:"level,omitempty"`
-	BoundaryLevels       []string         `json:"boundary_levels,omitempty"`
-	Title                string           `json:"title,omitempty"`
-	Subtitle             string           `json:"subtitle,omitempty"`
-	Target               string           `json:"target,omitempty"`
-	Year                 int              `json:"year,omitempty"`
-	HistoryYear          int              `json:"history_year,omitempty"`
-	Width                int              `json:"width,omitempty"`
-	Height               int              `json:"height,omitempty"`
-	Padding              int              `json:"padding,omitempty"`
-	Background           string           `json:"background,omitempty"`
-	FontPath             string           `json:"font_path,omitempty"`
-	TerrainOverlay       *bool            `json:"terrain_overlay,omitempty"`
-	Style                string           `json:"style,omitempty"`
-	Layout               string           `json:"layout,omitempty"`
-	ReliefStrength       string           `json:"relief_strength,omitempty"`
-	LabelLanguage        string           `json:"label_language,omitempty"`
-	ColorStrategy        string           `json:"color_strategy,omitempty"`
-	Supersample          int              `json:"supersample,omitempty"`
-	Route                *MapRouteResult  `json:"route,omitempty"`
-	RouteProvinceIDs     []int            `json:"route_province_ids,omitempty"`
-	AutoContext          bool             `json:"auto_context,omitempty"`
-	CorridorRadiusPixels int              `json:"corridor_radius_pixels,omitempty"`
-	ContextLevel         string           `json:"context_level,omitempty"`
-	Verbose              bool             `json:"verbose,omitempty"`
-	Layers               []MapRenderLayer `json:"layers"`
-	uiScale              float64
-	deviceScale          float64
+	Recipe               string          `json:"recipe,omitempty"`
+	Theme                string          `json:"theme,omitempty"`
+	Level                string          `json:"level,omitempty"`
+	BoundaryLevels       []string        `json:"boundary_levels,omitempty"`
+	Title                string          `json:"title,omitempty"`
+	Subtitle             string          `json:"subtitle,omitempty"`
+	Target               string          `json:"target,omitempty"`
+	Year                 int             `json:"year,omitempty"`
+	HistoryYear          int             `json:"history_year,omitempty"`
+	Width                int             `json:"width,omitempty"`
+	Height               int             `json:"height,omitempty"`
+	Padding              int             `json:"padding,omitempty"`
+	Background           string          `json:"background,omitempty"`
+	FontPath             string          `json:"font_path,omitempty"`
+	TerrainOverlay       *bool           `json:"terrain_overlay,omitempty"`
+	Style                string          `json:"style,omitempty"`
+	Layout               string          `json:"layout,omitempty"`
+	ReliefStrength       string          `json:"relief_strength,omitempty"`
+	LabelLanguage        string          `json:"label_language,omitempty"`
+	ColorStrategy        string          `json:"color_strategy,omitempty"`
+	Supersample          int             `json:"supersample,omitempty"`
+	Route                *MapRouteResult `json:"route,omitempty"`
+	RouteProvinceIDs     []int           `json:"route_province_ids,omitempty"`
+	AutoContext          bool            `json:"auto_context,omitempty"`
+	CorridorRadiusPixels int             `json:"corridor_radius_pixels,omitempty"`
+	ContextLevel         string          `json:"context_level,omitempty"`
+	Verbose              bool            `json:"verbose,omitempty"`
+	// HitMap asks a basemap for a companion lookup plate so a page can resolve
+	// the entity under the pointer exactly. It roughly doubles the returned image
+	// payload, so it stays opt-in.
+	HitMap      bool             `json:"hit_map,omitempty"`
+	Layers      []MapRenderLayer `json:"layers"`
+	uiScale     float64
+	deviceScale float64
 }
 
 type MapRenderSourceSize struct {
@@ -125,10 +165,54 @@ type MapRenderTimings struct {
 	EncodeMS   int64 `json:"encode_ms"`
 }
 
+// MapOverlayEntity is one addressable area on a basemap plate, expressed in the
+// plate's own pixel coordinates. It exists so a caller compositing the image into
+// HTML can place text, tooltips and hit regions where they actually belong
+// instead of estimating positions from the picture.
+type MapOverlayEntity struct {
+	ID        string  `json:"id"`
+	LabelZH   string  `json:"label_zh,omitempty"`
+	LabelEN   string  `json:"label_en,omitempty"`
+	Tint      string  `json:"tint,omitempty"`
+	CenterX   float64 `json:"center_x"`
+	CenterY   float64 `json:"center_y"`
+	MinX      int     `json:"min_x"`
+	MinY      int     `json:"min_y"`
+	MaxX      int     `json:"max_x"`
+	MaxY      int     `json:"max_y"`
+	Provinces int     `json:"provinces"`
+	HitColor  string  `json:"hit_color,omitempty"`
+}
+
+// MapRenderOverlay accompanies a basemap so the plate can be annotated
+// externally. Coordinates are final output pixels, already accounting for
+// supersampling, so they index the returned PNG directly.
+type MapRenderOverlay struct {
+	Level      string             `json:"level"`
+	CoordSpace string             `json:"coord_space"`
+	Entities   []MapOverlayEntity `json:"entities,omitempty"`
+	// HitMap describes the companion lookup plate when one was requested.
+	HitMap *MapOverlayHitMap `json:"hit_map,omitempty"`
+}
+
+// MapOverlayHitMap tells a caller how to read the companion lookup plate.
+type MapOverlayHitMap struct {
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+	Empty  string `json:"empty_color"`
+	Note   string `json:"note"`
+}
+
 type MapLegendItem struct {
 	Label string  `json:"label"`
 	Color string  `json:"color"`
 	Value float64 `json:"value,omitempty"`
+	// Kind selects how the swatch is drawn. A boundary has to be shown as a
+	// line and a settlement as its own glyph; painting a colour chip for every
+	// entry mislabelled most of the plate.
+	Kind   string `json:"kind,omitempty"`
+	Weight int    `json:"weight,omitempty"`
+	Glyph  string `json:"glyph,omitempty"`
 }
 
 type MapRenderResult struct {
@@ -143,6 +227,7 @@ type MapRenderResult struct {
 	ResolutionMode    string                       `json:"resolution_mode"`
 	ResolutionReason  string                       `json:"resolution_reason,omitempty"`
 	Bytes             int                          `json:"bytes"`
+	PNGCompression    string                       `json:"png_compression,omitempty"`
 	Coverage          float64                      `json:"coverage"`
 	Provenance        []string                     `json:"provenance"`
 	Legend            []MapLegendItem              `json:"legend,omitempty"`
@@ -159,8 +244,10 @@ type MapRenderResult struct {
 	ResolvedTo        *MapResolvedSubject          `json:"resolved_to,omitempty"`
 	RouteLegs         []MapRouteLeg                `json:"route_legs,omitempty"`
 	RoutePointsOutput []MapRenderRoutePointOutput  `json:"route_points_output,omitempty"`
+	Overlay           *MapRenderOverlay            `json:"overlay,omitempty"`
 	Timings           MapRenderTimings             `json:"timings_ms"`
 	PNG               []byte                       `json:"-"`
+	HitPNG            []byte                       `json:"-"`
 }
 
 type renderViewport struct {
@@ -243,25 +330,42 @@ func (r *mapTextRenderer) Draw(canvas *image.RGBA, x, y int, text string, c colo
 func (r *mapTextRenderer) DrawSize(canvas *image.RGBA, x, y int, text string, c color.RGBA, size int) {
 	face := r.faceFor(size)
 	if face == nil {
-		drawTinyText(canvas, x, y, strings.ToUpper(text), c)
+		drawBitmapInk(canvas, x, y, strings.ToUpper(text), c)
 		return
 	}
-	drawer := font.Drawer{Dst: canvas, Src: image.NewUniform(c), Face: face, Dot: fixed.P(x, y+face.Metrics().Ascent.Ceil())}
+	// Every other drawing helper here takes straight (non-premultiplied) alpha,
+	// but image/draw treats color.RGBA as premultiplied. Handing it a translucent
+	// straight colour overflows the compositing arithmetic and fringes the
+	// lettering with stray hues, so convert at the boundary.
+	drawer := font.Drawer{Dst: canvas, Src: image.NewUniform(premultiplyRGBA(c)), Face: face,
+		Dot: fixed.P(x, y+face.Metrics().Ascent.Ceil())}
 	drawer.DrawString(text)
 }
 
-func (r *mapTextRenderer) DrawOutlined(canvas *image.RGBA, x, y int, text string, c color.RGBA) {
-	shadow := color.RGBA{10, 12, 13, 190}
-	for _, offset := range [][2]int{{-1, 0}, {1, 0}, {0, -1}, {0, 1}, {-1, -1}, {1, 1}} {
-		r.Draw(canvas, x+offset[0], y+offset[1], text, shadow)
+// premultiplyRGBA converts a straight-alpha colour into the premultiplied form
+// image/draw expects.
+func premultiplyRGBA(c color.RGBA) color.RGBA {
+	if c.A == 255 {
+		return c
 	}
-	r.Draw(canvas, x, y, text, c)
+	a := uint32(c.A)
+	scale := func(v uint8) uint8 { return uint8((uint32(v) * a) / 255) }
+	return color.RGBA{scale(c.R), scale(c.G), scale(c.B), c.A}
+}
+
+// DrawOutlined draws text with a halo. The halo is paper-coloured: it lifts ink
+// lettering off a busy wash without stamping a dark block onto the sheet.
+func (r *mapTextRenderer) DrawOutlined(canvas *image.RGBA, x, y int, text string, c color.RGBA) {
+	r.DrawOutlinedSize(canvas, x, y, text, c, 13)
 }
 
 func (r *mapTextRenderer) DrawOutlinedSize(canvas *image.RGBA, x, y int, text string, c color.RGBA, size int) {
-	shadow := color.RGBA{10, 12, 13, 190}
-	for _, offset := range [][2]int{{-1, 0}, {1, 0}, {0, -1}, {0, 1}, {-1, -1}, {1, 1}} {
-		r.DrawSize(canvas, x+offset[0], y+offset[1], text, shadow, size)
+	halo := color.RGBA{245, 236, 212, 205}
+	spread := maxInt(1, size/9)
+	for radius := spread; radius >= 1; radius-- {
+		for _, offset := range [][2]int{{-1, 0}, {1, 0}, {0, -1}, {0, 1}, {-1, -1}, {1, 1}, {-1, 1}, {1, -1}} {
+			r.DrawSize(canvas, x+offset[0]*radius, y+offset[1]*radius, text, halo, size)
+		}
 	}
 	r.DrawSize(canvas, x, y, text, c, size)
 }
@@ -291,26 +395,9 @@ func (r *mapTextRenderer) HeightSize(size int) int {
 	return face.Metrics().Height.Ceil()
 }
 
-var sequentialPalettes = map[string][]color.RGBA{
-	"viridis":     {{34, 48, 62, 255}, {35, 92, 109, 255}, {42, 135, 113, 255}, {105, 166, 95, 255}, {196, 188, 83, 255}, {221, 139, 64, 255}},
-	"magma":       {{24, 15, 45, 255}, {83, 24, 87, 255}, {145, 39, 91, 255}, {207, 72, 72, 255}, {244, 137, 72, 255}, {252, 224, 145, 255}},
-	"blue_red":    {{49, 82, 122, 255}, {91, 139, 166, 255}, {188, 210, 204, 255}, {226, 185, 137, 255}, {193, 91, 72, 255}, {126, 45, 51, 255}},
-	"parchment":   {{47, 55, 51, 255}, {73, 91, 75, 255}, {116, 125, 84, 255}, {163, 151, 91, 255}, {198, 174, 108, 255}, {218, 201, 153, 255}},
-	"development": {{35, 52, 65, 255}, {43, 83, 88, 255}, {60, 116, 101, 255}, {91, 143, 103, 255}, {139, 160, 103, 255}, {185, 165, 96, 255}, {207, 137, 82, 255}},
-}
-
-var categoricalColors = []color.RGBA{
-	{63, 105, 170, 255}, {222, 117, 55, 255}, {67, 142, 90, 255}, {172, 75, 87, 255},
-	{126, 92, 155, 255}, {166, 117, 82, 255}, {195, 104, 151, 255}, {111, 111, 111, 255},
-	{184, 160, 53, 255}, {48, 147, 151, 255}, {93, 137, 186, 255}, {231, 151, 90, 255},
-	{105, 170, 118, 255}, {199, 112, 119, 255}, {151, 126, 180, 255}, {194, 150, 111, 255},
-	{219, 139, 184, 255}, {143, 143, 143, 255}, {205, 190, 84, 255}, {82, 177, 181, 255},
-}
-
-var politicalColors = []color.RGBA{
-	{101, 139, 120, 255}, {176, 139, 92, 255}, {102, 126, 157, 255}, {157, 105, 103, 255},
-	{129, 111, 151, 255}, {150, 145, 91, 255}, {83, 143, 145, 255}, {171, 118, 145, 255},
-}
+// Numeric themes shade by ink density; categorical themes use the tint pots.
+// Both live in map_style.go so the whole look is defined in one place.
+func sequentialPalette(name string) []color.RGBA { return parchmentRamp(name) }
 
 func parseRenderColor(value string, fallback color.RGBA) color.RGBA {
 	value = strings.TrimPrefix(strings.TrimSpace(value), "#")
@@ -349,7 +436,7 @@ func interpolateColor(stops []color.RGBA, ratio float64) color.RGBA {
 func categoryColor(category string) color.RGBA {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(category))
-	return categoricalColors[int(h.Sum32())%len(categoricalColors)]
+	return parchmentCategoryWashes[int(h.Sum32())%len(parchmentCategoryWashes)]
 }
 
 func (db *DB) politicalEntityColors(ctx context.Context, metric MapMetricResult, muted bool) (map[string]color.RGBA, error) {
@@ -407,12 +494,12 @@ func (db *DB) politicalEntityColorsWithStrategy(ctx context.Context, metric MapM
 		var rgb sql.NullInt64
 		if err := db.sql.QueryRowContext(ctx, `SELECT color_rgb FROM map_titles WHERE title_id=?`, id).Scan(&rgb); err == nil && rgb.Valid {
 			value := uint32(rgb.Int64)
-			colors[id] = color.RGBA{uint8(value >> 16), uint8(value >> 8), uint8(value), 255}
-			if strategy == "muted" || strategy == "coordinated" {
-				colors[id] = harmonizePoliticalColor(colors[id])
-			}
+			// The title keeps its hue; the wash decides how it is painted.
+			colors[id] = parchmentWash(color.RGBA{uint8(value >> 16), uint8(value >> 8), uint8(value), 255})
 			continue
 		}
+		// Titles with no colour of their own fall back to graph colouring over
+		// the tint pots, so neighbours still differ.
 		used := map[int]bool{}
 		for neighbor := range neighbors[id] {
 			if index, ok := assigned[neighbor]; ok {
@@ -423,12 +510,14 @@ func (db *DB) politicalEntityColorsWithStrategy(ctx context.Context, metric MapM
 		for used[index] {
 			index++
 		}
-		index %= len(politicalColors)
+		index %= len(parchmentCategoryWashes)
 		assigned[id] = index
-		colors[id] = politicalColors[index]
+		colors[id] = parchmentCategoryWashes[index]
 	}
-	if strategy == "coordinated" {
-		colors = coordinatePoliticalColors(colors, neighbors)
+	if strategy != "native" {
+		// Lightness and chroma are already pinned, so hue is the only axis left
+		// and it can be spread much further than the old harmoniser allowed.
+		colors = spreadWashHues(colors, neighbors)
 	}
 	return colors, nil
 }
@@ -637,6 +726,27 @@ func (db *DB) LLMMapRender(ctx context.Context, spec MapRenderSpec, opts LLMOpti
 		return result, fmt.Errorf("map output %dx%d exceeds the %dx%d pixel budget", finalWidth, finalHeight, MapRenderMaxWidth, MapRenderMaxHeight)
 	}
 	workingPixels := finalPixels * int64(spec.Supersample*spec.Supersample)
+	if workingPixels > mapRenderMaxWorkingPixels && !explicitSupersample {
+		// Automatic sizing picks a width before the viewport's height is known, so
+		// the supersampled working area can only be checked here. When the caller
+		// did not ask for supersampling by name, drop it rather than refusing to
+		// draw: a plate the renderer chose the size of must always be renderable.
+		// One sample per pixel always fits, because finalPixels is already capped
+		// below the working budget.
+		spec.Supersample = 1
+		spec.deviceScale = spec.uiScale
+		workingPixels = finalPixels
+		result.Warnings = append(result.Warnings,
+			fmt.Sprintf("supersampling disabled: %dx%d at supersample=2 exceeds the %d working-pixel budget", finalWidth, finalHeight, mapRenderMaxWorkingPixels))
+		// Recorded whether or not the caller chose the size: an automatic downgrade
+		// has to be visible in the result either way.
+		const shed = "supersampling disabled to fit the working-pixel budget"
+		if result.ResolutionReason == "" {
+			result.ResolutionReason = shed
+		} else {
+			result.ResolutionReason += "; " + shed
+		}
+	}
 	if workingPixels > mapRenderMaxWorkingPixels {
 		return result, fmt.Errorf("map output %dx%d with supersample=%d requires %d working pixels; reduce supersample or output size", finalWidth, finalHeight, spec.Supersample, workingPixels)
 	}
@@ -648,71 +758,70 @@ func (db *DB) LLMMapRender(ctx context.Context, spec MapRenderSpec, opts LLMOpti
 		viewport.Width *= spec.Supersample
 		viewport.Height *= spec.Supersample
 	}
-	backgroundFallback := color.RGBA{22, 24, 25, 255}
-	if spec.Style == "historical_atlas" {
-		backgroundFallback = color.RGBA{26, 43, 49, 255}
-	}
-	background := parseRenderColor(spec.Background, backgroundFallback)
 	canvas := image.NewRGBA(image.Rect(0, 0, viewport.Width, viewport.Height))
 	renderStarted := time.Now()
-	draw.Draw(canvas, canvas.Bounds(), &image.Uniform{background}, image.Point{}, draw.Src)
-	if spec.Style == "historical_atlas" {
-		drawAtlasPaper(canvas, 0x41544c53, true)
+	// Every layer pass shares one scratch so province geometry, province
+	// metadata and the border mask are loaded and allocated once per render
+	// rather than once per layer.
+	scratch := newMapRenderScratch()
+	palette := newParchmentPalette()
+	metrics := newStyleMetrics(spec)
+	// The sheet comes first and covers every pixel; spec.Background can still
+	// override the paper tone for callers that need a specific ground.
+	drawParchmentPaper(canvas, palette, metrics, 0x50415243)
+	if override := strings.TrimSpace(spec.Background); override != "" {
+		tone := parseRenderColor(override, palette.Paper)
+		for i := 0; i+3 < len(canvas.Pix); i += 4 {
+			blended := mixRGBA(color.RGBA{canvas.Pix[i], canvas.Pix[i+1], canvas.Pix[i+2], 255}, tone, 0.85)
+			canvas.Pix[i], canvas.Pix[i+1], canvas.Pix[i+2] = blended.R, blended.G, blended.B
+		}
 	}
 	textRenderer, fontWarnings := loadMapTextRenderer(spec.FontPath)
 	defer textRenderer.Close()
 	result.Warnings = append(result.Warnings, fontWarnings...)
-	physicalCount, err := db.renderPhysicalBase(ctx, canvas, viewport, spec.Style)
+	ground, physicalCount, err := db.renderParchmentGround(ctx, scratch, canvas, viewport, palette, metrics)
 	if err != nil {
 		return result, err
 	}
 	result.LayerCounts["physical_features"] = physicalCount
 	legend := []MapLegendItem{}
+	// The first fill layer defines what a basemap overlay describes.
+	var overlayTints map[string]color.RGBA
+	var overlayMetric MapMetricResult
 	for index, layer := range spec.Layers {
 		if layer.Type != "fill" {
 			continue
 		}
-		items, warnings, err := db.renderFillLayer(ctx, canvas, viewport, metricByLayer[index], layer)
+		tints, items, warnings, err := db.renderFillLayer(ctx, scratch, canvas, viewport, metricByLayer[index], layer, metrics)
 		if err != nil {
 			return result, err
 		}
 		legend = append(legend, items...)
 		result.Warnings = append(result.Warnings, warnings...)
-	}
-	terrainEnabled := spec.Style != "historical_atlas"
-	if spec.TerrainOverlay != nil {
-		terrainEnabled = *spec.TerrainOverlay
-	}
-	terrainCount := 0
-	if terrainEnabled {
-		terrainCount, err = db.renderTerrainOverlay(ctx, canvas, viewport, provinceSet)
-		if err != nil {
-			return result, err
+		if overlayTints == nil {
+			overlayTints, overlayMetric = tints, metricByLayer[index]
 		}
 	}
-	result.LayerCounts["terrain_overlays"] = terrainCount
-	if spec.Style == "historical_atlas" {
-		count, warnings, err := db.renderCachedPhysicalOverlay(ctx, canvas, viewport, provinceSet, spec.ReliefStrength)
-		if err != nil {
-			return result, err
-		}
-		result.LayerCounts["cached_physical_rasters"] = count
-		var terrainAnchors int
-		if err := db.sql.QueryRowContext(ctx, `SELECT CAST(value AS INTEGER) FROM meta WHERE key='map_object_anchor_count'`).Scan(&terrainAnchors); err == nil && terrainAnchors > 0 {
-			result.LayerCounts["terrain_object_anchors"] = terrainAnchors
-		}
-		result.Warnings = append(result.Warnings, warnings...)
+	reliefStrength := spec.ReliefStrength
+	if spec.TerrainOverlay != nil && !*spec.TerrainOverlay {
+		reliefStrength = "none"
 	}
+	reliefCount, reliefWarnings, err := db.renderParchmentRelief(ctx, scratch, canvas, viewport, ground, palette, metrics, reliefStrength)
+	if err != nil {
+		return result, err
+	}
+	result.LayerCounts["relief_hachures"] = reliefCount
+	result.Warnings = append(result.Warnings, reliefWarnings...)
 	for _, layer := range spec.Layers {
 		switch layer.Type {
 		case "fill":
 			continue
 		case "borders":
-			if err := db.renderBorderLayer(ctx, canvas, viewport, provinceSet, layer); err != nil {
+			if err := db.renderBorderLayer(ctx, scratch, canvas, viewport, provinceSet, layer); err != nil {
 				return result, err
 			}
 		case "markers":
-			count, warnings, err := db.renderMarkerLayer(ctx, canvas, viewport, provinceSet, spec.HistoryYear, layer)
+			count, warnings, err := db.renderMarkerLayer(ctx, scratch, canvas, viewport, provinceSet, spec.HistoryYear, layer, palette, metrics)
 			if err != nil {
 				return result, err
 			}
@@ -734,7 +843,7 @@ func (db *DB) LLMMapRender(ctx context.Context, spec MapRenderSpec, opts LLMOpti
 			}
 			result.LayerCounts["flow_edges"] += count
 		case "labels":
-			count, warnings, err := db.renderLabelLayer(ctx, canvas, viewport, metricByLayer, layer, textRenderer, spec)
+			count, warnings, err := db.renderLabelLayer(ctx, scratch, canvas, viewport, metricByLayer, layer, textRenderer, spec, palette)
 			if err != nil {
 				return result, err
 			}
@@ -745,12 +854,43 @@ func (db *DB) LLMMapRender(ctx context.Context, spec MapRenderSpec, opts LLMOpti
 		}
 	}
 	if len(integrityIssues) > 0 {
-		count, err := db.renderIntegrityOverlay(ctx, canvas, viewport, integrityIssues)
+		count, err := db.renderIntegrityOverlay(ctx, scratch, canvas, viewport, integrityIssues)
 		if err != nil {
 			return result, err
 		}
 		result.LayerCounts["integrity_conflicts"] = count
-		legend = append(legend, MapLegendItem{Label: "归属冲突 / INTEGRITY CONFLICT", Color: "#ff00ff"})
+		legend = append(legend, MapLegendItem{Label: "归属冲突 / INTEGRITY CONFLICT", Color: "#a8324a", Kind: LegendKindArea})
+	}
+	if spec.Layout == "basemap" {
+		overlay, err := db.buildMapRenderOverlay(ctx, scratch, overlayMetric, overlayTints, finalViewport, finalWidth, finalHeight)
+		if err != nil {
+			return result, err
+		}
+		result.Overlay = overlay
+		if spec.HitMap && overlay != nil {
+			// Drawn at final resolution and never downscaled, so each pixel keeps
+			// an exact entity colour.
+			hit, byEntity, err := db.renderEntityHitMap(ctx, scratch, overlayMetric, finalViewport, finalWidth, finalHeight)
+			if err != nil {
+				return result, err
+			}
+			if hit != nil {
+				var encoded bytes.Buffer
+				// Flat index colours compress trivially, so always take the fast path.
+				hitEncoder := png.Encoder{CompressionLevel: png.BestSpeed}
+				if err := hitEncoder.Encode(&encoded, hit); err != nil {
+					return result, err
+				}
+				result.HitPNG = encoded.Bytes()
+				overlay.HitMap = &MapOverlayHitMap{
+					Width: finalWidth, Height: finalHeight, Empty: rgbaHex(color.RGBA{A: 255}),
+					Note: "read the pixel under the pointer and match hit_color; empty_color means no entity",
+				}
+				for index := range overlay.Entities {
+					overlay.Entities[index].HitColor = byEntity[overlay.Entities[index].ID]
+				}
+			}
+		}
 	}
 	provenanceList := make([]string, 0, len(provenance))
 	for item := range provenance {
@@ -758,14 +898,25 @@ func (db *DB) LLMMapRender(ctx context.Context, spec MapRenderSpec, opts LLMOpti
 	}
 	sort.Strings(provenanceList)
 	result.Provenance = provenanceList
-	result.Legend = legend
-	if spec.Layout == "full_atlas" {
-		result.Legend = buildAtlasLegend(spec, legend)
-	} else {
-		drawMapBadge(canvas, spec, provenanceList, textRenderer)
+	result.Legend = buildParchmentLegend(spec, legend)
+	// Furniture is placed last so it always sits over the map, and in an order
+	// that lets each piece reserve space before the next one is positioned.
+	layout := newAtlasLayout(canvas, palette, metrics, textRenderer)
+	// A basemap carries no furniture at all: the caller is going to draw its own
+	// frame, key and lettering in HTML, where real text and interaction are
+	// available. Anything drawn here would only have to be worked around.
+	if spec.Layout != "map_only" && spec.Layout != "basemap" {
+		layout.drawFrame()
 	}
 	if spec.Layout == "full_atlas" {
-		drawFullAtlasLayout(canvas, spec, provenanceList, result.Legend, textRenderer)
+		layout.drawCartouche(spec.Title, spec.Subtitle, spec.Year)
+		layout.drawCompass()
+		layout.drawLegend(result.Legend)
+		layout.drawScaleBar(1 / math.Max(1e-9, viewport.Scale))
+		layout.drawProvenance(provenanceList)
+	} else if spec.Layout == "light_frame" {
+		layout.drawScaleBar(1 / math.Max(1e-9, viewport.Scale))
+		layout.drawProvenance(provenanceList)
 	}
 	if spec.Supersample > 1 {
 		finalCanvas := image.NewRGBA(image.Rect(0, 0, finalWidth, finalHeight))
@@ -775,9 +926,12 @@ func (db *DB) LLMMapRender(ctx context.Context, spec MapRenderSpec, opts LLMOpti
 	result.Timings.RenderMS = time.Since(renderStarted).Milliseconds()
 	var encoded bytes.Buffer
 	encodeStarted := time.Now()
-	if err := png.Encode(&encoded, canvas); err != nil {
+	encoder, compressionMode := mapRenderPNGEncoder(finalPixels)
+	encoded.Grow(int(minInt64(finalPixels*2, 64<<20)))
+	if err := encoder.Encode(&encoded, canvas); err != nil {
 		return result, err
 	}
+	result.PNGCompression = compressionMode
 	result.PNG = encoded.Bytes()
 	result.Timings.EncodeMS = time.Since(encodeStarted).Milliseconds()
 	result.Bytes = len(result.PNG)
@@ -929,6 +1083,17 @@ func (db *DB) mapRenderRouteOutputPoints(ctx context.Context, spec MapRenderSpec
 }
 
 func resolveMapRenderSpec(spec MapRenderSpec) (MapRenderSpec, error) {
+	// MapRenderSpec is taken by value, but its layers (and each layer's metric)
+	// are shared with the caller. Resolution rewrites palettes and scales line
+	// widths to device pixels, so without this copy rendering the same spec twice
+	// scaled the line widths twice and returned a different image each call.
+	spec.Layers = append([]MapRenderLayer(nil), spec.Layers...)
+	for i := range spec.Layers {
+		if spec.Layers[i].Metric != nil {
+			metric := *spec.Layers[i].Metric
+			spec.Layers[i].Metric = &metric
+		}
+	}
 	validRecipes := map[string]bool{"": true, "duchy_political_atlas": true, "political_atlas": true, "thematic_atlas": true, "strategic_waterways_atlas": true}
 	if !validRecipes[spec.Recipe] {
 		return spec, fmt.Errorf("unknown map render recipe %q", spec.Recipe)
@@ -969,7 +1134,7 @@ func resolveMapRenderSpec(spec MapRenderSpec) (MapRenderSpec, error) {
 			spec.HistoryYear = spec.Year
 		}
 		if spec.Style == "" {
-			spec.Style = "historical_atlas"
+			spec.Style = "parchment"
 		}
 		if spec.Layout == "" {
 			spec.Layout = "full_atlas"
@@ -1017,29 +1182,34 @@ func resolveMapRenderSpec(spec MapRenderSpec) (MapRenderSpec, error) {
 				}
 				layers = append(layers[:insertAt], append(strategicLayers, layers[insertAt:]...)...)
 			}
+			if spec.Layout == "basemap" {
+				// Lettering is the caller's job on a basemap, so the recipe's label
+				// layer is dropped. Explicitly supplied layers are always honoured.
+				kept := layers[:0]
+				for _, layer := range layers {
+					if layer.Type != "labels" {
+						kept = append(kept, layer)
+					}
+				}
+				layers = kept
+			}
 			spec.Layers = layers
 		}
 	}
 	if spec.Style == "" {
-		spec.Style = "standard"
+		spec.Style = "parchment"
 	}
 	if spec.Layout == "" {
 		spec.Layout = "map_only"
 	}
 	if spec.ReliefStrength == "" {
-		spec.ReliefStrength = "none"
-		if spec.Style == "historical_atlas" {
-			spec.ReliefStrength = "subtle"
-		}
+		spec.ReliefStrength = "subtle"
 	}
 	if spec.LabelLanguage == "" {
 		spec.LabelLanguage = "chinese"
 	}
 	if spec.ColorStrategy == "" {
-		spec.ColorStrategy = "native"
-		if spec.Style == "historical_atlas" {
-			spec.ColorStrategy = "coordinated"
-		}
+		spec.ColorStrategy = "coordinated"
 	}
 	if spec.Supersample == 0 {
 		spec.Supersample = 1
@@ -1052,10 +1222,17 @@ func resolveMapRenderSpec(spec MapRenderSpec) (MapRenderSpec, error) {
 		}
 		return false
 	}
-	if !valid(spec.Style, "standard", "historical_atlas") {
+	// The renderer draws a single parchment style. "standard" and
+	// "historical_atlas" named two looks that no longer exist and are accepted as
+	// aliases so existing specs keep rendering.
+	switch spec.Style {
+	case "standard", "historical_atlas":
+		spec.Style = "parchment"
+	}
+	if !valid(spec.Style, "parchment") {
 		return spec, fmt.Errorf("unsupported map style %q", spec.Style)
 	}
-	if !valid(spec.Layout, "map_only", "light_frame", "full_atlas") {
+	if !valid(spec.Layout, "map_only", "light_frame", "full_atlas", "basemap") {
 		return spec, fmt.Errorf("unsupported map layout %q", spec.Layout)
 	}
 	if !valid(spec.ReliefStrength, "none", "subtle", "strong") {
@@ -1141,7 +1318,7 @@ func buildAdaptiveAtlasLayers(spec MapRenderSpec) ([]MapRenderLayer, error) {
 	layers := []MapRenderLayer{
 		fill,
 		{Type: "markers", Source: "vegetation", LineWidth: 4},
-		{Type: "borders", Level: level, Color: "#292620d0", LineWidth: 1},
+		{Type: "borders", Level: level, Color: "#4a3c2c", LineWidth: 1},
 	}
 	boundaries := append([]string(nil), spec.BoundaryLevels...)
 	if len(boundaries) == 0 {
@@ -1159,8 +1336,10 @@ func buildAdaptiveAtlasLayers(spec MapRenderSpec) ([]MapRenderLayer, error) {
 		}
 		boundaries = order[start:]
 	}
-	lineColors := map[string]string{"barony": "#625b4c", "county": "#746a55", "duchy": "#9a845f", "kingdom": "#c4aa76", "empire": "#e0d1a8"}
-	lineWidths := map[string]int{"barony": 1, "county": 2, "duchy": 3, "kingdom": 4, "empire": 5}
+	// Pen weights, not casings. A drawn map separates ranks by line weight over a
+	// narrow range; the old stack cased every boundary with a second wider dark
+	// line, which on a light sheet turns into a black rope.
+	lineWidths := map[string]int{"barony": 1, "county": 1, "duchy": 2, "kingdom": 2, "empire": 3}
 	seen := map[string]bool{level: true}
 	targetLevel := map[byte]string{'b': "barony", 'c': "county", 'd': "duchy", 'k': "kingdom", 'e': "empire"}
 	targetRank := ""
@@ -1176,17 +1355,16 @@ func buildAdaptiveAtlasLayers(spec MapRenderSpec) ([]MapRenderLayer, error) {
 			continue
 		}
 		seen[boundary] = true
-		width := lineWidths[boundary]
-		layers = append(layers, MapRenderLayer{Type: "borders", Level: boundary, Color: "#121719d8", LineWidth: width + 2})
-		inner := MapRenderLayer{Type: "borders", Level: boundary, Color: lineColors[boundary], LineWidth: width}
+		line := MapRenderLayer{Type: "borders", Level: boundary, Color: "#3e2f21", LineWidth: lineWidths[boundary]}
 		if theme == "political" {
-			inner.Source, inner.Palette = "title_color", "political_coordinated"
+			// Higher ranks take a trace of their own heraldic hue, pulled into
+			// the ink range so they stay pen work.
+			line.Source, line.Palette = "title_color", "political_coordinated"
 		}
-		layers = append(layers, inner)
+		layers = append(layers, line)
 	}
 	layers = append(layers,
-		MapRenderLayer{Type: "borders", Source: "outer", Color: "#101719", LineWidth: 7},
-		MapRenderLayer{Type: "borders", Source: "outer", Color: "#d9c99e", LineWidth: 2},
+		MapRenderLayer{Type: "borders", Source: "outer", Color: "#2b2015", LineWidth: 2},
 		MapRenderLayer{Type: "markers", Source: "holdings", LineWidth: 7},
 		label,
 	)
@@ -1426,23 +1604,18 @@ func mapRenderUIPixels(spec MapRenderSpec, pixels int) int {
 	return maxInt(1, int(math.Round(float64(pixels)*scale)))
 }
 
-func (db *DB) mapProvinceRuns(ctx context.Context, pid int, boundary bool) ([]MapRun, error) {
-	column := "fill_rle"
-	if boundary {
-		column = "boundary_rle"
-	}
-	var data []byte
-	err := db.sql.QueryRowContext(ctx, `SELECT `+column+` FROM map_province_geometry WHERE province_id=?`, pid).Scan(&data)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return DecodeMapRuns(data)
+func (db *DB) mapProvinceRuns(ctx context.Context, scratch *mapRenderScratch, pid int, boundary bool) ([]MapRun, error) {
+	return scratch.runs(ctx, db, pid, boundary)
 }
 
+// drawRuns fills the render-space rectangle of every span. The uniform source
+// is hoisted out of the loop because a world atlas walks hundreds of thousands
+// of spans per layer.
 func drawRuns(canvas *image.RGBA, v renderViewport, runs []MapRun, c color.RGBA) {
+	if len(runs) == 0 {
+		return
+	}
+	uniform := image.NewUniform(c)
 	for _, run := range runs {
 		if int(run.Y) < v.MinY || int(run.Y) > v.MaxY || int(run.X1) < v.MinX || int(run.X0) > v.MaxX {
 			continue
@@ -1455,367 +1628,95 @@ func drawRuns(canvas *image.RGBA, v renderViewport, runs []MapRun, c color.RGBA)
 		if y1 <= y0 {
 			y1 = y0 + 1
 		}
-		draw.Draw(canvas, image.Rect(x0, y0, x1, y1), &image.Uniform{c}, image.Point{}, draw.Src)
+		draw.Draw(canvas, image.Rect(x0, y0, x1, y1), uniform, image.Point{}, draw.Src)
 	}
 }
 
+// blendPixel composites one pixel. It indexes Pix directly: the raster passes
+// call it tens of millions of times per render, and image.RGBA's accessors
+// recompute the same bounds check and pixel offset on every call.
 func blendPixel(canvas *image.RGBA, x, y int, c color.RGBA) {
-	if !image.Pt(x, y).In(canvas.Bounds()) || c.A == 0 {
+	if c.A == 0 {
 		return
 	}
+	b := canvas.Rect
+	if x < b.Min.X || x >= b.Max.X || y < b.Min.Y || y >= b.Max.Y {
+		return
+	}
+	i := (y-b.Min.Y)*canvas.Stride + (x-b.Min.X)*4
+	pix := canvas.Pix[i : i+4 : i+4]
 	if c.A == 255 {
-		canvas.SetRGBA(x, y, c)
+		pix[0], pix[1], pix[2], pix[3] = c.R, c.G, c.B, c.A
 		return
 	}
-	dst := canvas.RGBAAt(x, y)
 	a := uint32(c.A)
 	inv := uint32(255 - c.A)
-	canvas.SetRGBA(x, y, color.RGBA{
-		R: uint8((uint32(c.R)*a + uint32(dst.R)*inv + 127) / 255),
-		G: uint8((uint32(c.G)*a + uint32(dst.G)*inv + 127) / 255),
-		B: uint8((uint32(c.B)*a + uint32(dst.B)*inv + 127) / 255),
-		A: 255,
-	})
+	pix[0] = uint8((uint32(c.R)*a + uint32(pix[0])*inv + 127) / 255)
+	pix[1] = uint8((uint32(c.G)*a + uint32(pix[1])*inv + 127) / 255)
+	pix[2] = uint8((uint32(c.B)*a + uint32(pix[2])*inv + 127) / 255)
+	pix[3] = 255
 }
 
-func (db *DB) renderPhysicalBase(ctx context.Context, canvas *image.RGBA, v renderViewport, style string) (int, error) {
-	rows, err := db.sql.QueryContext(ctx, `SELECT province_id,COALESCE(block_kind,''),COALESCE(water_kind,'')
-		FROM map_provinces WHERE area>0 AND max_x>=? AND min_x<=? AND max_y>=? AND min_y<=?
-		AND (COALESCE(block_kind,'')<>'' OR COALESCE(water_kind,'')<>'')`, v.MinX, v.MaxX, v.MinY, v.MaxY)
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
-	count := 0
-	for rows.Next() {
-		var pid int
-		var blockKind, waterKind string
-		if err := rows.Scan(&pid, &blockKind, &waterKind); err != nil {
-			return 0, err
-		}
-		c := mapPhysicalBaseColor(blockKind, waterKind, style)
-		if c.A == 0 {
-			continue
-		}
-		runs, err := db.mapProvinceRuns(ctx, pid, false)
-		if err != nil {
-			return 0, err
-		}
-		drawRuns(canvas, v, runs, c)
-		if blockKind == "impassable_mountain" {
-			if style == "historical_atlas" {
-				drawSurfaceMaterial(canvas, v, runs, 0x4d4f554e, 0.08)
-			} else {
-				drawRockMaterial(canvas, v, runs, 0x4d4f554e)
-			}
-		} else {
-			waterSeed := uint32(0x57415452)
-			switch waterKind {
-			case "lake":
-				waterSeed ^= 0x4c414b45
-			case "river":
-				waterSeed ^= 0x52495652
-			case "impassable_sea":
-				waterSeed ^= 0x44454550
-			}
-			drawSurfaceMaterial(canvas, v, runs, waterSeed, 0.08)
-		}
-		count++
-	}
-	return count, rows.Err()
+// maskBounds is the tight render-space rectangle covering every set pixel of a
+// mask, plus the row extents inside it. The relief passes use it so they walk
+// only the painted land instead of the whole canvas.
+type maskBounds struct {
+	MinX, MinY int
+	MaxX, MaxY int
+	RowMinX    []int
+	RowMaxX    []int
 }
 
-func mapPhysicalBaseColor(blockKind, waterKind, style string) color.RGBA {
-	switch waterKind {
-	case "lake":
-		// Lakes are encoded by their water surface instead of a redundant
-		// center icon. Keep them conspicuously brighter and bluer than seas.
-		return color.RGBA{55, 139, 181, 255}
-	case "river":
-		return color.RGBA{45, 88, 99, 255}
-	case "impassable_sea":
-		return color.RGBA{22, 48, 59, 255}
-	case "sea":
-		return color.RGBA{24, 49, 58, 255}
-	default:
-		if blockKind != "impassable_mountain" {
-			return color.RGBA{}
-		}
-		if style == "historical_atlas" {
-			return color.RGBA{77, 73, 65, 255}
-		}
-		return color.RGBA{54, 56, 56, 255}
+func newMaskBounds(height int) *maskBounds {
+	b := &maskBounds{MinX: math.MaxInt, MinY: math.MaxInt, MaxX: -1, MaxY: -1,
+		RowMinX: make([]int, height), RowMaxX: make([]int, height)}
+	for y := 0; y < height; y++ {
+		b.RowMinX[y] = math.MaxInt
+		b.RowMaxX[y] = -1
+	}
+	return b
+}
+
+func (b *maskBounds) add(x0, x1, y int) {
+	if x1 < x0 {
+		return
+	}
+	if x0 < b.RowMinX[y] {
+		b.RowMinX[y] = x0
+	}
+	if x1 > b.RowMaxX[y] {
+		b.RowMaxX[y] = x1
+	}
+	if x0 < b.MinX {
+		b.MinX = x0
+	}
+	if x1 > b.MaxX {
+		b.MaxX = x1
+	}
+	if y < b.MinY {
+		b.MinY = y
+	}
+	if y > b.MaxY {
+		b.MaxY = y
 	}
 }
 
-func drawAtlasPaper(canvas *image.RGBA, seed uint32, dark bool) {
-	b := canvas.Bounds()
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			low := materialNoise(seed, x, y, 120) - 0.5
-			grain := materialHash(seed^0x6d2b79f5, x, y) - 0.5
-			c := color.RGBA{188, 168, 124, uint8(8 + math.Abs(grain)*8)}
-			if dark {
-				if low < 0 {
-					c = color.RGBA{4, 12, 16, uint8(6 + -low*14)}
-				} else {
-					c = color.RGBA{128, 140, 127, uint8(4 + low*10)}
-				}
-			}
-			blendPixel(canvas, x, y, c)
-		}
-	}
-}
+func (b *maskBounds) empty() bool { return b.MaxY < b.MinY }
 
-func (db *DB) renderCachedPhysicalOverlay(ctx context.Context, canvas *image.RGBA, v renderViewport, pids map[int]bool, strength string) (int, []string, error) {
-	if strength == "none" {
-		return 0, nil, nil
+// rowSpan returns the inclusive x range worth scanning on one row, already
+// clipped to lo..hi-1.
+func (b *maskBounds) rowSpan(y, lo, hi int) (int, int) {
+	x0, x1 := b.RowMinX[y], b.RowMaxX[y]
+	if x1 < x0 {
+		return 0, -1
 	}
-	landMask := make([]bool, v.Width*v.Height)
-	waterMask := make([]bool, v.Width*v.Height)
-	for pid := range pids {
-		var blocked int
-		var kind string
-		if err := db.sql.QueryRowContext(ctx, `SELECT blocked,COALESCE(block_kind,'') FROM map_provinces WHERE province_id=?`, pid).Scan(&blocked, &kind); err != nil || blocked != 0 || kind == "water" {
-			continue
-		}
-		runs, err := db.mapProvinceRuns(ctx, pid, false)
-		if err != nil {
-			return 0, nil, err
-		}
-		for _, run := range runs {
-			x0, y0 := sourceToRender(v, float64(run.X0), float64(run.Y))
-			x1, y1 := sourceToRender(v, float64(run.X1+1), float64(run.Y+1))
-			for y := maxInt(0, y0); y < minInt(v.Height, maxInt(y0+1, y1)); y++ {
-				for x := maxInt(0, x0); x < minInt(v.Width, maxInt(x0+1, x1)); x++ {
-					landMask[y*v.Width+x] = true
-				}
-			}
-		}
+	if x0 < lo {
+		x0 = lo
 	}
-	mountainRows, err := db.sql.QueryContext(ctx, `SELECT province_id FROM map_provinces
-		WHERE block_kind='impassable_mountain' AND area>0 AND max_x>=? AND min_x<=? AND max_y>=? AND min_y<=?`, v.MinX, v.MaxX, v.MinY, v.MaxY)
-	if err != nil {
-		return 0, nil, err
+	if x1 > hi-1 {
+		x1 = hi - 1
 	}
-	for mountainRows.Next() {
-		var pid int
-		if err := mountainRows.Scan(&pid); err != nil {
-			mountainRows.Close()
-			return 0, nil, err
-		}
-		runs, err := db.mapProvinceRuns(ctx, pid, false)
-		if err != nil {
-			mountainRows.Close()
-			return 0, nil, err
-		}
-		for _, run := range runs {
-			x0, y0 := sourceToRender(v, float64(run.X0), float64(run.Y))
-			x1, y1 := sourceToRender(v, float64(run.X1+1), float64(run.Y+1))
-			for y := maxInt(0, y0); y < minInt(v.Height, maxInt(y0+1, y1)); y++ {
-				for x := maxInt(0, x0); x < minInt(v.Width, maxInt(x0+1, x1)); x++ {
-					landMask[y*v.Width+x] = true
-				}
-			}
-		}
-	}
-	if err := mountainRows.Close(); err != nil {
-		return 0, nil, err
-	}
-	waterRows, err := db.sql.QueryContext(ctx, `SELECT province_id FROM map_provinces
-		WHERE block_kind='water' AND area>0 AND max_x>=? AND min_x<=? AND max_y>=? AND min_y<=?`, v.MinX, v.MaxX, v.MinY, v.MaxY)
-	if err != nil {
-		return 0, nil, err
-	}
-	for waterRows.Next() {
-		var pid int
-		if err := waterRows.Scan(&pid); err != nil {
-			waterRows.Close()
-			return 0, nil, err
-		}
-		runs, err := db.mapProvinceRuns(ctx, pid, false)
-		if err != nil {
-			waterRows.Close()
-			return 0, nil, err
-		}
-		for _, run := range runs {
-			x0, y0 := sourceToRender(v, float64(run.X0), float64(run.Y))
-			x1, y1 := sourceToRender(v, float64(run.X1+1), float64(run.Y+1))
-			for y := maxInt(0, y0); y < minInt(v.Height, maxInt(y0+1, y1)); y++ {
-				for x := maxInt(0, x0); x < minInt(v.Width, maxInt(x0+1, x1)); x++ {
-					waterMask[y*v.Width+x] = true
-				}
-			}
-		}
-	}
-	if err := waterRows.Close(); err != nil {
-		return 0, nil, err
-	}
-	count := 0
-	warnings := []string{}
-	materialCount, materialWarnings, err := db.renderSurfaceMaterialOverlay(ctx, canvas, v, landMask, strength)
-	if err != nil {
-		return count, warnings, err
-	}
-	count += materialCount
-	warnings = append(warnings, materialWarnings...)
-	hillshade, err := db.loadMapPhysicalRaster(ctx, "hillshade")
-	if err != nil {
-		return count, warnings, err
-	}
-	if hillshade == nil {
-		warnings = append(warnings, "heightmap cache unavailable; relief omitted")
-	} else {
-		alphaScale := 0.30
-		if strength == "strong" {
-			alphaScale = 0.52
-		}
-		for y := 0; y < v.Height; y++ {
-			sy := float64(v.MinY) + float64(y-v.OffsetY)/v.Scale
-			if sy < 0 || sy >= float64(hillshade.Height) {
-				continue
-			}
-			for x := 0; x < v.Width; x++ {
-				if !landMask[y*v.Width+x] {
-					continue
-				}
-				sx := float64(v.MinX) + float64(x-v.OffsetX)/v.Scale
-				if sx < 0 || sx >= float64(hillshade.Width) {
-					continue
-				}
-				shade := samplePhysicalRaster(hillshade, sx, sy) - 0.5
-				if shade < 0 {
-					blendPixel(canvas, x, y, color.RGBA{16, 15, 14, uint8(math.Min(72, -shade*255*alphaScale))})
-				} else {
-					blendPixel(canvas, x, y, color.RGBA{242, 231, 202, uint8(math.Min(48, shade*210*alphaScale))})
-				}
-			}
-		}
-		count++
-	}
-	detail, err := db.loadMapPhysicalRaster(ctx, "terrain_detail")
-	if err != nil {
-		return count, warnings, err
-	}
-	if detail != nil {
-		detailAlpha := 34.0
-		if strength == "strong" {
-			detailAlpha = 56
-		}
-		for y := 0; y < v.Height; y++ {
-			sy := float64(v.MinY) + float64(y-v.OffsetY)/v.Scale
-			for x := 0; x < v.Width; x++ {
-				if !landMask[y*v.Width+x] {
-					continue
-				}
-				sx := float64(v.MinX) + float64(x-v.OffsetX)/v.Scale
-				value := samplePhysicalRaster(detail, sx, sy) - 0.5
-				if math.Abs(value) < 0.025 {
-					continue
-				}
-				alpha := uint8(math.Min(detailAlpha, math.Abs(value)*detailAlpha*2.2))
-				if value > 0 {
-					blendPixel(canvas, x, y, color.RGBA{28, 24, 20, alpha})
-				} else {
-					blendPixel(canvas, x, y, color.RGBA{226, 215, 188, alpha / 2})
-				}
-			}
-		}
-		count++
-	}
-	elevation, err := db.loadMapPhysicalRaster(ctx, "elevation")
-	if err != nil {
-		return count, warnings, err
-	}
-	if elevation != nil {
-		contourAlpha := uint8(14)
-		if strength == "strong" {
-			contourAlpha = 24
-		}
-		for y := 1; y < v.Height-1; y++ {
-			sy := float64(v.MinY) + float64(y-v.OffsetY)/v.Scale
-			for x := 1; x < v.Width-1; x++ {
-				if !landMask[y*v.Width+x] {
-					continue
-				}
-				sx := float64(v.MinX) + float64(x-v.OffsetX)/v.Scale
-				e := samplePhysicalRaster(elevation, sx, sy)
-				if e < 0.22 {
-					continue
-				}
-				ex := samplePhysicalRaster(elevation, sx+1, sy)
-				ey := samplePhysicalRaster(elevation, sx, sy+1)
-				if int(e*18) != int(ex*18) || int(e*18) != int(ey*18) {
-					if math.Abs(e-ex)+math.Abs(e-ey) > 0.008 {
-						blendPixel(canvas, x, y, color.RGBA{47, 41, 33, contourAlpha})
-					}
-				}
-			}
-		}
-		count++
-	}
-	anchors, err := db.loadMapPhysicalRaster(ctx, "terrain_anchors")
-	if err != nil {
-		return count, warnings, err
-	}
-	if anchors != nil {
-		anchorAlpha := 32.0
-		if strength == "strong" {
-			anchorAlpha = 52
-		}
-		for y := 0; y < v.Height; y++ {
-			sy := float64(v.MinY) + float64(y-v.OffsetY)/v.Scale
-			for x := 0; x < v.Width; x++ {
-				if !landMask[y*v.Width+x] {
-					continue
-				}
-				sx := float64(v.MinX) + float64(x-v.OffsetX)/v.Scale
-				value := samplePhysicalRaster(anchors, sx, sy)
-				if value > 0.04 {
-					blendPixel(canvas, x, y, color.RGBA{35, 31, 25, uint8(math.Min(anchorAlpha, value*anchorAlpha))})
-				}
-			}
-		}
-		count++
-	}
-	rivers, err := db.loadMapPhysicalRaster(ctx, "rivers")
-	if err != nil {
-		return count, warnings, err
-	}
-	if rivers == nil {
-		warnings = append(warnings, "river cache unavailable; rivers omitted")
-	} else {
-		for y := 0; y < v.Height; y++ {
-			sy := int(float64(v.MinY) + float64(y-v.OffsetY)/v.Scale)
-			if sy < 0 || sy >= rivers.Height {
-				continue
-			}
-			for x := 0; x < v.Width; x++ {
-				sx := int(float64(v.MinX) + float64(x-v.OffsetX)/v.Scale)
-				if sx >= 0 && sx < rivers.Width && rivers.Image.GrayAt(sx, sy).Y > 0 {
-					blendPixel(canvas, x, y, color.RGBA{37, 78, 91, 160})
-				}
-			}
-		}
-		count++
-	}
-	for y := 1; y < v.Height-1; y++ {
-		for x := 1; x < v.Width-1; x++ {
-			if !landMask[y*v.Width+x] {
-				continue
-			}
-			if waterMask[y*v.Width+x-1] || waterMask[y*v.Width+x+1] || waterMask[(y-1)*v.Width+x] || waterMask[(y+1)*v.Width+x] {
-				blendPixel(canvas, x, y, color.RGBA{239, 222, 180, 72})
-				for _, p := range [][2]int{{-1, 0}, {1, 0}, {0, -1}, {0, 1}} {
-					nx, ny := x+p[0], y+p[1]
-					if waterMask[ny*v.Width+nx] {
-						blendPixel(canvas, nx, ny, color.RGBA{7, 16, 20, 100})
-					}
-				}
-			}
-		}
-	}
-	return count, warnings, nil
+	return x0, x1
 }
 
 func samplePhysicalRaster(raster *mapPhysicalRaster, x, y float64) float64 {
@@ -1832,56 +1733,23 @@ func samplePhysicalRaster(raster *mapPhysicalRaster, x, y float64) float64 {
 	return (v00*(1-tx)+v10*tx)*(1-ty) + (v01*(1-tx)+v11*tx)*ty
 }
 
-func (db *DB) renderTerrainOverlay(ctx context.Context, canvas *image.RGBA, v renderViewport, pids map[int]bool) (int, error) {
-	count := 0
-	for pid := range pids {
-		var terrain string
-		if err := db.sql.QueryRowContext(ctx, `SELECT COALESCE(terrain,'') FROM map_provinces WHERE province_id=?`, pid).Scan(&terrain); err != nil {
-			continue
-		}
-		terrain = strings.ToLower(terrain)
-		spacing, thickness := 0, 1
-		c := color.RGBA{24, 27, 27, 0}
-		switch {
-		case strings.Contains(terrain, "mountain"):
-			spacing, thickness, c = 12, 2, color.RGBA{24, 27, 27, 58}
-		case strings.Contains(terrain, "hill"):
-			spacing, thickness, c = 16, 1, color.RGBA{30, 33, 31, 42}
-		default:
-			continue
-		}
-		runs, err := db.mapProvinceRuns(ctx, pid, false)
-		if err != nil {
-			return count, err
-		}
-		drawRunPattern(canvas, v, runs, c, spacing, thickness)
-		count++
+// clipRunToCanvas maps one span into render space and clips it to the canvas.
+// The pattern and material passes evaluate expensive per-pixel noise, so pixels
+// that blendPixel would discard must never be visited at all.
+func clipRunToCanvas(canvas *image.RGBA, v renderViewport, run MapRun) (x0, x1, y0, y1 int, ok bool) {
+	if int(run.Y) < v.MinY || int(run.Y) > v.MaxY || int(run.X1) < v.MinX || int(run.X0) > v.MaxX {
+		return 0, 0, 0, 0, false
 	}
-	return count, nil
+	x0, y0 = sourceToRender(v, float64(run.X0), float64(run.Y))
+	x1, y1 = sourceToRender(v, float64(run.X1+1), float64(run.Y+1))
+	x1, y1 = maxInt(x0+1, x1), maxInt(y0+1, y1)
+	b := canvas.Rect
+	x0, y0 = maxInt(x0, b.Min.X), maxInt(y0, b.Min.Y)
+	x1, y1 = minInt(x1, b.Max.X), minInt(y1, b.Max.Y)
+	return x0, x1, y0, y1, x1 > x0 && y1 > y0
 }
 
-func drawRunPattern(canvas *image.RGBA, v renderViewport, runs []MapRun, c color.RGBA, spacing, thickness int) {
-	if spacing <= 0 {
-		return
-	}
-	for _, run := range runs {
-		if int(run.Y) < v.MinY || int(run.Y) > v.MaxY || int(run.X1) < v.MinX || int(run.X0) > v.MaxX {
-			continue
-		}
-		x0, y0 := sourceToRender(v, float64(run.X0), float64(run.Y))
-		x1, y1 := sourceToRender(v, float64(run.X1+1), float64(run.Y+1))
-		for y := y0; y < maxInt(y0+1, y1); y++ {
-			for x := x0; x < maxInt(x0+1, x1); x++ {
-				phase := (x + y) % spacing
-				if phase < thickness {
-					blendPixel(canvas, x, y, c)
-				}
-			}
-		}
-	}
-}
-
-func (db *DB) renderFillLayer(ctx context.Context, canvas *image.RGBA, v renderViewport, metric MapMetricResult, layer MapRenderLayer) ([]MapLegendItem, []string, error) {
+func (db *DB) renderFillLayer(ctx context.Context, scratch *mapRenderScratch, canvas *image.RGBA, v renderViewport, metric MapMetricResult, layer MapRenderLayer, metrics styleMetrics) (map[string]color.RGBA, []MapLegendItem, []string, error) {
 	entityColor := map[string]color.RGBA{}
 	legend := []MapLegendItem{}
 	warnings := []string{}
@@ -1898,7 +1766,7 @@ func (db *DB) renderFillLayer(ctx context.Context, canvas *image.RGBA, v renderV
 			}
 			politicalByID, err = db.politicalEntityColorsWithStrategy(ctx, metric, strategy)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 		}
 		categories := map[string]bool{}
@@ -1922,7 +1790,7 @@ func (db *DB) renderFillLayer(ctx context.Context, canvas *image.RGBA, v renderV
 		categoryPalette := map[string]color.RGBA{}
 		if !political {
 			for index, key := range keys {
-				categoryPalette[key] = categoricalColors[index%len(categoricalColors)]
+				categoryPalette[key] = parchmentCategoryWashes[index%len(parchmentCategoryWashes)]
 			}
 			for _, item := range metric.Values {
 				entityColor[item.ID] = categoryPalette[item.Category]
@@ -1973,10 +1841,7 @@ func (db *DB) renderFillLayer(ctx context.Context, canvas *image.RGBA, v renderV
 		if maximum <= minimum {
 			minimum, maximum = metric.Stats.Minimum, metric.Stats.Maximum
 		}
-		palette := sequentialPalettes[layer.Palette]
-		if len(palette) == 0 {
-			palette = sequentialPalettes["viridis"]
-		}
+		palette := sequentialPalette(layer.Palette)
 		classes := layer.Classes
 		if classes < 2 {
 			classes = 0
@@ -2029,20 +1894,23 @@ func (db *DB) renderFillLayer(ctx context.Context, canvas *image.RGBA, v renderV
 	painted := map[int]bool{}
 	_, metricGroups, err := db.mapMetricEntities(ctx, metric.Target, metric.Level)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
+	// Political areas are laid down as translucent washes so the paper grain,
+	// the coastline and the relief all stay visible through them. Painting them
+	// opaque is what made the old plates look like flat vector maps.
 	for _, item := range metric.Values {
 		for _, pid := range metricGroups[item.ID] {
-			runs, err := db.mapProvinceRuns(ctx, pid, false)
+			runs, err := db.mapProvinceRuns(ctx, scratch, pid, false)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
-			drawRuns(canvas, v, runs, entityColor[item.ID])
-			if layer.Texture == "political" {
-				drawPoliticalTexture(canvas, v, runs, item.ID, entityColor[item.ID])
-			} else if layer.Texture == "political_material" {
-				drawPoliticalMaterial(canvas, v, runs, item.ID)
+			boundary, err := db.mapProvinceRuns(ctx, scratch, pid, true)
+			if err != nil {
+				return nil, nil, nil, err
 			}
+			drawPigmentWash(canvas, v, runs, boundary, entityColor[item.ID],
+				entityWashSeed(item.ID), metrics, 0.66)
 			painted[pid] = true
 		}
 	}
@@ -2050,51 +1918,13 @@ func (db *DB) renderFillLayer(ctx context.Context, canvas *image.RGBA, v renderV
 		pids, _ := db.mapRenderTargetProvinces(ctx, metric.Target)
 		for _, pid := range pids {
 			if !painted[pid] {
-				runs, _ := db.mapProvinceRuns(ctx, pid, false)
-				drawRuns(canvas, v, runs, noData)
+				runs, _ := db.mapProvinceRuns(ctx, scratch, pid, false)
+				boundary, _ := db.mapProvinceRuns(ctx, scratch, pid, true)
+				drawPigmentWash(canvas, v, runs, boundary, noData, 0x6e6f4441, metrics, 0.42)
 			}
 		}
 	}
-	return legend, warnings, nil
-}
-
-func drawPoliticalTexture(canvas *image.RGBA, v renderViewport, runs []MapRun, id string, fill color.RGBA) {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(id))
-	pattern := int(h.Sum32() % 6)
-	texture := color.RGBA{18, 22, 22, 28}
-	if int(fill.R)+int(fill.G)+int(fill.B) < 255 {
-		texture = color.RGBA{238, 232, 215, 24}
-	}
-	for _, run := range runs {
-		if int(run.Y) < v.MinY || int(run.Y) > v.MaxY || int(run.X1) < v.MinX || int(run.X0) > v.MaxX {
-			continue
-		}
-		x0, y0 := sourceToRender(v, float64(run.X0), float64(run.Y))
-		x1, y1 := sourceToRender(v, float64(run.X1+1), float64(run.Y+1))
-		for y := y0; y < maxInt(y0+1, y1); y++ {
-			for x := x0; x < maxInt(x0+1, x1); x++ {
-				mark := false
-				switch pattern {
-				case 0:
-					mark = (x+y)%18 == 0
-				case 1:
-					mark = ((x-y)%18+18)%18 == 0
-				case 2:
-					mark = y%13 == 0
-				case 3:
-					mark = x%13 == 0
-				case 4:
-					mark = x%14 == 0 && y%14 == 0
-				case 5:
-					mark = (x+y)%24 == 0 || ((x-y)%24+24)%24 == 0
-				}
-				if mark {
-					blendPixel(canvas, x, y, texture)
-				}
-			}
-		}
-	}
+	return entityColor, legend, warnings, nil
 }
 
 func materialHash(seed uint32, x, y int) float64 {
@@ -2134,60 +1964,9 @@ func materialByte(value float64) uint8 {
 	return uint8(math.Round(value))
 }
 
-func drawSurfaceMaterial(canvas *image.RGBA, v renderViewport, runs []MapRun, seed uint32, strength float64) {
-	for _, run := range runs {
-		if int(run.Y) < v.MinY || int(run.Y) > v.MaxY || int(run.X1) < v.MinX || int(run.X0) > v.MaxX {
-			continue
-		}
-		x0, y0 := sourceToRender(v, float64(run.X0), float64(run.Y))
-		x1, y1 := sourceToRender(v, float64(run.X1+1), float64(run.Y+1))
-		for y := y0; y < maxInt(y0+1, y1); y++ {
-			for x := x0; x < maxInt(x0+1, x1); x++ {
-				low := materialNoise(seed, x, y, 88) - 0.5
-				mid := materialNoise(seed^0xa53c9e17, x, y, 24) - 0.5
-				grain := materialHash(seed^0x6d2b79f5, x, y) - 0.5
-				factor := 1 + strength*(0.9*low+0.45*mid+0.18*grain)
-				current := canvas.RGBAAt(x, y)
-				canvas.SetRGBA(x, y, color.RGBA{
-					R: materialByte(float64(current.R) * factor),
-					G: materialByte(float64(current.G) * factor),
-					B: materialByte(float64(current.B) * (factor + 0.008*low)),
-					A: current.A,
-				})
-			}
-		}
-	}
-}
-
-func drawPoliticalMaterial(canvas *image.RGBA, v renderViewport, runs []MapRun, id string) {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(id))
-	drawSurfaceMaterial(canvas, v, runs, h.Sum32(), 0.18)
-}
-
-func drawRockMaterial(canvas *image.RGBA, v renderViewport, runs []MapRun, seed uint32) {
-	drawSurfaceMaterial(canvas, v, runs, seed^0x4f1bbcdc, 0.28)
-	for _, run := range runs {
-		if int(run.Y) < v.MinY || int(run.Y) > v.MaxY || int(run.X1) < v.MinX || int(run.X0) > v.MaxX {
-			continue
-		}
-		x0, y0 := sourceToRender(v, float64(run.X0), float64(run.Y))
-		x1, y1 := sourceToRender(v, float64(run.X1+1), float64(run.Y+1))
-		for y := y0; y < maxInt(y0+1, y1); y++ {
-			for x := x0; x < maxInt(x0+1, x1); x++ {
-				n := materialNoise(seed, x, y, 34)
-				gradient := math.Abs(materialNoise(seed, x+4, y, 34)-materialNoise(seed, x-4, y, 34)) + math.Abs(materialNoise(seed, x, y+4, 34)-materialNoise(seed, x, y-4, 34))
-				if gradient > 0.10 && math.Mod(n*9, 1) < 0.22 {
-					blendPixel(canvas, x, y, color.RGBA{178, 173, 157, 42})
-				}
-			}
-		}
-	}
-}
-
 func rgbaHex(c color.RGBA) string { return fmt.Sprintf("#%02x%02x%02x%02x", c.R, c.G, c.B, c.A) }
 
-func (db *DB) renderBorderLayer(ctx context.Context, canvas *image.RGBA, v renderViewport, pids map[int]bool, layer MapRenderLayer) error {
+func (db *DB) renderBorderLayer(ctx context.Context, scratch *mapRenderScratch, canvas *image.RGBA, v renderViewport, pids map[int]bool, layer MapRenderLayer) error {
 	level := "province"
 	if layer.Source != "outer" {
 		var err error
@@ -2200,8 +1979,14 @@ func (db *DB) renderBorderLayer(ctx context.Context, canvas *image.RGBA, v rende
 	if lineWidth <= 0 {
 		lineWidth = 1
 	}
-	c := parseRenderColor(layer.Color, color.RGBA{12, 13, 14, 210})
-	mask := make([]int32, v.Width*v.Height)
+	// Every boundary is pen work. Whatever colour the caller asked for is pulled
+	// into the ink range so a bright heraldic red cannot cut across the sheet as a
+	// saturated line; the hue survives, the brightness does not.
+	c := parchmentPen(parseRenderColor(layer.Color, newParchmentPalette().Ink))
+	// A political atlas stacks up to nine border layers; each one needs a full
+	// canvas of entity indices, so the buffer is borrowed and cleared instead of
+	// reallocated per layer.
+	mask := scratch.mask(v.Width * v.Height)
 	entityIndex := map[string]int32{}
 	indexEntity := map[int32]string{}
 	indexColors := map[int32]color.RGBA{}
@@ -2243,8 +2028,19 @@ func (db *DB) renderBorderLayer(ctx context.Context, canvas *image.RGBA, v rende
 			return err
 		}
 	}
+	var meta map[int]mapProvinceMeta
+	if layer.Source != "outer" && level != "province" && level != "region" {
+		var err error
+		if meta, err = scratch.provinceMeta(ctx, db); err != nil {
+			return err
+		}
+	}
+	if err := scratch.primeRuns(ctx, db, len(pids), false); err != nil {
+		return err
+	}
+	maskBox := newMaskBounds(v.Height)
 	next := int32(1)
-	for pid := range pids {
+	for _, pid := range sortedProvinceIDs(pids) {
 		var id string
 		if layer.Source == "outer" {
 			id = "target"
@@ -2253,8 +2049,7 @@ func (db *DB) renderBorderLayer(ctx context.Context, canvas *image.RGBA, v rende
 		} else if level == "region" {
 			id = regionByProvince[pid]
 		} else {
-			column := mapLevelColumn(level)
-			_ = db.sql.QueryRowContext(ctx, `SELECT COALESCE(`+column+`,'') FROM map_provinces WHERE province_id=?`, pid).Scan(&id)
+			id = meta[pid].levelID(level)
 		}
 		if id == "" {
 			continue
@@ -2269,14 +2064,11 @@ func (db *DB) renderBorderLayer(ctx context.Context, canvas *image.RGBA, v rende
 				var rgb sql.NullInt64
 				if err := db.sql.QueryRowContext(ctx, `SELECT color_rgb FROM map_titles WHERE title_id=?`, id).Scan(&rgb); err == nil && rgb.Valid {
 					value := uint32(rgb.Int64)
-					indexColors[index] = color.RGBA{uint8(value >> 16), uint8(value >> 8), uint8(value), c.A}
-					if layer.Palette == "political_muted" || layer.Palette == "political_coordinated" {
-						indexColors[index] = harmonizePoliticalColor(indexColors[index])
-					}
+					indexColors[index] = parchmentPen(color.RGBA{uint8(value >> 16), uint8(value >> 8), uint8(value), c.A})
 				}
 			}
 		}
-		runs, err := db.mapProvinceRuns(ctx, pid, false)
+		runs, err := db.mapProvinceRuns(ctx, scratch, pid, false)
 		if err != nil {
 			return err
 		}
@@ -2289,16 +2081,27 @@ func (db *DB) renderBorderLayer(ctx context.Context, canvas *image.RGBA, v rende
 			if y1 <= y0 {
 				y1 = y0 + 1
 			}
+			lowX, highX := maxInt(0, x0), minInt(v.Width, x1)
+			if highX <= lowX {
+				continue
+			}
 			for y := maxInt(0, y0); y < minInt(v.Height, y1); y++ {
-				for x := maxInt(0, x0); x < minInt(v.Width, x1); x++ {
-					mask[y*v.Width+x] = index
+				row := mask[y*v.Width : y*v.Width+v.Width]
+				for x := lowX; x < highX; x++ {
+					row[x] = index
 				}
+				maskBox.add(lowX, highX-1, y)
 			}
 		}
 	}
 	if layer.Source == "title_color" && layer.Palette == "political_coordinated" {
 		metric := MapMetricResult{Level: level}
+		entityIDs := make([]string, 0, len(indexEntity))
 		for _, id := range indexEntity {
+			entityIDs = append(entityIDs, id)
+		}
+		sort.Strings(entityIDs)
+		for _, id := range entityIDs {
 			metric.Values = append(metric.Values, MapMetricValue{ID: id, Category: id})
 		}
 		coordinated, err := db.politicalEntityColorsWithStrategy(ctx, metric, "coordinated")
@@ -2308,20 +2111,51 @@ func (db *DB) renderBorderLayer(ctx context.Context, canvas *image.RGBA, v rende
 		for index, id := range indexEntity {
 			if dynamic, ok := coordinated[id]; ok {
 				dynamic.A = c.A
-				indexColors[index] = dynamic
+				indexColors[index] = parchmentPen(dynamic)
 			}
 		}
 	}
-	for y := 1; y < v.Height-1; y++ {
-		for x := 1; x < v.Width-1; x++ {
-			id := mask[y*v.Width+x]
+	// Only painted mask pixels can start a boundary, so the neighbour scan is
+	// limited to the mask's rows and spans rather than the whole canvas.
+	// Boundaries are laid with a soft round nib rather than a hard disc, which is
+	// what makes them read as drawn lines instead of stepped blocks.
+	outer := layer.Source == "outer"
+	if outer {
+		// The subject outline follows the realm's edge, not the edge of every
+		// impassable patch inside it, so enclosed gaps are closed up first.
+		fillMaskHoles(mask, v.Width, v.Height, 1)
+		maskBox = newMaskBounds(v.Height)
+		for y := 0; y < v.Height; y++ {
+			row := mask[y*v.Width : y*v.Width+v.Width]
+			lo, hi := -1, -1
+			for x := 0; x < v.Width; x++ {
+				if row[x] != 0 {
+					if lo < 0 {
+						lo = x
+					}
+					hi = x
+				}
+			}
+			if lo >= 0 {
+				maskBox.add(lo, hi, y)
+			}
+		}
+	}
+	radius := math.Max(0.45, float64(lineWidth)/2)
+	for y := maxInt(1, maskBox.MinY); y <= minInt(v.Height-2, maskBox.MaxY); y++ {
+		lo, hi := maskBox.rowSpan(y, 1, v.Width-1)
+		row := mask[y*v.Width : y*v.Width+v.Width]
+		above := mask[(y-1)*v.Width : (y-1)*v.Width+v.Width]
+		below := mask[(y+1)*v.Width : (y+1)*v.Width+v.Width]
+		for x := lo; x <= hi; x++ {
+			id := row[x]
 			if id == 0 {
 				continue
 			}
-			left, right := mask[y*v.Width+x-1], mask[y*v.Width+x+1]
-			up, down := mask[(y-1)*v.Width+x], mask[(y+1)*v.Width+x]
+			left, right := row[x-1], row[x+1]
+			up, down := above[x], below[x]
 			drawBoundary := false
-			if layer.Source == "outer" {
+			if outer {
 				drawBoundary = left == 0 || right == 0 || up == 0 || down == 0
 			} else {
 				drawBoundary = left != 0 && left != id || right != 0 && right != id || up != 0 && up != id || down != 0 && down != id
@@ -2331,7 +2165,7 @@ func (db *DB) renderBorderLayer(ctx context.Context, canvas *image.RGBA, v rende
 				if dynamic, ok := indexColors[id]; ok {
 					borderColor = dynamic
 				}
-				drawDisc(canvas, x, y, lineWidth/2, borderColor)
+				stampInkDot(canvas, float64(x), float64(y), radius, borderColor)
 			}
 		}
 	}
@@ -2342,27 +2176,35 @@ func drawDisc(canvas *image.RGBA, cx, cy, radius int, c color.RGBA) {
 	if radius < 0 {
 		radius = 0
 	}
-	for y := cy - radius; y <= cy+radius; y++ {
-		for x := cx - radius; x <= cx+radius; x++ {
-			if x >= 0 && y >= 0 && x < canvas.Bounds().Dx() && y < canvas.Bounds().Dy() && (x-cx)*(x-cx)+(y-cy)*(y-cy) <= radius*radius {
+	// Clip once instead of re-deriving the canvas bounds for every candidate
+	// pixel: border layers call this for every boundary pixel on the map.
+	b := canvas.Rect
+	width, height := b.Dx(), b.Dy()
+	y0, y1 := maxInt(0, cy-radius), minInt(height-1, cy+radius)
+	x0, x1 := maxInt(0, cx-radius), minInt(width-1, cx+radius)
+	limit := radius * radius
+	for y := y0; y <= y1; y++ {
+		dy := (y - cy) * (y - cy)
+		for x := x0; x <= x1; x++ {
+			if (x-cx)*(x-cx)+dy <= limit {
 				blendPixel(canvas, x, y, c)
 			}
 		}
 	}
 }
 
-func (db *DB) renderMarkerLayer(ctx context.Context, canvas *image.RGBA, v renderViewport, pids map[int]bool, year int, layer MapRenderLayer) (int, []string, error) {
+func (db *DB) renderMarkerLayer(ctx context.Context, scratch *mapRenderScratch, canvas *image.RGBA, v renderViewport, pids map[int]bool, year int, layer MapRenderLayer, palette parchmentPalette, metrics styleMetrics) (int, []string, error) {
 	if layer.Source == "vegetation" {
-		return db.renderVegetationMarkerLayer(ctx, canvas, v, pids, layer)
+		return db.renderVegetationMarkerLayer(ctx, scratch, canvas, v, pids, layer, palette, metrics)
 	}
 	if layer.Source == "holdings" {
-		return db.renderHoldingMarkerLayer(ctx, canvas, v, pids, year, layer)
+		return db.renderHoldingMarkerLayer(ctx, scratch, canvas, v, pids, year, layer, palette, metrics)
 	}
 	if layer.Source == "lakes" {
-		return db.renderLakeMarkerLayer(ctx, canvas, v, pids, layer)
+		return db.renderLakeMarkerLayer(ctx, canvas, v, pids, layer, palette, metrics)
 	}
 	if layer.Source == "strategic_portals" {
-		return db.renderStrategicPortalLayer(ctx, canvas, v, pids, layer)
+		return db.renderStrategicPortalLayer(ctx, canvas, v, pids, layer, palette, metrics)
 	}
 	selected := map[int]bool{}
 	for _, id := range layer.IDs {
@@ -2417,7 +2259,7 @@ func (db *DB) renderMarkerLayer(ctx context.Context, canvas *image.RGBA, v rende
 	if radius <= 0 {
 		radius = 5
 	}
-	for pid := range selected {
+	for _, pid := range sortedProvinceIDs(selected) {
 		var x, y float64
 		if err := db.sql.QueryRowContext(ctx, `SELECT center_x,center_y FROM map_provinces WHERE province_id=?`, pid).Scan(&x, &y); err != nil {
 			continue
@@ -2436,10 +2278,14 @@ func (db *DB) renderFlowLayer(ctx context.Context, canvas *image.RGBA, v renderV
 	edges := append([]MapRenderEdge(nil), layer.Edges...)
 	metricCenters := map[string]MapPoint{}
 	if layer.Source == "metric" && len(metrics) > 0 {
+		// Lowest layer index wins so a spec with several fill layers always
+		// drives this layer from the same metric.
 		var metric MapMetricResult
-		for _, item := range metrics {
-			metric = item
-			break
+		lowest := math.MaxInt
+		for index, item := range metrics {
+			if index < lowest {
+				lowest, metric = index, item
+			}
 		}
 		values := map[string]float64{}
 		for _, item := range metric.Values {
@@ -2592,17 +2438,21 @@ func drawArrowHead(canvas *image.RGBA, x0, y0, x1, y1, width int, c color.RGBA) 
 	}
 }
 
-func (db *DB) renderLabelLayer(ctx context.Context, canvas *image.RGBA, v renderViewport, metrics map[int]MapMetricResult, layer MapRenderLayer, textRenderer *mapTextRenderer, spec MapRenderSpec) (int, []string, error) {
+func (db *DB) renderLabelLayer(ctx context.Context, scratch *mapRenderScratch, canvas *image.RGBA, v renderViewport, metrics map[int]MapMetricResult, layer MapRenderLayer, textRenderer *mapTextRenderer, spec MapRenderSpec, palette parchmentPalette) (int, []string, error) {
 	ids := append([]string(nil), layer.IDs...)
 	metricCenters := map[string]MapPoint{}
 	explicitLabels := map[string]string{}
 	levels := map[string]string{}
 	areas := map[string]int{}
 	if (layer.Source == "top_metric" || layer.Source == "entities") && len(metrics) > 0 {
+		// Lowest layer index wins so a spec with several fill layers always
+		// drives this layer from the same metric.
 		var metric MapMetricResult
-		for _, item := range metrics {
-			metric = item
-			break
+		lowest := math.MaxInt
+		for index, item := range metrics {
+			if index < lowest {
+				lowest, metric = index, item
+			}
 		}
 		values := append([]MapMetricValue(nil), metric.Values...)
 		if layer.Source == "top_metric" {
@@ -2633,10 +2483,14 @@ func (db *DB) renderLabelLayer(ctx context.Context, canvas *image.RGBA, v render
 		}
 	}
 	if layer.Source == "categories" && len(metrics) > 0 {
+		// Lowest layer index wins so a spec with several fill layers always
+		// drives this layer from the same metric.
 		var metric MapMetricResult
-		for _, item := range metrics {
-			metric = item
-			break
+		lowest := math.MaxInt
+		for index, item := range metrics {
+			if index < lowest {
+				lowest, metric = index, item
+			}
 		}
 		centers, _ := db.mapMetricEntityCenters(ctx, metric)
 		_, groups, _ := db.mapMetricEntities(ctx, metric.Target, metric.Level)
@@ -2753,10 +2607,9 @@ func (db *DB) renderLabelLayer(ctx context.Context, canvas *image.RGBA, v render
 	if layer.Limit > 0 && len(ids) > layer.Limit {
 		ids = ids[:layer.Limit]
 	}
-	c := parseRenderColor(layer.Color, color.RGBA{240, 236, 220, 255})
+	c := parseRenderColor(layer.Color, palette.Ink)
 	drawn := 0
 	missing := 0
-	occupied := []image.Rectangle{}
 	for _, id := range ids {
 		center, ok := metricCenters[id]
 		if !ok {
@@ -2801,25 +2654,34 @@ func (db *DB) renderLabelLayer(ctx context.Context, canvas *image.RGBA, v render
 			width = maxInt(width, textRenderer.WidthSize(subLabel, subSize))
 			height += textRenderer.HeightSize(subSize) + lineGap
 		}
-		labelX, labelY := x-width/2, y-height/2
-		bounds := image.Rect(labelX-3, labelY-2, labelX+width+3, labelY+height+2)
-		collides := false
-		for _, existing := range occupied {
-			if bounds.Overlaps(existing) {
-				collides = true
+		// A name may step off its centroid to find clear paper. Symbols have
+		// already claimed their boxes, so this is what stops settlement glyphs
+		// from printing over the very places they label.
+		pad := mapRenderUIPixels(spec, 3)
+		nudge := height + mapRenderUIPixels(spec, 2)
+		placed := false
+		var labelX, labelY int
+		var bounds image.Rectangle
+		for _, offset := range []int{0, -nudge, nudge, -2 * nudge, 2 * nudge} {
+			labelX, labelY = x-width/2, y-height/2+offset
+			bounds = image.Rect(labelX-pad, labelY-pad, labelX+width+pad, labelY+height+pad)
+			if !bounds.In(canvas.Bounds()) {
+				continue
+			}
+			if scratch.claim(bounds) {
+				placed = true
 				break
 			}
 		}
-		if collides || !bounds.In(canvas.Bounds()) {
+		if !placed {
 			continue
 		}
 		mainX := x - textRenderer.WidthSize(mainLabel, baseSize)/2
 		textRenderer.DrawOutlinedSize(canvas, mainX, labelY, mainLabel, c, baseSize)
 		if subLabel != "" && subLabel != mainLabel {
 			subX := x - textRenderer.WidthSize(subLabel, subSize)/2
-			textRenderer.DrawOutlinedSize(canvas, subX, labelY+textRenderer.HeightSize(baseSize), strings.ToUpper(subLabel), color.RGBA{218, 211, 191, 235}, subSize)
+			textRenderer.DrawOutlinedSize(canvas, subX, labelY+textRenderer.HeightSize(baseSize), strings.ToUpper(subLabel), palette.InkSoft, subSize)
 		}
-		occupied = append(occupied, bounds)
 		drawn++
 	}
 	warnings := []string{}
@@ -2877,118 +2739,6 @@ func (db *DB) mapRenderLabel(ctx context.Context, id string, localized bool) str
 	return id
 }
 
-func drawMapBadge(canvas *image.RGBA, spec MapRenderSpec, provenance []string, textRenderer *mapTextRenderer) {
-	if len(provenance) == 0 {
-		return
-	}
-	text := strings.ToUpper(strings.Join(provenance, " / "))
-	fontSize := mapRenderUIPixels(spec, 10)
-	left, top := mapRenderUIPixels(spec, 8), mapRenderUIPixels(spec, 8)
-	w := textRenderer.WidthSize(text, fontSize) + mapRenderUIPixels(spec, 12)
-	draw.Draw(canvas, image.Rect(left, top, left+w, top+mapRenderUIPixels(spec, 20)), &image.Uniform{color.RGBA{12, 12, 12, 190}}, image.Point{}, draw.Over)
-	textRenderer.DrawSize(canvas, left+mapRenderUIPixels(spec, 6), top+mapRenderUIPixels(spec, 4), text, color.RGBA{238, 232, 210, 255}, fontSize)
-}
-
-func drawFullAtlasLayout(canvas *image.RGBA, spec MapRenderSpec, provenance []string, legendItems []MapLegendItem, textRenderer *mapTextRenderer) {
-	b := canvas.Bounds()
-	u := func(pixels int) int { return mapRenderUIPixels(spec, pixels) }
-	ink := color.RGBA{218, 203, 168, 225}
-	dark := color.RGBA{11, 17, 19, 230}
-	for _, inset := range []int{u(7), u(11)} {
-		r := image.Rect(inset, inset, b.Max.X-inset, b.Max.Y-inset)
-		for thickness := 0; thickness < u(1); thickness++ {
-			for x := r.Min.X; x < r.Max.X; x++ {
-				blendPixel(canvas, x, r.Min.Y+thickness, ink)
-				blendPixel(canvas, x, r.Max.Y-1-thickness, ink)
-			}
-			for y := r.Min.Y; y < r.Max.Y; y++ {
-				blendPixel(canvas, r.Min.X+thickness, y, ink)
-				blendPixel(canvas, r.Max.X-1-thickness, y, ink)
-			}
-		}
-	}
-	title := strings.TrimSpace(spec.Title)
-	if title == "" {
-		title = "历史政治地图集"
-	}
-	subtitle := strings.TrimSpace(spec.Subtitle)
-	if subtitle == "" {
-		subtitle = "HISTORICAL POLITICAL ATLAS"
-	}
-	titleSize, subtitleSize := u(20), u(9)
-	panelW := maxInt(textRenderer.WidthSize(title, titleSize), textRenderer.WidthSize(subtitle+fmt.Sprintf("  ·  %d", spec.Year), subtitleSize)) + u(30)
-	panelX := (b.Dx() - panelW) / 2
-	draw.Draw(canvas, image.Rect(panelX, u(13), panelX+panelW, u(58)), &image.Uniform{dark}, image.Point{}, draw.Over)
-	textRenderer.DrawSize(canvas, panelX+u(15), u(14), title, color.RGBA{240, 229, 198, 255}, titleSize)
-	textRenderer.DrawSize(canvas, panelX+u(15), u(40), subtitle+fmt.Sprintf("  ·  %d", spec.Year), color.RGBA{184, 176, 153, 255}, subtitleSize)
-	// North symbol.
-	nx, ny := b.Max.X-u(43), u(35)
-	drawLine(canvas, nx, ny+u(20), nx, ny-u(5), u(1), ink)
-	drawLine(canvas, nx, ny-u(5), nx-u(5), ny+u(5), u(1), ink)
-	drawLine(canvas, nx, ny-u(5), nx+u(5), ny+u(5), u(1), ink)
-	northSize := u(10)
-	textRenderer.DrawSize(canvas, nx-textRenderer.WidthSize("N", northSize)/2, ny+u(22), "N", ink, northSize)
-	// Keep every legend item visible. Short canvases add columns toward the left
-	// instead of silently dropping thematic categories.
-	const legendRowHeight = 17
-	ly := u(73)
-	rowsPerColumn, columnCount := atlasLegendGrid(len(legendItems), b.Dy(), ly, u(54), u(legendRowHeight))
-	columnWidths := make([]int, columnCount)
-	for i, item := range legendItems {
-		column := i / rowsPerColumn
-		itemWidth := textRenderer.WidthSize(item.Label, u(9)) + u(48)
-		columnWidths[column] = minInt(u(320), maxInt(columnWidths[column], maxInt(u(170), itemWidth)))
-	}
-	columnGap := u(12)
-	legendWidth := 0
-	for _, width := range columnWidths {
-		legendWidth += width
-	}
-	legendWidth += maxInt(0, columnCount-1) * columnGap
-	lx := b.Max.X - legendWidth - u(18)
-	panelBottom := ly + minInt(rowsPerColumn, len(legendItems))*u(legendRowHeight) + u(8)
-	draw.Draw(canvas, image.Rect(lx-u(9), ly-u(8), b.Max.X-u(18), panelBottom), &image.Uniform{color.RGBA{10, 16, 18, 178}}, image.Point{}, draw.Over)
-	columnX := make([]int, columnCount)
-	columnX[0] = lx
-	for i := 1; i < columnCount; i++ {
-		columnX[i] = columnX[i-1] + columnWidths[i-1] + columnGap
-	}
-	for i, item := range legendItems {
-		column, row := i/rowsPerColumn, i%rowsPerColumn
-		x := columnX[column]
-		y := ly + row*u(legendRowHeight)
-		itemColor := parseRenderColor(item.Color, color.RGBA{143, 118, 92, 255})
-		draw.Draw(canvas, image.Rect(x, y, x+u(16), y+u(9)), &image.Uniform{itemColor}, image.Point{}, draw.Over)
-		textRenderer.DrawSize(canvas, x+u(22), y-u(2), item.Label, ink, u(9))
-	}
-	// Relative-distance scale; intentionally not labelled as real-world units.
-	sx, sy, sw := u(30), b.Max.Y-u(34), u(92)
-	drawLine(canvas, sx, sy, sx+sw, sy, u(1), ink)
-	for _, x := range []int{sx, sx + sw/2, sx + sw} {
-		drawLine(canvas, x, sy-u(3), x, sy+u(3), u(1), ink)
-	}
-	textRenderer.DrawSize(canvas, sx, sy+u(7), "RELATIVE SCALE", ink, u(8))
-	badge := "索引事实"
-	if strings.Contains(strings.Join(provenance, " "), "derived") {
-		badge += " / 派生指标"
-	}
-	if strings.Contains(strings.Join(provenance, " "), "model") {
-		badge += " / 模型推演"
-	}
-	badgeSize := u(8)
-	textRenderer.DrawSize(canvas, b.Max.X-textRenderer.WidthSize(badge, badgeSize)-u(25), b.Max.Y-u(27), badge, ink, badgeSize)
-}
-
-func atlasLegendGrid(itemCount, canvasHeight, top, bottomReserve, rowHeight int) (rowsPerColumn, columnCount int) {
-	if itemCount <= 0 {
-		return 1, 1
-	}
-	availableRows := maxInt(1, (canvasHeight-top-bottomReserve)/maxInt(1, rowHeight))
-	columnCount = (itemCount + availableRows - 1) / availableRows
-	rowsPerColumn = (itemCount + columnCount - 1) / columnCount
-	return rowsPerColumn, columnCount
-}
-
 func atlasPrimaryLevel(spec MapRenderSpec) string {
 	for _, layer := range spec.Layers {
 		if layer.Type != "fill" {
@@ -3004,108 +2754,22 @@ func atlasPrimaryLevel(spec MapRenderSpec) string {
 	return ""
 }
 
-func buildAtlasLegend(spec MapRenderSpec, thematic []MapLegendItem) []MapLegendItem {
-	primaryLevel := atlasPrimaryLevel(spec)
-	levelLabels := map[string]string{
-		"province": "省份 / Province", "barony": "男爵领 / Barony", "county": "伯爵领 / County",
-		"duchy": "公国 / Duchy", "kingdom": "王国 / Kingdom", "empire": "帝国 / Empire",
-	}
-	levelColors := map[string]string{
-		"province": "#6f6858ff", "barony": "#625b4cff", "county": "#746a55ff",
-		"duchy": "#9a845fff", "kingdom": "#c4aa76ff", "empire": "#e0d1a8ff",
-	}
-	boundaryLabels := map[string]string{
-		"barony": "男爵领边界 / Barony boundary", "county": "伯爵领边界 / County boundary",
-		"duchy": "公国边界 / Duchy boundary", "kingdom": "王国边界 / Kingdom boundary", "empire": "帝国边界 / Empire boundary",
-	}
-	label := levelLabels[primaryLevel]
-	if primaryLevel == "region" {
-		label = "行省 / Governorate"
-	}
-	if label == "" {
-		label = "政治区域 / Political region"
-	}
-	items := []MapLegendItem{{Label: label, Color: "#8f765cff"}}
-	seen := map[string]bool{primaryLevel: true}
-	outer := false
-	for _, layer := range spec.Layers {
-		if layer.Type != "borders" {
-			continue
-		}
-		if layer.Source == "outer" {
-			outer = true
-			continue
-		}
-		level := strings.ToLower(layer.Level)
-		if seen[level] || levelLabels[level] == "" {
-			continue
-		}
-		seen[level] = true
-		items = append(items, MapLegendItem{Label: boundaryLabels[level], Color: levelColors[level]})
-	}
-	if outer {
-		outerLabel := "目标外框 / Target outline"
-		if strings.HasPrefix(spec.Target, "e_") {
-			outerLabel = "帝国外框 / Empire outline"
-		}
-		items = append(items, MapLegendItem{Label: outerLabel, Color: "#e0d1a8ff"})
-	}
-	items = append(items,
-		MapLegendItem{Label: "山地浮雕 / Relief", Color: "#756f61ff"},
-		MapLegendItem{Label: "河流 / Rivers", Color: "#2a5b69ff"},
-	)
-	markerSources := map[string]bool{}
-	for _, layer := range spec.Layers {
-		if layer.Type == "markers" {
-			markerSources[layer.Source] = true
-		}
-	}
-	if markerSources["vegetation"] {
-		items = append(items, MapLegendItem{Label: "植被符号 / Vegetation", Color: "#435f43ff"})
-	}
-	if markerSources["holdings"] {
-		items = append(items, MapLegendItem{Label: "地产聚落 / Holdings", Color: "#b99b63ff"})
-	}
-	if markerSources["lakes"] {
-		items = append(items, MapLegendItem{Label: "湖体 / Lake bodies", Color: "#68999eff"})
-	}
-	if markerSources["strategic_portals"] {
-		items = append(items, MapLegendItem{Label: "地下与异地图门户 / Portals", Color: "#5b4665ff"})
-	}
-	for _, layer := range spec.Layers {
-		if layer.Type == "flows" && layer.Source == "strategic_passages" {
-			items = append(items, MapLegendItem{Label: "战略通道 / Strategic passages", Color: "#3f6470ff"})
-			break
-		}
-	}
-	items = append(items, thematic...)
-	return items
-}
-
 var tinyGlyphs = map[rune][7]byte{
 	'A': {14, 17, 17, 31, 17, 17, 17}, 'B': {30, 17, 17, 30, 17, 17, 30}, 'C': {14, 17, 16, 16, 16, 17, 14}, 'D': {30, 17, 17, 17, 17, 17, 30}, 'E': {31, 16, 16, 30, 16, 16, 31}, 'F': {31, 16, 16, 30, 16, 16, 16}, 'G': {14, 17, 16, 23, 17, 17, 14}, 'H': {17, 17, 17, 31, 17, 17, 17}, 'I': {14, 4, 4, 4, 4, 4, 14}, 'J': {7, 2, 2, 2, 2, 18, 12}, 'K': {17, 18, 20, 24, 20, 18, 17}, 'L': {16, 16, 16, 16, 16, 16, 31}, 'M': {17, 27, 21, 21, 17, 17, 17}, 'N': {17, 25, 21, 19, 17, 17, 17}, 'O': {14, 17, 17, 17, 17, 17, 14}, 'P': {30, 17, 17, 30, 16, 16, 16}, 'Q': {14, 17, 17, 17, 21, 18, 13}, 'R': {30, 17, 17, 30, 20, 18, 17}, 'S': {15, 16, 16, 14, 1, 1, 30}, 'T': {31, 4, 4, 4, 4, 4, 4}, 'U': {17, 17, 17, 17, 17, 17, 14}, 'V': {17, 17, 17, 17, 17, 10, 4}, 'W': {17, 17, 17, 21, 21, 21, 10}, 'X': {17, 17, 10, 4, 10, 17, 17}, 'Y': {17, 17, 10, 4, 4, 4, 4}, 'Z': {31, 1, 2, 4, 8, 16, 31},
 	'0': {14, 17, 19, 21, 25, 17, 14}, '1': {4, 12, 4, 4, 4, 4, 14}, '2': {14, 17, 1, 2, 4, 8, 31}, '3': {30, 1, 1, 14, 1, 1, 30}, '4': {2, 6, 10, 18, 31, 2, 2}, '5': {31, 16, 16, 30, 1, 1, 30}, '6': {14, 16, 16, 30, 17, 17, 14}, '7': {31, 1, 2, 4, 8, 8, 8}, '8': {14, 17, 17, 14, 17, 17, 14}, '9': {14, 17, 17, 15, 1, 1, 14}, '_': {0, 0, 0, 0, 0, 0, 31}, '-': {0, 0, 0, 31, 0, 0, 0}, '.': {0, 0, 0, 0, 0, 12, 12}, '/': {1, 2, 2, 4, 8, 8, 16}, ' ': {0, 0, 0, 0, 0, 0, 0},
 }
 
-func drawTinyText(canvas *image.RGBA, x, y int, text string, c color.RGBA) {
-	cursor := x
-	for _, r := range text {
-		glyph, ok := tinyGlyphs[r]
-		if !ok {
-			glyph = tinyGlyphs[' ']
-		}
-		for gy, row := range glyph {
-			for gx := 0; gx < 5; gx++ {
-				if row&(1<<uint(4-gx)) != 0 {
-					px, py := cursor+gx, y+gy
-					if image.Pt(px, py).In(canvas.Bounds()) {
-						canvas.SetRGBA(px, py, c)
-					}
-				}
-			}
-		}
-		cursor += 6
+// sortedProvinceIDs returns province ids in ascending order. Layer passes must
+// paint in a fixed order: at output scales below the source map several source
+// provinces land on the same render pixel, so painting in Go map order made the
+// rendered image differ between runs of the same request.
+func sortedProvinceIDs(pids map[int]bool) []int {
+	out := make([]int, 0, len(pids))
+	for pid := range pids {
+		out = append(out, pid)
 	}
+	sort.Ints(out)
+	return out
 }
 
 func absInt(a int) int {

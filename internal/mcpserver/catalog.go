@@ -499,20 +499,22 @@ func guiRuntimeActionEffectsProperty() map[string]any {
 }
 
 func guiScenarioSamplesProperty() map[string]any {
-	property := arrayProperty("Optional caller-provided example results for exact GUI expressions. Values are labeled provided, never observed, and unmatched expressions are reported. Texture samples must name an indexed source-root-relative gfx asset.", objectSchema(map[string]any{
-		"property":   stringProperty("GUI property whose expression result is sampled.", indexer.GUIScenarioPropertyText, indexer.GUIScenarioPropertyTexture, indexer.GUIScenarioPropertyVisible, indexer.GUIScenarioPropertyEnabled),
+	sampleProperties := indexer.GUIScenarioSamplePropertyNames()
+	property := arrayProperty("Optional caller-provided example results for exact GUI expressions. Values are labeled provided, never observed, and unmatched expressions are reported. Image-bearing texture, video, and coat_of_arms_mask samples must name an indexed source-root-relative gfx asset.", objectSchema(map[string]any{
+		"property":   stringProperty("GUI property whose expression result is sampled.", sampleProperties...),
 		"expression": map[string]any{"type": "string", "maxLength": 512, "description": "Exact indexed GUI expression or localized text key to match."},
-		"value":      map[string]any{"type": "string", "maxLength": 512, "description": "Example display text, indexed source-root-relative gfx path for texture, or true/false for visible and enabled."},
+		"value":      map[string]any{"type": "string", "maxLength": 512, "description": "Provided text; indexed source-root-relative gfx image for texture, video, or coat_of_arms_mask; two finite numbers for vector fields; or true/false for visible and enabled."},
 	}, "property", "expression", "value"))
 	property["maxItems"] = indexer.GUIScenarioMaxSamples
 	return property
 }
 
 func guiModelSamplesProperty() map[string]any {
+	sampleProperties := indexer.GUIScenarioSamplePropertyNames()
 	sample := objectSchema(map[string]any{
-		"property":   stringProperty("Row-local GUI property whose exact expression result is sampled.", indexer.GUIScenarioPropertyText, indexer.GUIScenarioPropertyTexture, indexer.GUIScenarioPropertyVisible, indexer.GUIScenarioPropertyEnabled),
+		"property":   stringProperty("Row-local GUI property whose exact expression result is sampled.", sampleProperties...),
 		"expression": map[string]any{"type": "string", "minLength": 1, "maxLength": 512, "description": "Exact expression inside the selected item template."},
-		"value":      map[string]any{"type": "string", "maxLength": 512, "description": "Provided row text, indexed source-root-relative gfx path for texture, or true/false for visible and enabled."},
+		"value":      map[string]any{"type": "string", "maxLength": 512, "description": "Provided row text; indexed source-root-relative gfx image for texture, video, or coat_of_arms_mask; two finite numbers for vector fields; or true/false for visible and enabled."},
 	}, "property", "expression", "value")
 	samples := arrayProperty("Exact row-local expression samples. Values remain isolated to this cloned row.", sample)
 	samples["minItems"] = 1
@@ -742,6 +744,7 @@ func canonicalRenderSchema(levels []string) map[string]any {
 	properties["context_level"] = stringProperty("Political context expansion level.", "county", "duchy")
 	properties["verbose"] = booleanProperty("Include full metric values and recipe targets. Route renders default to compact metadata.")
 	properties["route"] = mapRenderRouteProperty()
+	properties["hit_map"] = booleanProperty("Return a companion lookup plate alongside a basemap so a page can resolve the entity under the pointer exactly. Roughly doubles the returned image payload.")
 	properties["boundary_levels"].(map[string]any)["maxItems"] = 5
 	layers := properties["layers"].(map[string]any)
 	layers["minItems"] = 1

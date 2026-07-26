@@ -67,12 +67,21 @@ func TestMapGeometryRLEColorAndTitleAdjacency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := political["d_d33"]; got.R != 12 || got.G != 34 || got.B != 56 {
-		t.Fatalf("political fill must preserve native title RGB, got %+v", got)
+	native := okLabToLCH(rgbaToOKLab(color.RGBA{12, 34, 56, 255}))
+	got := okLabToLCH(rgbaToOKLab(political["d_d33"]))
+	if math.Abs(hueDelta(got.H, native.H)) > 8 {
+		t.Fatalf("political wash must keep the native title hue: native H=%.1f got H=%.1f", native.H, got.H)
 	}
-	muted := harmonizePoliticalColor(color.RGBA{255, 0, 0, 255})
-	if muted.R <= muted.G || muted.R <= muted.B || muted.R >= 230 || muted.G == 0 {
-		t.Fatalf("muted political color should preserve red hue while reducing extremes, got %+v", muted)
+	if got.L < 0.80 || got.C > 0.07 {
+		t.Fatalf("political wash must stay light and low-chroma for ink to read over it, got L=%.3f C=%.3f", got.L, got.C)
+	}
+	// A saturated heraldic red must survive as a red wash, not as a red block.
+	wash := parchmentWash(color.RGBA{255, 0, 0, 255})
+	if wash.R <= wash.G || wash.R <= wash.B {
+		t.Fatalf("red title must wash to a warm tint, got %+v", wash)
+	}
+	if okLabToLCH(rgbaToOKLab(wash)).L < 0.80 {
+		t.Fatalf("red wash is too dark to carry pen work, got %+v", wash)
 	}
 
 	grid := make([]int, 6*3)
@@ -148,16 +157,22 @@ func TestStrategicWaterwaysAtlasUsesEmpireBlocksAndLakeSurface(t *testing.T) {
 	if result.LayerCounts["flow_edges"] < 1 || result.LayerCounts["strategic_portals"] < 1 || result.LayerCounts["lake_symbols"] != 0 {
 		t.Fatalf("expected strategic flow and portal layers without lake icons, got %+v", result.LayerCounts)
 	}
-	if result.LayerCounts["cached_physical_rasters"] < 1 {
-		t.Fatalf("expected cached physical/material overlays, got %+v", result.LayerCounts)
+	if result.LayerCounts["relief_hachures"] < 1 {
+		t.Fatalf("expected hachured relief, got %+v", result.LayerCounts)
 	}
 	if _, err := png.Decode(bytes.NewReader(result.PNG)); err != nil {
 		t.Fatalf("invalid strategic atlas PNG: %v", err)
 	}
-	lake := mapPhysicalBaseColor("water", "lake", "historical_atlas")
-	sea := mapPhysicalBaseColor("water", "sea", "historical_atlas")
-	if lake.B <= lake.G || int(lake.R)+int(lake.G)+int(lake.B) <= int(sea.R)+int(sea.G)+int(sea.B)+120 {
-		t.Fatalf("lake water must be visibly brighter and bluer than sea: lake=%+v sea=%+v", lake, sea)
+	// Inland water has to separate from open sea on the sheet, and every wash has
+	// to stay pale enough for pen work to read over it.
+	palette := newParchmentPalette()
+	if okLabDistance(palette.Lake, palette.Sea) < 0.03 {
+		t.Fatalf("lake wash is indistinguishable from the sea: lake=%+v sea=%+v", palette.Lake, palette.Sea)
+	}
+	for name, wash := range map[string]color.RGBA{"lake": palette.Lake, "sea": palette.Sea, "paper": palette.Paper} {
+		if lightness := okLabToLCH(rgbaToOKLab(wash)).L; lightness < 0.72 {
+			t.Fatalf("%s wash is too dark for ink to read over it: L=%.3f", name, lightness)
+		}
 	}
 }
 
@@ -709,11 +724,19 @@ func TestAdaptiveAtlasLevelsAndIndexedDevelopment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	legend := buildParchmentLegend(political, nil)
 	legendText := ""
-	for _, item := range buildAtlasLegend(political, nil) {
+	for _, item := range legend {
 		legendText += item.Label + "\n"
 	}
-	for _, expected := range []string{"男爵领 / Barony", "伯爵领边界 / County boundary", "公国边界 / Duchy boundary", "王国边界 / Kingdom boundary", "帝国外框 / Empire outline"} {
+	for _, expected := range []string{
+		"男爵领分色 / BARONY TINTS",
+		"伯爵领界 / COUNTY BOUNDARY",
+		"公国界 / DUCHY BOUNDARY",
+		"王国界 / KINGDOM BOUNDARY",
+		// The subject is the empire, so its own rank is carried by the outline.
+		"所辖范围 / SUBJECT OUTLINE",
+	} {
 		if !strings.Contains(legendText, expected) {
 			t.Fatalf("adaptive legend omitted %q: %s", expected, legendText)
 		}
@@ -771,25 +794,53 @@ func TestMapRenderDeterministicPNG(t *testing.T) {
 	}
 }
 
-func TestAtlasLegendGridKeepsAllItems(t *testing.T) {
-	for _, tc := range []struct {
-		name                          string
-		items, height, top, bottom    int
-		rowHeight, wantRows, wantCols int
-	}{
-		{name: "culture atlas fits one column", items: 19, height: 1522, top: 146, bottom: 108, rowHeight: 34, wantRows: 19, wantCols: 1},
-		{name: "short atlas balances two columns", items: 19, height: 500, top: 73, bottom: 54, rowHeight: 34, wantRows: 10, wantCols: 2},
-		{name: "empty legend remains drawable", items: 0, height: 500, top: 73, bottom: 54, rowHeight: 34, wantRows: 1, wantCols: 1},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			rows, cols := atlasLegendGrid(tc.items, tc.height, tc.top, tc.bottom, tc.rowHeight)
-			if rows != tc.wantRows || cols != tc.wantCols {
-				t.Fatalf("atlasLegendGrid() = %d rows x %d columns, want %d x %d", rows, cols, tc.wantRows, tc.wantCols)
+func TestParchmentLegendDescribesEachMarkCorrectly(t *testing.T) {
+	spec, err := resolveMapRenderSpec(MapRenderSpec{Recipe: "political_atlas", Level: "duchy", Target: "e_test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thematic := []MapLegendItem{{Label: "示例 / SAMPLE", Color: "#ddccaaff", Kind: LegendKindArea}}
+	legend := buildParchmentLegend(spec, thematic)
+	if len(legend) < len(thematic)+3 {
+		t.Fatalf("legend dropped entries: %+v", legend)
+	}
+	// Thematic entries supplied by the fill layers must survive verbatim.
+	found := false
+	for _, item := range legend {
+		if item.Label == thematic[0].Label {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("legend dropped the thematic entry: %+v", legend)
+	}
+	kinds := map[string]int{}
+	for _, item := range legend {
+		if item.Kind == "" {
+			t.Fatalf("legend entry %q does not say how it is drawn", item.Label)
+		}
+		kinds[item.Kind]++
+		switch item.Kind {
+		case LegendKindLine:
+			if item.Weight <= 0 {
+				t.Fatalf("legend line %q has no pen weight", item.Label)
 			}
-			if tc.items > 0 && rows*cols < tc.items {
-				t.Fatalf("legend grid has %d slots for %d items", rows*cols, tc.items)
+		case LegendKindGlyph:
+			if item.Glyph == "" {
+				t.Fatalf("legend glyph %q names no symbol", item.Label)
 			}
-		})
+		}
+	}
+	// A political plate is tinted per title, so the key shows a row of tints
+	// rather than pretending one chip stands for the whole level.
+	if kinds[LegendKindTints] != 1 {
+		t.Fatalf("expected exactly one tint row, got %d: %+v", kinds[LegendKindTints], legend)
+	}
+	if kinds[LegendKindLine] < 2 {
+		t.Fatalf("expected boundary ranks drawn as lines, got %+v", legend)
+	}
+	if kinds[LegendKindGlyph] < 1 {
+		t.Fatalf("expected symbol entries drawn as glyphs, got %+v", legend)
 	}
 }
 
@@ -848,6 +899,57 @@ func TestMapRenderAutoWidth(t *testing.T) {
 				t.Fatalf("auto resolution reason does not explain province count: %q", reason)
 			}
 		})
+	}
+}
+
+// A plate whose size the renderer chose itself must always be renderable. Auto
+// sizing picks a width before the viewport's height exists, so the supersampled
+// working area can overshoot the budget; that used to be a hard error, meaning
+// some subjects simply could not be drawn with default arguments.
+func TestAutoSizedPlateDropsSupersampleInsteadOfFailing(t *testing.T) {
+	// The shed-supersampling path is only sound because one sample per pixel can
+	// never exceed the working budget: the output cap already sits below it.
+	if mapRenderMaxPixels > mapRenderMaxWorkingPixels {
+		t.Fatalf("output cap %d exceeds the working budget %d, so dropping supersample cannot guarantee a render",
+			mapRenderMaxPixels, mapRenderMaxWorkingPixels)
+	}
+	_, db, _ := openMapFixtureDB(t)
+	defer db.Close()
+	ctx := context.Background()
+
+	// 3600x3500 needs just over the working budget at supersample=2, which the
+	// recipe requests implicitly.
+	implicit := MapRenderSpec{Recipe: "political_atlas", Target: "e_test", Width: 3600, Height: 3500}
+	result, err := db.LLMMapRender(ctx, implicit, LLMOptions{AllowProject: true, Limit: 20})
+	if err != nil {
+		t.Fatalf("implicitly supersampled plate must still render, got: %v", err)
+	}
+	if int64(result.Width)*int64(result.Height)*4 <= mapRenderMaxWorkingPixels {
+		t.Skipf("output %dx%d no longer overshoots the budget at supersample=2; adjust the fixture size",
+			result.Width, result.Height)
+	}
+	shed := false
+	for _, warning := range result.Warnings {
+		if strings.Contains(warning, "supersampling disabled") {
+			shed = true
+		}
+	}
+	if !shed {
+		t.Fatalf("expected a warning that supersampling was dropped, got %+v", result.Warnings)
+	}
+	if !strings.Contains(result.ResolutionReason, "supersampling disabled") {
+		t.Fatalf("resolution reason must record the change, got %q", result.ResolutionReason)
+	}
+	if _, err := png.Decode(bytes.NewReader(result.PNG)); err != nil {
+		t.Fatalf("shed-supersample plate produced an invalid PNG: %v", err)
+	}
+
+	// Asking for supersampling by name is a different contract: honour the request
+	// and report that it does not fit rather than silently downgrading it.
+	explicit := implicit
+	explicit.Supersample = 2
+	if _, err := db.LLMMapRender(ctx, explicit, LLMOptions{AllowProject: true, Limit: 20}); err == nil {
+		t.Fatal("an explicit supersample request over the budget must be reported, not silently downgraded")
 	}
 }
 
@@ -983,10 +1085,82 @@ func TestDuchyPoliticalAtlasRecipe(t *testing.T) {
 	if decoded.Bounds().Dx() != result.Width || decoded.Bounds().Dy() != result.Height || result.Width != 640 || result.Height != 420 {
 		t.Fatalf("supersampling changed final dimensions: image=%v metadata=%dx%d", decoded.Bounds(), result.Width, result.Height)
 	}
-	if result.LayerCounts["cached_physical_rasters"] < 4 || result.LayerCounts["label_items"] == 0 {
-		t.Fatalf("atlas omitted physical rasters or localized labels: counts=%+v warnings=%+v", result.LayerCounts, result.Warnings)
+	if result.LayerCounts["relief_hachures"] < 1 || result.LayerCounts["label_items"] == 0 {
+		t.Fatalf("atlas omitted relief or localized labels: counts=%+v warnings=%+v", result.LayerCounts, result.Warnings)
 	}
-	if len(result.Legend) != 7 || strings.Contains(result.Summary, "d_d33") {
-		t.Fatalf("atlas legend or summary leaked script ids: legend=%+v summary=%q", result.Legend, result.Summary)
+	// The point is that raw script identifiers never reach the reader, so assert
+	// that rather than a legend length that changes whenever the key gains a mark.
+	if strings.Contains(result.Summary, "d_d33") {
+		t.Fatalf("atlas summary leaked a script id: %q", result.Summary)
+	}
+	if len(result.Legend) == 0 {
+		t.Fatal("atlas produced no legend")
+	}
+	for _, item := range result.Legend {
+		if strings.Contains(item.Label, "d_d33") || strings.Contains(item.Label, "e_test") {
+			t.Fatalf("atlas legend leaked a script id: %+v", item)
+		}
+	}
+}
+
+// The basemap workflow only works if the returned metadata indexes the returned
+// image exactly: a caller composites the plate into HTML and positions its own
+// lettering and hit regions from these numbers.
+func TestBasemapLayoutCarriesUsableOverlayGeometry(t *testing.T) {
+	_, db, _ := openMapFixtureDB(t)
+	defer db.Close()
+	ctx := context.Background()
+	result, err := db.LLMMapRender(ctx, MapRenderSpec{
+		Recipe: "political_atlas", Target: "e_test", Level: "county",
+		Layout: "basemap", Width: 480, HitMap: true,
+	}, LLMOptions{AllowProject: true, Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No lettering and no furniture: those are the caller's job in HTML.
+	if result.LayerCounts["label_items"] != 0 || result.LayerCounts["labels"] != 0 {
+		t.Fatalf("a basemap must not bake in lettering, got %+v", result.LayerCounts)
+	}
+	overlay := result.Overlay
+	if overlay == nil || len(overlay.Entities) == 0 {
+		t.Fatal("basemap produced no overlay geometry")
+	}
+	if overlay.CoordSpace != "output_pixels" {
+		t.Fatalf("coord space = %q, wanted output_pixels", overlay.CoordSpace)
+	}
+	plate, err := png.Decode(bytes.NewReader(result.PNG))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plate.Bounds().Dx() != result.Width || plate.Bounds().Dy() != result.Height {
+		t.Fatalf("plate %v does not match reported size %dx%d", plate.Bounds(), result.Width, result.Height)
+	}
+	hit, err := png.Decode(bytes.NewReader(result.HitPNG))
+	if err != nil {
+		t.Fatalf("hit map did not decode: %v", err)
+	}
+	if hit.Bounds() != plate.Bounds() {
+		t.Fatalf("hit map %v is not pixel-aligned with the plate %v", hit.Bounds(), plate.Bounds())
+	}
+	for _, entity := range overlay.Entities {
+		if entity.MinX < 0 || entity.MinY < 0 || entity.MaxX > result.Width || entity.MaxY > result.Height {
+			t.Fatalf("entity %s bounding box %v escapes the plate", entity.ID,
+				[]int{entity.MinX, entity.MinY, entity.MaxX, entity.MaxY})
+		}
+		if entity.CenterX < float64(entity.MinX) || entity.CenterX > float64(entity.MaxX) ||
+			entity.CenterY < float64(entity.MinY) || entity.CenterY > float64(entity.MaxY) {
+			t.Fatalf("entity %s anchor (%.1f,%.1f) lies outside its own box", entity.ID, entity.CenterX, entity.CenterY)
+		}
+		if entity.HitColor == "" {
+			t.Fatalf("entity %s has no hit colour", entity.ID)
+		}
+		// The anchor must resolve back to its own entity, otherwise a label and a
+		// pointer hit at the same spot would disagree. An area centroid does not
+		// guarantee this for crescent or multi-part territories.
+		r, g, b, _ := hit.At(int(entity.CenterX), int(entity.CenterY)).RGBA()
+		got := rgbaHex(color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), 255})
+		if got != entity.HitColor {
+			t.Fatalf("entity %s anchor resolves to %s in the hit map, want %s", entity.ID, got, entity.HitColor)
+		}
 	}
 }

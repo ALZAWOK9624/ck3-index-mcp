@@ -70,6 +70,135 @@ func TestQueryGUIReusesIndexedFilesAndPrivacyBoundary(t *testing.T) {
 	}
 }
 
+func TestQueryGUISummaryStreamsRawModels(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	db, err := Open(filepath.Join(root, "index.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	path := writeGUIQueryFixture(t, root, "game/summary.gui", `template SharedLabel {
+	text_single = { align = right }
+}
+types Demo {
+	type aligned_label = text_single {
+		align = left|top
+		visible = "[IsShown]"
+	}
+}
+widget = {
+	align = center
+	checked = "[IsChecked]"
+	alwaystransparent = "[IsMouseTransparent]"
+	button_ignore = "[ShouldIgnoreParentButton]"
+	selectedindex = "[CurrentSortIndex]"
+	@progress_bar_spacing = @[progress_bar_size / 20]
+	fontcolor = "[TrackColor]"
+	oncolorchanged = "[OnColorChanged]"
+	coat_of_arms = "[Title.GetTitleCoA.GetTexture('(int32)256','(int32)256')]"
+	coat_of_arms_mask = "[GovernmentType.GetRealmMask]"
+	coat_of_arms_offset = "[GovernmentType.GetRealmMaskOffset]"
+	coat_of_arms_scale = "[GovernmentType.GetRealmMaskScale]"
+	video = "[EventWindowBackgroundData.GetVideo]"
+	loop = "[ShouldLoop]"
+	delay = "[StaggerDelay]"
+	maxcharacters = "[MaxNameLength]"
+	intersectionmask_texture = "[DomicileBuildingAsset.GetTextureMask]"
+	on_start = "[PdxGuiTriggerAllAnimations('show')]"
+	trigger_when = "[ShowWidget]"
+	raw_tooltip = "#X Direct inspector tooltip#!"
+	tooltip_when_disabled = "[DisabledReason]"
+	animated_progress_value = "[CurrentProgress]"
+}
+`)
+	if _, err := db.sql.ExecContext(ctx, `INSERT INTO files(source_name,source_rank,path,rel_path,kind,mtime,sha256,overridden) VALUES('game',3,?,?, 'script',0,'test',0)`, path, "gui/summary.gui"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := db.QueryGUI(ctx, GUIQueryOptions{Operation: "summary", AllowProject: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Found || result.Files != 1 || result.CacheHit || result.Summary == nil {
+		t.Fatalf("streaming GUI summary failed: %+v", result)
+	}
+	summary := result.Summary
+	if summary.ResolutionComplete || summary.Types != 1 || summary.Templates != 1 || summary.Roots != 1 {
+		t.Fatalf("streaming GUI summary metadata is wrong: %+v", summary)
+	}
+	usage := map[string]GUIPropertyUsage{}
+	for _, value := range summary.PropertyUsage {
+		usage[value.Name] = value
+	}
+	if align, ok := usage["align"]; !ok || align.Count != 3 || align.Support != "rendered" {
+		t.Fatalf("raw align usage missing from summary: %+v", summary.PropertyUsage)
+	}
+	if visible, ok := usage["visible"]; !ok || visible.Expressions != 1 || visible.Support != "simulated" {
+		t.Fatalf("raw runtime field missing from summary: %+v", summary.PropertyUsage)
+	}
+	if checked, ok := usage["checked"]; !ok || checked.Expressions != 1 || checked.Support != "simulated" {
+		t.Fatalf("checked support missing from summary: %+v", summary.PropertyUsage)
+	}
+	if rawTooltip, ok := usage["raw_tooltip"]; !ok || rawTooltip.Count != 1 || rawTooltip.Support != "simulated" {
+		t.Fatalf("raw tooltip support missing from summary: %+v", summary.PropertyUsage)
+	}
+	if disabledTooltip, ok := usage["tooltip_when_disabled"]; !ok || disabledTooltip.Expressions != 1 || disabledTooltip.Support != "simulated" {
+		t.Fatalf("disabled tooltip support missing from summary: %+v", summary.PropertyUsage)
+	}
+	if animatedProgress, ok := usage["animated_progress_value"]; !ok || animatedProgress.Expressions != 1 || animatedProgress.Support != "simulated" {
+		t.Fatalf("animated progress support missing from summary: %+v", summary.PropertyUsage)
+	}
+	if transparent, ok := usage["alwaystransparent"]; !ok || transparent.Expressions != 1 || transparent.Support != "preserved" {
+		t.Fatalf("mouse routing support missing from summary: %+v", summary.PropertyUsage)
+	}
+	if buttonIgnore, ok := usage["button_ignore"]; !ok || buttonIgnore.Expressions != 1 || buttonIgnore.Support != "preserved" {
+		t.Fatalf("button input routing support missing from summary: %+v", summary.PropertyUsage)
+	}
+	if selectedIndex, ok := usage["selectedindex"]; !ok || selectedIndex.Expressions != 1 || selectedIndex.Support != "preserved" {
+		t.Fatalf("dropdown model-index support missing from summary: %+v", summary.PropertyUsage)
+	}
+	if fontColor, ok := usage["fontcolor"]; !ok || fontColor.Expressions != 1 || fontColor.Support != "simulated" {
+		t.Fatalf("fontcolor support missing from summary: %+v", summary.PropertyUsage)
+	}
+	if coatOfArms, ok := usage["coat_of_arms"]; !ok || coatOfArms.Expressions != 1 || coatOfArms.Support != "simulated" {
+		t.Fatalf("coat_of_arms sample support missing from summary: %+v", summary.PropertyUsage)
+	}
+	if video, ok := usage["video"]; !ok || video.Expressions != 1 || video.Support != "simulated" {
+		t.Fatalf("video poster sample support missing from summary: %+v", summary.PropertyUsage)
+	}
+	for _, name := range []string{"coat_of_arms_mask", "coat_of_arms_offset", "coat_of_arms_scale"} {
+		if value, ok := usage[name]; !ok || value.Expressions != 1 || value.Support != "simulated" {
+			t.Fatalf("coat-of-arms composition support missing for %q: %+v", name, summary.PropertyUsage)
+		}
+	}
+	if _, found := usage["@progress_bar_spacing"]; found {
+		t.Fatalf("GUI macro declaration leaked into property summary: %+v", summary.PropertyUsage)
+	}
+	if colorChange, ok := usage["oncolorchanged"]; !ok || colorChange.Expressions != 1 || colorChange.Support != "preserved" {
+		t.Fatalf("color-change callback support missing from summary: %+v", summary.PropertyUsage)
+	}
+	for _, name := range []string{"loop", "delay", "maxcharacters", "intersectionmask_texture"} {
+		if value, ok := usage[name]; !ok || value.Expressions != 1 || value.Support != "preserved" {
+			t.Fatalf("nonvisual runtime property %q support missing: %+v", name, summary.PropertyUsage)
+		}
+	}
+	if onStart, ok := usage["on_start"]; !ok || onStart.Expressions != 1 || onStart.Support != "preserved" {
+		t.Fatalf("lifecycle callback support missing from summary: %+v", summary.PropertyUsage)
+	}
+	if trigger, ok := usage["trigger_when"]; !ok || trigger.Expressions != 1 || trigger.Support != "simulated" {
+		t.Fatalf("state trigger support missing from summary: %+v", summary.PropertyUsage)
+	}
+	if len(summary.RuntimeHotspots) != 0 {
+		t.Fatalf("fully supported fixture should not report runtime hotspots: %+v", summary.RuntimeHotspots)
+	}
+	if len(result.Guidance) == 0 || !strings.Contains(strings.Join(result.Guidance, " "), "resolution_complete=false") {
+		t.Fatalf("streaming summary did not explain its resolution boundary: %+v", result.Guidance)
+	}
+}
+
 func TestQueryGUIPathPrefixScopesSymbolButResolvesCrossFileTypes(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -246,9 +375,10 @@ func TestSelectGUIPreviewDiagnosticsKeepsOnlyContributingSpans(t *testing.T) {
 		{Code: "irrelevant", Source: "gui/panel.gui", Span: SourceSpan{Line: 20, EndLine: 30}},
 		{Code: "inside", Severity: "error", Source: "gui/panel.gui", Span: SourceSpan{Line: 210, EndLine: 220}},
 		{Code: "named", Severity: "info", Symbol: "panel", Source: "gui/other.gui", Span: SourceSpan{Line: 1, EndLine: 1}},
+		{Code: "gui_expansion_limit", Severity: "warning", Source: "gui/dependency.gui", Span: SourceSpan{Line: 1, EndLine: 1}},
 	}
 	selected := selectGUIPreviewDiagnostics(values, "panel", nodes, 8)
-	if len(selected) != 2 || selected[0].Code != "inside" || selected[1].Code != "named" {
+	if len(selected) != 3 || selected[0].Code != "inside" || selected[1].Code != "named" || selected[2].Code != "gui_expansion_limit" {
 		t.Fatalf("focused GUI diagnostics=%+v", selected)
 	}
 }
@@ -292,7 +422,7 @@ func TestQueryGUIRendersPreviewFromIndexedResolvedType(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Found || result.Preview == nil || result.Preview.SymbolKind != "type" || len(result.Preview.PNG) == 0 {
+	if !result.Found || result.ResolutionTruncated || result.Preview == nil || result.Preview.SymbolKind != "type" || len(result.Preview.PNG) == 0 {
 		t.Fatalf("resolved GUI preview missing: %+v", result)
 	}
 	if result.Preview.Format != "both" || result.Preview.HTML == nil || result.Preview.HTML.Mode != GUIHTMLModeInspector || !strings.Contains(result.Preview.HTML.Document, `id="ck3-gui-inspector"`) {

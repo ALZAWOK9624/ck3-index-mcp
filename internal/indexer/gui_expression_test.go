@@ -67,6 +67,184 @@ func TestPrepareGUIPreviewRuntimeBindsNumericValue(t *testing.T) {
 	}
 }
 
+func TestPrepareGUIPreviewRuntimeReplaysDynamicLayoutSelectors(t *testing.T) {
+	preview := GUIPreviewResult{Nodes: []GUIPreviewNode{{
+		Index: 0,
+		Semantics: &GUISemantics{
+			MarginLeft: "[Select_int32( IsCompact, '(int32)-30', '(int32)0' )]",
+			MaxWidth:   "[Select_CFixedPoint( HasCenterPortrait, '(CFixedPoint)120', Select_CFixedPoint( HasOtherPortrait, '(CFixedPoint)170', '(CFixedPoint)250' ))]",
+			MaxHeight:  "[Select_int32( IsRightWindowOpen, '(int32)282', '(int32)760' )]",
+		},
+	}}}
+	if err := prepareGUIPreviewRuntime(&preview, []GUIRuntimeFactInput{
+		{Expression: "IsCompact", Value: true},
+		{Expression: "HasCenterPortrait", Value: false},
+		{Expression: "HasOtherPortrait", Value: true},
+		{Expression: "IsRightWindowOpen", Value: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	binding := preview.Nodes[0].Runtime
+	if binding == nil || binding.MarginLeft == nil || binding.MarginLeft.Result == nil || *binding.MarginLeft.Result != -30 {
+		t.Fatalf("dynamic margin selector did not evaluate: %#v", binding)
+	}
+	if binding.MaxWidth == nil || binding.MaxWidth.Result == nil || *binding.MaxWidth.Result != 170 {
+		t.Fatalf("nested fixed-point selector did not evaluate: %#v", binding)
+	}
+	if binding.MaxHeight == nil || binding.MaxHeight.Result == nil || *binding.MaxHeight.Result != 282 {
+		t.Fatalf("dynamic height selector did not evaluate: %#v", binding)
+	}
+	if preview.Runtime == nil || preview.Runtime.Stats.Expressions != 3 || preview.Runtime.Stats.Evaluated != 3 || preview.Runtime.Stats.Unknown != 0 {
+		t.Fatalf("layout selector runtime summary is incomplete: %#v", preview.Runtime)
+	}
+}
+
+func TestPrepareGUIPreviewRuntimeBindsLiteralAndProvidedColors(t *testing.T) {
+	preview := GUIPreviewResult{Nodes: []GUIPreviewNode{{
+		Index: 0,
+		Semantics: &GUISemantics{
+			Color:         "{ 0.1 0.2 0.3 0.4 }",
+			TintColor:     "{ 1 0.5 0 0.75 }",
+			FontTintColor: "[GetFontTint]",
+		},
+	}}}
+	if err := prepareGUIPreviewRuntime(&preview, []GUIRuntimeFactInput{{Expression: "GetFontTint", Value: "#336699cc"}}); err != nil {
+		t.Fatal(err)
+	}
+	binding := preview.Nodes[0].Runtime
+	if binding == nil || binding.Color == nil || binding.Color.Result == nil || *binding.Color.Result != "rgba(26,51,77,0.400)" {
+		t.Fatalf("literal color did not normalize: color=%#v tint=%#v font=%#v runtime=%#v", binding.Color, binding.TintColor, binding.FontTintColor, preview.Runtime)
+	}
+	if binding.TintColor == nil || binding.TintColor.Result == nil || *binding.TintColor.Result != "rgba(255,128,0,0.750)" {
+		t.Fatalf("literal tint color did not normalize: tint=%#v font=%#v runtime=%#v", binding.TintColor, binding.FontTintColor, preview.Runtime)
+	}
+	if binding.FontTintColor == nil || binding.FontTintColor.Result == nil || *binding.FontTintColor.Result != "#336699cc" || binding.FontTintColor.Status != "evaluated" {
+		t.Fatalf("provided font tint color did not evaluate: %#v", binding)
+	}
+	if preview.Runtime == nil || preview.Runtime.Stats.Expressions != 3 || preview.Runtime.Stats.Evaluated != 3 || preview.Runtime.Stats.Unknown != 0 {
+		t.Fatalf("unexpected color runtime summary: %#v", preview.Runtime)
+	}
+}
+
+func TestPrepareGUIPreviewRuntimeBindsTooltipVisible(t *testing.T) {
+	preview := GUIPreviewResult{Nodes: []GUIPreviewNode{{
+		Index: 0,
+		Semantics: &GUISemantics{
+			TooltipVisible: "[ShowTooltip]",
+		},
+	}}}
+	if err := prepareGUIPreviewRuntime(&preview, []GUIRuntimeFactInput{{Expression: "ShowTooltip", Value: false}}); err != nil {
+		t.Fatal(err)
+	}
+	binding := preview.Nodes[0].Runtime
+	if binding == nil || binding.TooltipVisible == nil || binding.TooltipVisible.Result == nil || *binding.TooltipVisible.Result || binding.TooltipVisible.Status != "evaluated" {
+		t.Fatalf("tooltip_visible did not bind to the supplied fact: %#v", binding)
+	}
+	if preview.Runtime == nil || preview.Runtime.Stats.Expressions != 1 || preview.Runtime.Stats.Evaluated != 1 || preview.Runtime.Stats.Unknown != 0 {
+		t.Fatalf("unexpected tooltip_visible runtime summary: %#v", preview.Runtime)
+	}
+}
+
+func TestPrepareGUIPreviewRuntimeBindsCheckedState(t *testing.T) {
+	preview := GUIPreviewResult{Nodes: []GUIPreviewNode{{
+		Index: 0,
+		Kind:  "checkbutton",
+		Semantics: &GUISemantics{
+			Checked: "[CloudSaveData.ShouldSaveToCloud]",
+		},
+	}}}
+	if err := prepareGUIPreviewRuntime(&preview, []GUIRuntimeFactInput{{Expression: "CloudSaveData.ShouldSaveToCloud", Value: true}}); err != nil {
+		t.Fatal(err)
+	}
+	binding := preview.Nodes[0].Runtime
+	if binding == nil || binding.Checked == nil || binding.Checked.Result == nil || !*binding.Checked.Result || binding.Checked.Status != "evaluated" {
+		t.Fatalf("checked did not bind to the supplied fact: %#v", binding)
+	}
+	if preview.Runtime == nil || preview.Runtime.Stats.Expressions != 1 || preview.Runtime.Stats.Evaluated != 1 || preview.Runtime.Stats.Unknown != 0 {
+		t.Fatalf("unexpected checked runtime summary: %#v", preview.Runtime)
+	}
+}
+
+func TestPrepareGUIPreviewRuntimeBindsStateTrigger(t *testing.T) {
+	preview := GUIPreviewResult{Nodes: []GUIPreviewNode{{
+		Index: 0,
+		Kind:  "state",
+		StateDefinition: &GUIStateDefinition{
+			Name:        "hide_when_modal",
+			TriggerWhen: "[IsModalOpen]",
+		},
+	}}}
+	if err := prepareGUIPreviewRuntime(&preview, []GUIRuntimeFactInput{{Expression: "IsModalOpen", Value: true}}); err != nil {
+		t.Fatal(err)
+	}
+	binding := preview.Nodes[0].Runtime
+	if binding == nil || binding.StateTrigger == nil || binding.StateTrigger.Result == nil || !*binding.StateTrigger.Result || binding.StateTrigger.Status != "evaluated" {
+		t.Fatalf("state trigger did not bind to the supplied fact: %#v", binding)
+	}
+	if preview.Runtime == nil || preview.Runtime.Stats.Expressions != 1 || preview.Runtime.Stats.Evaluated != 1 || preview.Runtime.Stats.Unknown != 0 {
+		t.Fatalf("unexpected state trigger runtime summary: %#v", preview.Runtime)
+	}
+}
+
+func TestPrepareGUIPreviewRuntimeBindsDynamicStatePosition(t *testing.T) {
+	preview := GUIPreviewResult{Nodes: []GUIPreviewNode{{
+		Index: 0,
+		Kind:  "state",
+		StateDefinition: &GUIStateDefinition{
+			Name:      "slide_when_modal",
+			PositionX: "[Select_int32(IsModalOpen, '(int32)-200', '(int32)0')]",
+			PositionY: "[Select_CFixedPoint(IsModalOpen, '(CFixedPoint)12.5', '(CFixedPoint)0')]",
+		},
+	}}}
+	if err := prepareGUIPreviewRuntime(&preview, []GUIRuntimeFactInput{{Expression: "IsModalOpen", Value: true}}); err != nil {
+		t.Fatal(err)
+	}
+	binding := preview.Nodes[0].Runtime
+	if binding == nil || binding.StatePositionX == nil || binding.StatePositionX.Result == nil || *binding.StatePositionX.Result != -200 || binding.StatePositionY == nil || binding.StatePositionY.Result == nil || *binding.StatePositionY.Result != 12.5 {
+		t.Fatalf("dynamic state position did not bind to the supplied fact: %#v", binding)
+	}
+	if preview.Runtime == nil || preview.Runtime.Stats.Expressions != 2 || preview.Runtime.Stats.Evaluated != 2 || preview.Runtime.Stats.Unknown != 0 {
+		t.Fatalf("unexpected dynamic state-position runtime summary: %#v", preview.Runtime)
+	}
+}
+
+func TestPrepareGUIPreviewRuntimeBindsDynamicAllowOutside(t *testing.T) {
+	preview := GUIPreviewResult{Nodes: []GUIPreviewNode{{
+		Index:  0,
+		Kind:   "widget",
+		Layout: &GUIPreviewLayout{AllowOutsideExpr: "[EventWindowData.ShowEventTools]"},
+	}}}
+	if err := prepareGUIPreviewRuntime(&preview, []GUIRuntimeFactInput{{Expression: "EventWindowData.ShowEventTools", Value: true}}); err != nil {
+		t.Fatal(err)
+	}
+	binding := preview.Nodes[0].Runtime
+	if binding == nil || binding.AllowOutside == nil || binding.AllowOutside.Result == nil || !*binding.AllowOutside.Result || binding.AllowOutside.Status != "evaluated" {
+		t.Fatalf("dynamic allow_outside did not bind to the supplied fact: %#v", binding)
+	}
+	if preview.Runtime == nil || preview.Runtime.Stats.Expressions != 1 || preview.Runtime.Stats.Evaluated != 1 || preview.Runtime.Stats.Unknown != 0 {
+		t.Fatalf("unexpected dynamic allow_outside runtime summary: %#v", preview.Runtime)
+	}
+}
+
+func TestPrepareGUIPreviewRuntimeBindsGrayscale(t *testing.T) {
+	preview := GUIPreviewResult{Nodes: []GUIPreviewNode{{
+		Index: 0,
+		Semantics: &GUISemantics{
+			Grayscale: "[Not(CharacterListItem.IsSelectable)]",
+		},
+	}}}
+	if err := prepareGUIPreviewRuntime(&preview, []GUIRuntimeFactInput{{Expression: "CharacterListItem.IsSelectable", Value: false}}); err != nil {
+		t.Fatal(err)
+	}
+	binding := preview.Nodes[0].Runtime
+	if binding == nil || binding.Grayscale == nil || binding.Grayscale.Result == nil || !*binding.Grayscale.Result || binding.Grayscale.Status != "evaluated" {
+		t.Fatalf("grayscale did not bind to the supplied fact: %#v", binding)
+	}
+	if preview.Runtime == nil || preview.Runtime.Stats.Expressions != 1 || preview.Runtime.Stats.Evaluated != 1 || preview.Runtime.Stats.Unknown != 0 {
+		t.Fatalf("unexpected grayscale runtime summary: %#v", preview.Runtime)
+	}
+}
+
 func TestGUIRuntimeThreeValuedShortCircuit(t *testing.T) {
 	preview := GUIPreviewResult{Nodes: []GUIPreviewNode{
 		{Index: 0, Semantics: &GUISemantics{Visible: "[And( KnownFalse, Missing )]"}},
@@ -176,6 +354,64 @@ func TestPrepareGUIPreviewRuntimeReplaysPressedStateAndMultipleClickEffects(t *t
 	action := preview.Runtime.Actions[node.Runtime.Actions[0].PlanID]
 	if action.Operation != "toggle_game_view_data" || action.Argument != "travel_planner" || action.DataExpression != "TravelPlan.GetID" {
 		t.Fatalf("ToggleGameViewData was compiled incorrectly: %#v", action)
+	}
+}
+
+func TestPrepareGUIPreviewRuntimeBindsProvidedRightClickAction(t *testing.T) {
+	const actionExpression = "[DefaultOnCharacterRightClick(Character.GetID)]"
+	preview := GUIPreviewResult{Nodes: []GUIPreviewNode{{
+		Index: 0, Semantics: &GUISemantics{OnRightClick: actionExpression},
+	}}}
+	if err := prepareGUIPreviewRuntimeWithActions(&preview, []GUIRuntimeFactInput{
+		{Expression: "CharacterContextMenuOpen", Value: false},
+	}, []GUIRuntimeActionEffectInput{{
+		Expression: actionExpression,
+		Updates:    []GUIRuntimeActionUpdateInput{{Expression: "CharacterContextMenuOpen", Operation: "set", Value: true}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	node := preview.Nodes[0]
+	if node.Runtime == nil || node.Runtime.RightClickAction == nil {
+		t.Fatalf("right-click action binding missing: %#v", node.Runtime)
+	}
+	if node.Runtime.Action != nil || len(node.Runtime.Actions) != 0 {
+		t.Fatalf("right-click action leaked into left-click bindings: %#v", node.Runtime)
+	}
+	if preview.Runtime == nil || preview.Runtime.Stats.Actions != 1 || preview.Runtime.Stats.ActionEffects != 1 {
+		t.Fatalf("right-click runtime summary is incomplete: %#v", preview.Runtime)
+	}
+	action := preview.Runtime.Actions[node.Runtime.RightClickAction.PlanID]
+	if action.Source != "provided" || action.Operation != "provided_effect" || len(action.Updates) != 1 || action.Updates[0].Expression != "CharacterContextMenuOpen" {
+		t.Fatalf("right-click postcondition was not compiled: %#v", action)
+	}
+}
+
+func TestPrepareGUIPreviewRuntimeBindsScale(t *testing.T) {
+	preview := GUIPreviewResult{Nodes: []GUIPreviewNode{{
+		Index: 0, Semantics: &GUISemantics{Scale: "[PortraitScale]"},
+	}}}
+	if err := prepareGUIPreviewRuntime(&preview, []GUIRuntimeFactInput{{Expression: "PortraitScale", Value: 1.35}}); err != nil {
+		t.Fatal(err)
+	}
+	node := preview.Nodes[0]
+	if node.Runtime == nil || node.Runtime.Scale == nil || node.Runtime.Scale.Result == nil || *node.Runtime.Scale.Result != 1.35 {
+		t.Fatalf("scale binding did not evaluate: %#v", node.Runtime)
+	}
+	if preview.Runtime == nil || preview.Runtime.Stats.Expressions != 1 || preview.Runtime.Stats.Evaluated != 1 {
+		t.Fatalf("scale runtime summary is incomplete: %#v", preview.Runtime)
+	}
+}
+
+func TestPrepareGUIPreviewRuntimeBindsRotateUV(t *testing.T) {
+	preview := GUIPreviewResult{Nodes: []GUIPreviewNode{{
+		Index: 0, Semantics: &GUISemantics{RotateUV: "[WheelRotation]"},
+	}}}
+	if err := prepareGUIPreviewRuntime(&preview, []GUIRuntimeFactInput{{Expression: "WheelRotation", Value: -90}}); err != nil {
+		t.Fatal(err)
+	}
+	binding := preview.Nodes[0].Runtime.RotateUV
+	if binding == nil || binding.Status != "evaluated" || binding.Result == nil || *binding.Result != -90 {
+		t.Fatalf("rotate_uv binding was not evaluated: %+v", preview.Nodes[0].Runtime)
 	}
 }
 
@@ -533,6 +769,52 @@ func TestPrepareGUIPreviewRuntimeInterpolatesDynamicText(t *testing.T) {
 	}
 	if preview.Runtime.Stats.TextReady < 4 || preview.Runtime.Stats.TextPartial != 1 {
 		t.Fatalf("unexpected text runtime stats: %#v", preview.Runtime.Stats)
+	}
+}
+
+func TestPrepareGUIPreviewRuntimeInterpolatesRawTooltip(t *testing.T) {
+	preview := GUIPreviewResult{Nodes: []GUIPreviewNode{{
+		Index: 0, Kind: "button", Semantics: &GUISemantics{RawTooltip: "#X [Character.GetName]#!"},
+	}}}
+	if err := prepareGUIPreviewRuntime(&preview, []GUIRuntimeFactInput{{Expression: "Character.GetName", Value: "Arthen"}}); err != nil {
+		t.Fatal(err)
+	}
+	if preview.Nodes[0].Runtime == nil || preview.Nodes[0].Runtime.Tooltip == nil {
+		t.Fatalf("raw tooltip runtime binding missing: %#v", preview.Nodes[0])
+	}
+	if got, ok := resolvedGUIRuntimeText(preview.Nodes[0].Runtime.Tooltip, GUIPreviewLanguageRaw); !ok || got != "Arthen" {
+		t.Fatalf("raw dynamic tooltip = %q, %v", got, ok)
+	}
+}
+
+func TestPrepareGUIPreviewRuntimeInterpolatesDisabledTooltip(t *testing.T) {
+	preview := GUIPreviewResult{Nodes: []GUIPreviewNode{{
+		Index: 0, Kind: "button", Semantics: &GUISemantics{TooltipWhenDisabled: "[DisabledActionReason]"},
+	}}}
+	if err := prepareGUIPreviewRuntime(&preview, []GUIRuntimeFactInput{{Expression: "DisabledActionReason", Value: "Requires a hook"}}); err != nil {
+		t.Fatal(err)
+	}
+	if preview.Nodes[0].Runtime == nil || preview.Nodes[0].Runtime.TooltipWhenDisabled == nil {
+		t.Fatalf("disabled tooltip runtime binding missing: %#v", preview.Nodes[0])
+	}
+	if got, ok := resolvedGUIRuntimeText(preview.Nodes[0].Runtime.TooltipWhenDisabled, GUIPreviewLanguageRaw); !ok || got != "Requires a hook" {
+		t.Fatalf("disabled dynamic tooltip = %q, %v", got, ok)
+	}
+}
+
+func TestPrepareGUIPreviewRuntimeReplaysAnimatedProgressValue(t *testing.T) {
+	preview := GUIPreviewResult{Nodes: []GUIPreviewNode{{
+		Index: 0, Kind: "progressbar", Semantics: &GUISemantics{Min: "0", Max: "100", AnimatedProgressValue: "[CurrentProgress]"},
+	}}}
+	if err := prepareGUIPreviewRuntime(&preview, []GUIRuntimeFactInput{{Expression: "CurrentProgress", Value: 62.5}}); err != nil {
+		t.Fatal(err)
+	}
+	node := preview.Nodes[0]
+	if node.Runtime == nil || node.Runtime.AnimatedProgressValue == nil || node.Runtime.AnimatedProgressValue.Result == nil || *node.Runtime.AnimatedProgressValue.Result != 62.5 {
+		t.Fatalf("animated progress runtime binding missing: %#v", node.Runtime)
+	}
+	if got, ok := guiNodeEffectiveProgress(node); !ok || got != 62.5 {
+		t.Fatalf("animated progress visual value = %v, %v", got, ok)
 	}
 }
 

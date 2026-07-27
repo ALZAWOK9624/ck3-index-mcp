@@ -244,7 +244,12 @@ func GenerateSmallRivers(height *image.Gray, region image.Rectangle, settings Ma
 }
 
 const (
-	riverLand       = 0
+	// riverLand is 254, not 0. Measuring the upstream map settles it: index 254
+	// covers 39.4% of the image and 255 covers 60.4%, which is exactly the
+	// land/sea split, while index 0 appears essentially nowhere. Painting land
+	// as 0 leaves the engine without the land marker it expects underneath the
+	// channels, which is how rivers end up drawn outside the land.
+	riverLand       = 254
 	riverSource     = 1
 	riverConfluence = 2
 	riverBodyMin    = 3

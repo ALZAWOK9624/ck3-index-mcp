@@ -122,6 +122,7 @@ func AuditMapAssets(ctx context.Context, cfg Config, operation string, limit int
 			"Treat format and palette errors as crash or invisible-river risks; inspect the named source-root-relative asset before launching CK3.",
 			"River topology findings are warnings for visual review because active upstream maps can contain deliberate junction geometry.",
 			"Converter-specific terrain, culture, faith, and title-generation choices are intentionally not treated as CK3 engine rules.",
+			"Offshore river findings count only channel pixels with no land in any of the eight surrounding pixels, so ordinary river mouths are excluded and each finding is a channel drawn out over open water.",
 		},
 	}
 
@@ -322,7 +323,19 @@ func auditRiverAsset(ctx context.Context, active map[string]activeMapFile, limit
 				continue
 			}
 			n := neighbors(x, y)
-			bad := body(index) && (n < 1 || n > 2) || index == 0 && n != 1 || (index == 1 || index == 2) && n != 2
+			// Index 0 carries no topology contract and must not be checked.
+			// Measured against the active upstream rivers.png, land is index
+			// 254 (39.4% of the image) and sea is 255 (60.4%) -- the land/sea
+			// split -- while index 0 appears essentially nowhere. Requiring
+			// every 0 pixel to touch exactly one river body therefore flagged
+			// nothing on a real map but condemned every pixel of any map that
+			// does use 0 for land, burying genuine findings in noise.
+			//
+			// The remaining rules match what the upstream map actually does:
+			// 98% of source markers and 100% of confluence markers have two
+			// orthogonal river-body neighbours, and 97-99% of body pixels have
+			// two, the rest being channel ends with one.
+			bad := body(index) && (n < 1 || n > 2) || (index == 1 || index == 2) && n != 2
 			if bad {
 				topology++
 				if len(topologySamples) < limit {
@@ -342,7 +355,85 @@ func auditRiverAsset(ctx context.Context, active map[string]activeMapFile, limit
 	if topology > 0 {
 		addMapAuditFinding(result, MapAssetAuditFinding{Code: "map_rivers_topology", Severity: "warning", Path: rivers.Rel, Source: rivers.Src.Name, Message: "river body or marker pixels violate CK3 orthogonal-neighbor topology", Count: topology, Samples: topologySamples})
 	}
+	auditRiversLeavingLand(ctx, active, paletted, limit, result, rivers)
 	return nil
+}
+
+// auditRiversLeavingLand reports channels painted where provinces.png says
+// water. rivers.png cannot detect this alone -- it has its own land and sea
+// markers, and a channel drawn over its own sea index is merely redundant. The
+// failure that shows up in game is a channel sitting on a province the engine
+// treats as ocean or lake, where the river is drawn across open water.
+func auditRiversLeavingLand(ctx context.Context, active map[string]activeMapFile, paletted *image.Paletted, limit int, result *MapAssetAuditResult, rivers activeMapFile) {
+	provinces := active["map_data/provinces.png"]
+	definition := active["map_data/definition.csv"]
+	defaultMap := active["map_data/default.map"]
+	if provinces.Path == "" || definition.Path == "" || defaultMap.Path == "" {
+		return
+	}
+	colorToID, err := parseProvinceDefinitions(definition.Path)
+	if err != nil {
+		return
+	}
+	blocked, err := parseDefaultMapBlocked(defaultMap.Path)
+	if err != nil {
+		return
+	}
+	file, err := os.Open(provinces.Path)
+	if err != nil {
+		return
+	}
+	provinceImage, _, err := image.Decode(file)
+	file.Close()
+	if err != nil {
+		return
+	}
+
+	riverBounds, provinceBounds := paletted.Bounds(), provinceImage.Bounds()
+	if riverBounds.Dx() != provinceBounds.Dx() || riverBounds.Dy() != provinceBounds.Dy() {
+		// Mismatched dimensions are already reported elsewhere; correlating
+		// pixel-for-pixel would invent findings from the misalignment.
+		return
+	}
+	offshore := 0
+	var samples []string
+	for y := riverBounds.Min.Y; y < riverBounds.Max.Y; y++ {
+		if y&127 == 0 {
+			if ctx.Err() != nil {
+				return
+			}
+		}
+		for x := riverBounds.Min.X; x < riverBounds.Max.X; x++ {
+			index := paletted.ColorIndexAt(x, y)
+			if index < 3 || index > 11 {
+				continue
+			}
+			id, known := provinceIDAt(provinceImage, colorToID, x, y)
+			if !known {
+				continue
+			}
+			if kind, isBlocked := blocked[id]; !isBlocked || kind.BlockKind != "water" {
+				continue
+			}
+			// A mouth necessarily touches water, so being on a water province is
+			// not by itself wrong. What cannot be explained is a channel with no
+			// land anywhere around it: that pixel is drawn out at sea.
+			if riverPixelTouchesLand(provinceImage, colorToID, blocked, x, y) {
+				continue
+			}
+			offshore++
+			if len(samples) < limit {
+				samples = append(samples, fmt.Sprintf("river pixel at %d,%d lies on water province %d with no land neighbour", x, y, id))
+			}
+		}
+	}
+	if offshore > 0 {
+		addMapAuditFinding(result, MapAssetAuditFinding{
+			Code: "map_rivers_offshore", Severity: "error", Path: rivers.Rel, Source: rivers.Src.Name,
+			Message: "rivers.png paints river channels over provinces default.map declares as water, so the river is drawn across open sea or lake",
+			Count:   offshore, Samples: samples,
+		})
+	}
 }
 
 func parseProvinceDefinitionsForAudit(path string, limit int) (provinceDefinitionAudit, error) {
@@ -540,4 +631,32 @@ func intSamples(values []int, limit int) []string {
 
 func addMapAuditFinding(result *MapAssetAuditResult, finding MapAssetAuditFinding) {
 	result.Findings = append(result.Findings, finding)
+}
+
+// provinceIDAt resolves the province a pixel belongs to.
+func provinceIDAt(img image.Image, colorToID map[uint32]int, x, y int) (int, bool) {
+	r, g, b, _ := img.At(x, y).RGBA()
+	id, ok := colorToID[uint32(r>>8)<<16|uint32(g>>8)<<8|uint32(b>>8)]
+	return id, ok
+}
+
+// riverPixelTouchesLand reports whether any of the eight surrounding pixels sits
+// on a province that is not water, which is what distinguishes a river mouth
+// from a channel stranded offshore.
+func riverPixelTouchesLand(img image.Image, colorToID map[uint32]int, blocked map[int]mapBlockKind, x, y int) bool {
+	bounds := img.Bounds()
+	for _, step := range [8][2]int{{1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {1, -1}, {-1, 1}, {-1, -1}} {
+		nx, ny := x+step[0], y+step[1]
+		if nx < bounds.Min.X || ny < bounds.Min.Y || nx >= bounds.Max.X || ny >= bounds.Max.Y {
+			continue
+		}
+		id, known := provinceIDAt(img, colorToID, nx, ny)
+		if !known {
+			continue
+		}
+		if kind, isBlocked := blocked[id]; !isBlocked || kind.BlockKind != "water" {
+			return true
+		}
+	}
+	return false
 }

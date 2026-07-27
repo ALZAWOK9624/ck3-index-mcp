@@ -37,7 +37,7 @@ func TestTerrainRangeFollowsItsPath(t *testing.T) {
 	path := []MapTerrainPoint{{X: 40, Y: 40}, {X: 40, Y: 160}, {X: 160, Y: 160}}
 	out, change, err := SynthesizeTerrain(flatTerrain(200, 200, 40), []MapTerrainFeature{
 		{Kind: TerrainRange, Path: path, Width: 25, Amplitude: 80, Roughness: 0.6, Detail: 1, Seed: 5},
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestTerrainProfilesDifferByKind(t *testing.T) {
 	build := func(kind string) *image.Gray {
 		out, _, err := SynthesizeTerrain(flatTerrain(200, 200, 40), []MapTerrainFeature{
 			{Kind: kind, Path: centre, Width: 60, Amplitude: 80, Roughness: 0, Detail: 1, Seed: 3},
-		}, nil)
+		}, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -99,7 +99,7 @@ func TestTerrainProfilesDifferByKind(t *testing.T) {
 	// A canyon with a negative amplitude must cut below the surrounding ground.
 	canyon, _, err := SynthesizeTerrain(flatTerrain(200, 200, 120), []MapTerrainFeature{
 		{Kind: TerrainCanyon, Path: centre, Width: 40, Amplitude: -60, Roughness: 0, Detail: 1, Seed: 4},
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,12 +117,12 @@ func TestErosionActsWhereWaterRuns(t *testing.T) {
 	features := []MapTerrainFeature{
 		{Kind: TerrainRange, Path: []MapTerrainPoint{{X: 60, Y: 100}, {X: 200, Y: 120}}, Width: 50, Amplitude: 90, Roughness: 0.7, Detail: 1, Seed: 9},
 	}
-	plain, _, err := SynthesizeTerrain(flatTerrain(260, 220, 40), features, nil)
+	plain, _, err := SynthesizeTerrain(flatTerrain(260, 220, 40), features, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	settings := DefaultErosion(11, 40000)
-	eroded, change, err := SynthesizeTerrain(flatTerrain(260, 220, 40), features, &settings)
+	eroded, change, err := SynthesizeTerrain(flatTerrain(260, 220, 40), features, &settings, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestErosionConnectsSeparateFeatures(t *testing.T) {
 	}
 	gap := image.Rect(112, 70, 148, 170)
 
-	plain, _, err := SynthesizeTerrain(flatTerrain(260, 240, 40), features, nil)
+	plain, _, err := SynthesizeTerrain(flatTerrain(260, 240, 40), features, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestErosionConnectsSeparateFeatures(t *testing.T) {
 		t.Fatalf("the gap already varies before erosion: %.3f", roughness(plain, gap))
 	}
 	settings := DefaultErosion(13, 60000)
-	eroded, _, err := SynthesizeTerrain(flatTerrain(260, 240, 40), features, &settings)
+	eroded, _, err := SynthesizeTerrain(flatTerrain(260, 240, 40), features, &settings, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,12 +184,12 @@ func TestTerrainSynthesisIsDeterministic(t *testing.T) {
 		{Kind: TerrainRange, Path: []MapTerrainPoint{{X: 30, Y: 30}, {X: 120, Y: 90}}, Width: 30, Amplitude: 70, Roughness: 0.8, Detail: 1.2, Seed: 17},
 	}
 	settings := DefaultErosion(19, 8000)
-	first, _, err := SynthesizeTerrain(flatTerrain(160, 140, 35), features, &settings)
+	first, _, err := SynthesizeTerrain(flatTerrain(160, 140, 35), features, &settings, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for attempt := 0; attempt < 3; attempt++ {
-		again, _, err := SynthesizeTerrain(flatTerrain(160, 140, 35), features, &settings)
+		again, _, err := SynthesizeTerrain(flatTerrain(160, 140, 35), features, &settings, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -239,14 +239,14 @@ func TestTerrainRejectsBadFeatures(t *testing.T) {
 		{"NaN amplitude", MapTerrainFeature{Kind: TerrainRange, Path: []MapTerrainPoint{{X: 10, Y: 10}}, Width: 5, Amplitude: math.NaN()}},
 		{"NaN roughness", MapTerrainFeature{Kind: TerrainRange, Path: []MapTerrainPoint{{X: 10, Y: 10}}, Width: 5, Amplitude: 10, Roughness: math.NaN()}},
 	} {
-		if _, _, err := SynthesizeTerrain(source, []MapTerrainFeature{tc.feature}, nil); err == nil {
+		if _, _, err := SynthesizeTerrain(source, []MapTerrainFeature{tc.feature}, nil, nil); err == nil {
 			t.Fatalf("%s: expected an error", tc.name)
 		}
 	}
-	if _, _, err := SynthesizeTerrain(nil, []MapTerrainFeature{{Kind: TerrainRange, Path: []MapTerrainPoint{{X: 1, Y: 1}}, Width: 2, Amplitude: 1}}, nil); err == nil {
+	if _, _, err := SynthesizeTerrain(nil, []MapTerrainFeature{{Kind: TerrainRange, Path: []MapTerrainPoint{{X: 1, Y: 1}}, Width: 2, Amplitude: 1}}, nil, nil); err == nil {
 		t.Fatal("expected a nil source to be refused")
 	}
-	if _, _, err := SynthesizeTerrain(source, nil, nil); err == nil {
+	if _, _, err := SynthesizeTerrain(source, nil, nil, nil); err == nil {
 		t.Fatal("expected an empty feature list to be refused")
 	}
 }

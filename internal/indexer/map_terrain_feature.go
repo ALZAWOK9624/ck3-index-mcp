@@ -60,24 +60,25 @@ type MapTerrainFeature struct {
 
 // MapTerrainChange reports a synthesis pass.
 type MapTerrainChange struct {
-	Width         int      `json:"width"`
-	Height        int      `json:"height"`
-	ChangedPixels int      `json:"changed_pixels"`
-	RaisedPixels  int      `json:"raised_pixels"`
-	LoweredPixels int      `json:"lowered_pixels"`
-	PeakBefore    int      `json:"peak_before"`
-	PeakAfter     int      `json:"peak_after"`
-	MeanDelta     float64  `json:"mean_delta"`
-	ClampedPixels int      `json:"clamped_pixels"`
-	ErodedDrops   int      `json:"eroded_droplets,omitempty"`
-	Warnings      []string `json:"warnings,omitempty"`
+	Width         int            `json:"width"`
+	Height        int            `json:"height"`
+	ChangedPixels int            `json:"changed_pixels"`
+	RaisedPixels  int            `json:"raised_pixels"`
+	LoweredPixels int            `json:"lowered_pixels"`
+	PeakBefore    int            `json:"peak_before"`
+	PeakAfter     int            `json:"peak_after"`
+	MeanDelta     float64        `json:"mean_delta"`
+	ClampedPixels int            `json:"clamped_pixels"`
+	ErodedDrops   int            `json:"eroded_droplets,omitempty"`
+	Rivers        *MapRiverStats `json:"rivers,omitempty"`
+	Warnings      []string       `json:"warnings,omitempty"`
 }
 
 // SynthesizeTerrain applies every feature to a copy of the heightmap, then runs
 // the optional erosion pass. Erosion is what ties separately placed features
 // into one landscape: water routed downhill crosses whatever it meets, so
 // valleys carved on one feature continue onto its neighbour.
-func SynthesizeTerrain(source *image.Gray, features []MapTerrainFeature, erosion *MapErosionSettings) (*image.Gray, MapTerrainChange, error) {
+func SynthesizeTerrain(source *image.Gray, features []MapTerrainFeature, erosion *MapErosionSettings, rivers *MapRiverSettings) (*image.Gray, MapTerrainChange, error) {
 	if source == nil {
 		return nil, MapTerrainChange{}, fmt.Errorf("no source heightmap supplied")
 	}
@@ -99,13 +100,24 @@ func SynthesizeTerrain(source *image.Gray, features []MapTerrainFeature, erosion
 		}
 	}
 
+	region := featureRegion(bounds, features)
 	if erosion != nil && erosion.Droplets > 0 {
-		region := featureRegion(bounds, features)
 		drops, err := ErodeHeightmapRegion(out, region, *erosion)
 		if err != nil {
 			return nil, change, err
 		}
 		change.ErodedDrops = drops
+	}
+	// Rivers come last so they route over the finished relief, including
+	// whatever erosion just reshaped. Deriving them earlier would send water
+	// down slopes that no longer exist.
+	if rivers != nil {
+		stats, err := CarveRiverNetwork(out, region, *rivers)
+		if err != nil {
+			return nil, change, err
+		}
+		change.Rivers = &stats
+		change.Warnings = append(change.Warnings, stats.Warnings...)
 	}
 
 	deltaSum, deltaCount := 0.0, 0

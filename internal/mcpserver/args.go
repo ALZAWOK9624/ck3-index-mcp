@@ -218,6 +218,16 @@ type mapProvinceInfoArgs struct {
 	Year int    `json:"year,omitempty"`
 }
 
+type mapSplitProvinceArgs struct {
+	visibilityArgs
+	ProvinceID       int                    `json:"province_id"`
+	Seeds            []indexer.MapSplitSeed `json:"seeds"`
+	TerrainWeight    *float64               `json:"terrain_weight,omitempty"`
+	EmitDefinition   bool                   `json:"emit_definition,omitempty"`
+	EmitHistory      bool                   `json:"emit_history,omitempty"`
+	EmitLandedTitles bool                   `json:"emit_landed_titles,omitempty"`
+}
+
 type mapPhysicalContextArgs struct {
 	indexer.MapPhysicalContextSpec
 	visibilityArgs

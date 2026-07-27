@@ -471,7 +471,7 @@ func TestMCPMapToolsRegisteredAndCallable(t *testing.T) {
 	}
 	expectedTools := []string{
 		"ck3_search", "ck3_inspect", "ck3_review", "ck3_workspace", "ck3_dependencies", "ck3_prepare_edit", "ck3_preflight", "ck3_impact",
-		"ck3_diagnostics", "ck3_refresh", "ck3_script_reference", "ck3_health", "ck3_package", "ck3_gui", "map_migration_snapshot", "map_province_migration", "map_asset_audit", "map_province_mapping", "map_province_info", "map_physical_context", "map_neighbors", "map_spatial_relation", "map_strategic_passages",
+		"ck3_diagnostics", "ck3_refresh", "ck3_script_reference", "ck3_health", "ck3_package", "ck3_gui", "map_migration_snapshot", "map_province_migration", "map_asset_audit", "map_province_mapping", "map_province_info", "map_split_province", "map_physical_context", "map_neighbors", "map_spatial_relation", "map_strategic_passages",
 		"map_title_context", "map_assignment_plan", "map_building_candidates", "map_recipe_catalog", "map_build_metric", "map_route", "map_render",
 	}
 	if len(tools) != len(expectedTools) {

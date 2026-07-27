@@ -21,6 +21,18 @@ import (
 // Growing from seeds also guarantees the property CK3 requires and a
 // geometric partition does not: every resulting part is connected.
 
+// MapSplitInputError marks a request the caller can correct: too few seeds, a
+// seed outside the province, a duplicate. Keeping it distinct from internal
+// failures lets the tool layer answer "your request is wrong" instead of "the
+// server broke", which are different problems with different fixes.
+type MapSplitInputError struct{ message string }
+
+func (e *MapSplitInputError) Error() string { return e.message }
+
+func splitInputErrorf(format string, args ...any) error {
+	return &MapSplitInputError{message: fmt.Sprintf(format, args...)}
+}
+
 // MapSplitSeed is one growth origin inside the province being split.
 type MapSplitSeed struct {
 	X    int    `json:"x"`
@@ -94,10 +106,10 @@ func (q *splitQueue) Pop() any          { old := *q; n := len(old); v := old[n-1
 // into a reviewable patch.
 func SplitProvinceGeometry(runs []MapRun, request MapSplitRequest, terrain MapSplitTerrain) (MapSplitResult, error) {
 	if len(request.Seeds) < 2 {
-		return MapSplitResult{}, fmt.Errorf("splitting a province needs at least 2 seeds, got %d", len(request.Seeds))
+		return MapSplitResult{}, splitInputErrorf("splitting a province needs at least 2 seeds, got %d", len(request.Seeds))
 	}
 	if len(runs) == 0 {
-		return MapSplitResult{}, fmt.Errorf("province %d has no indexed geometry to split", request.ProvinceID)
+		return MapSplitResult{}, splitInputErrorf("province %d has no indexed geometry to split", request.ProvinceID)
 	}
 	if terrain == nil {
 		terrain = uniformTerrain{}
@@ -133,14 +145,14 @@ func SplitProvinceGeometry(runs []MapRun, request MapSplitRequest, terrain MapSp
 	result := MapSplitResult{ProvinceID: request.ProvinceID, SourcePixel: total}
 	for seedIndex, seed := range request.Seeds {
 		if seed.X < minX || seed.X > maxX || seed.Y < minY || seed.Y > maxY {
-			return MapSplitResult{}, fmt.Errorf("seed %d (%d,%d) lies outside province %d", seedIndex, seed.X, seed.Y, request.ProvinceID)
+			return MapSplitResult{}, splitInputErrorf("seed %d (%d,%d) lies outside province %d", seedIndex, seed.X, seed.Y, request.ProvinceID)
 		}
 		cell := (seed.Y-minY)*width + (seed.X - minX)
 		if !inside[cell] {
-			return MapSplitResult{}, fmt.Errorf("seed %d (%d,%d) is not a pixel of province %d", seedIndex, seed.X, seed.Y, request.ProvinceID)
+			return MapSplitResult{}, splitInputErrorf("seed %d (%d,%d) is not a pixel of province %d", seedIndex, seed.X, seed.Y, request.ProvinceID)
 		}
 		if owner[cell] >= 0 {
-			return MapSplitResult{}, fmt.Errorf("seeds %d and %d are the same pixel (%d,%d)", owner[cell], seedIndex, seed.X, seed.Y)
+			return MapSplitResult{}, splitInputErrorf("seeds %d and %d are the same pixel (%d,%d)", owner[cell], seedIndex, seed.X, seed.Y)
 		}
 		owner[cell] = int32(seedIndex)
 		best[cell] = 0

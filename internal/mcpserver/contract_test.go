@@ -19,11 +19,11 @@ import (
 
 func TestToolRegistryContract(t *testing.T) {
 	definitions := registry()
-	if len(definitions) != 30 {
-		t.Fatalf("standard registry count = %d, want 30", len(definitions))
+	if len(definitions) != 31 {
+		t.Fatalf("standard registry count = %d, want 31", len(definitions))
 	}
-	if got := len(mcpTools()); got != 30 {
-		t.Fatalf("tools/list count = %d, want 30", got)
+	if got := len(mcpTools()); got != 31 {
+		t.Fatalf("tools/list count = %d, want 31", got)
 	}
 
 	seen := make(map[string]struct{}, len(definitions))
@@ -351,6 +351,7 @@ func TestCanonicalSchemasMatchTypedArguments(t *testing.T) {
 		"map_migration_snapshot":  reflect.TypeOf(mapMigrationSnapshotArgs{}),
 		"map_province_migration":  reflect.TypeOf(mapProvinceMigrationArgs{}),
 		"map_province_info":       reflect.TypeOf(mapProvinceInfoArgs{}),
+		"map_split_province":      reflect.TypeOf(mapSplitProvinceArgs{}),
 		"map_physical_context":    reflect.TypeOf(mapPhysicalContextArgs{}),
 		"map_neighbors":           reflect.TypeOf(mapNeighborsArgs{}),
 		"map_spatial_relation":    reflect.TypeOf(mapSpatialRelationArgs{}),
@@ -593,6 +594,7 @@ func TestEveryCallableToolHasSuccessAndMalformedArgumentCases(t *testing.T) {
 		"map_migration_snapshot":  {"project": "project", "base": "base"},
 		"map_province_migration":  {"snapshot_id": snapshot.SnapshotID, "target": "target", "output_name": "contract_fork"},
 		"map_province_info":       {"id": "1", "year": 6253, "limit": 2},
+		"map_split_province":      {"province_id": 1, "seeds": []any{map[string]any{"x": 0, "y": 0}, map[string]any{"x": 0, "y": 1}}},
 		"map_physical_context":    {"target_type": "region", "target": "region:test_region", "operation": "oceanography", "include_adjacent_water": true, "limit": 2},
 		"map_neighbors":           {"id": "1", "radius": 1, "year": 6253, "limit": 2},
 		"map_spatial_relation":    {"from": "1", "to": "2", "year": 6253, "limit": 2},
@@ -605,8 +607,8 @@ func TestEveryCallableToolHasSuccessAndMalformedArgumentCases(t *testing.T) {
 		"map_route":               {"from": "1", "to": "2", "mode": "land", "year": 6253, "limit": 2},
 		"map_render":              {"target": "k_k11", "year": 6253, "width": 400, "layers": []map[string]any{{"type": "borders", "level": "county"}}},
 	}
-	if len(successArguments) != 30 {
-		t.Fatalf("success case count = %d, want 30 canonical names", len(successArguments))
+	if len(successArguments) != 31 {
+		t.Fatalf("success case count = %d, want 31 canonical names", len(successArguments))
 	}
 	for name, args := range successArguments {
 		name, args := name, args

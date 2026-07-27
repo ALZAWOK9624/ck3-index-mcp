@@ -41,6 +41,11 @@ type MapSplitContext struct {
 	// SourceCounty is the landed title that owns the province being split. New
 	// baronies must join it, or the split land leaves its de jure county.
 	SourceCounty string
+	// SourceColor is the province's indexed RGB. It is the reference the image
+	// step checks pixels against, and it has to come from the index rather than
+	// from the image being edited: a check that reads its expectation out of the
+	// thing it is checking cannot detect that the thing has changed.
+	SourceColor uint32
 }
 
 // MapSplitNewProvince is one province that did not exist before the split.
@@ -70,6 +75,7 @@ type MapSplitPlan struct {
 	ProvinceID     int                   `json:"province_id"`
 	RetainedPart   int                   `json:"retained_part_index"`
 	RetainedPixels int                   `json:"retained_pixel_count"`
+	SourceColor    uint32                `json:"source_color"`
 	NewProvinces   []MapSplitNewProvince `json:"new_provinces"`
 	Files          []MapSplitFileEdit    `json:"files"`
 	Blockers       []string              `json:"blockers,omitempty"`
@@ -90,7 +96,11 @@ func PlanProvinceSplit(result MapSplitResult, context MapSplitContext, emit MapS
 	if len(result.Parts) < 2 {
 		return MapSplitPlan{}, fmt.Errorf("a split plan needs at least 2 parts, got %d", len(result.Parts))
 	}
-	plan := MapSplitPlan{ProvinceID: result.ProvinceID, Warnings: append([]string(nil), result.Warnings...)}
+	plan := MapSplitPlan{
+		ProvinceID:  result.ProvinceID,
+		SourceColor: context.SourceColor & 0xFFFFFF,
+		Warnings:    append([]string(nil), result.Warnings...),
+	}
 
 	// Retaining the largest part minimises how much of provinces.png changes and
 	// leaves the province's existing history attached to most of its land.

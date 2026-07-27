@@ -362,6 +362,13 @@ func standardizeCanonicalToolDescriptions(definitions []ToolDefinition) []ToolDe
 			Returns:  "auditable overlap shares and province split, merge, renumber, or unmapped groups",
 			Unlike:   "map_province_migration, it only calculates comparison evidence and writes no converter output",
 		},
+		"map_split_province": {
+			When:     "one indexed province must be divided into several, with boundaries that follow terrain",
+			DoNotUse: "two existing map versions must be compared for splits that already happened; use map_province_mapping instead",
+			Input:    "a province id, two or more seed pixels inside it, and which downstream files to plan",
+			Returns:  "the resulting geometry plus collision-free ids, colours, and file edits, or blockers explaining why it cannot be applied",
+			Unlike:   "map_province_mapping, it produces a new division rather than describing one between two maps",
+		},
 		"map_province_info": {
 			When:     "one province or title's exact map, title, terrain, and neighbor context is needed",
 			DoNotUse: "a multi-hop topology question is needed; use map_neighbors instead",
@@ -637,6 +644,15 @@ func buildCanonicalMapTools(annotations ToolAnnotations, output map[string]any) 
 			"limit":             limitProperty(),
 			"visibility":        visibilityProperty(),
 		}, "source", "target"), handleMapProvinceMapping, legacyPrivacyProperties),
+		mapTool("map_split_province", "Plan Province Split", "Divide one indexed province among caller-chosen seed pixels by terrain-aware growth, so boundaries settle along ridges instead of cutting straight lines, then plan the definition.csv, history, and landed-title edits CK3 needs to stay consistent. Allocates collision-free province ids and colours, or blocks when uniqueness cannot be proven. Returns a reviewable plan and writes nothing.", objectSchema(map[string]any{
+			"province_id":        integerProperty("Indexed province id to divide.", 1, 0, 0),
+			"seeds":              splitSeedsProperty(),
+			"terrain_weight":     map[string]any{"type": "number", "minimum": 0, "maximum": 8, "default": 3, "description": "How strongly terrain deflects boundaries. 0 grows by distance alone and yields geometric edges; higher values bend boundaries toward steep ground. Requires an indexed elevation raster to have any effect."},
+			"emit_definition":    booleanProperty("Include the definition.csv rows for the new provinces."),
+			"emit_history":       booleanProperty("Include history/provinces entries inheriting the parent's culture, faith, and holding."),
+			"emit_landed_titles": booleanProperty("Include barony skeletons for the owning county."),
+			"limit":              limitProperty(), "visibility": visibilityProperty(),
+		}, "province_id", "seeds"), handleMapSplitProvince, legacyPrivacyProperties),
 		mapTool("map_province_info", "Inspect Map Province", "Inspect one province's exact geometry, titles, scripted terrain, observed surface-material blend, texture resources, and direct boundaries. Returns read-only precision context and classified neighbors.", objectSchema(map[string]any{
 			"id": stringProperty("Map subject: numeric province id, b_/c_/d_/k_/e_ title id, or an exact unique English or Chinese localized name."), "year": integerProperty("CK3 history year.", 1, 0, 1), "limit": limitProperty(), "visibility": visibilityProperty(),
 		}, "id"), handleMapProvinceInfo, legacyPrivacyProperties),
@@ -675,6 +691,22 @@ func buildCanonicalMapTools(annotations ToolAnnotations, output map[string]any) 
 		mapTool("map_route", "Calculate Map Route", "Resolve CK3 places and calculate a deterministic legal land, sea, or mixed route over indexed province topology. Returns compact route points, legs, corridor context, diagnostics, and pixel-distance caveats.", mapRouteSchema(), handleMapRoute, []string{"privacy_mode", "allow_project"}),
 		mapTool("map_render", "Render CK3 Map", "Render a read-only adaptive CK3 atlas with automatic resolution when dimensions are omitted. Returns structured metadata and an in-memory PNG without accepting client file paths.", canonicalRenderSchema(mapLevels), handleMapRender, []string{"mode", "privacy_mode", "allow_project", "font_path"}),
 	}
+}
+
+// splitSeedsProperty describes the growth origins. Seeds are the caller's
+// judgement about where the new centres of settlement lie, which is exactly the
+// decision a model should be making; the algorithm only decides where the
+// boundary between them falls.
+func splitSeedsProperty() map[string]any {
+	seed := objectSchema(map[string]any{
+		"x":    integerProperty("Pixel X in provinces.png. Must land on this province.", 0, 0, 0),
+		"y":    integerProperty("Pixel Y in provinces.png. Must land on this province.", 0, 0, 0),
+		"name": stringProperty("Optional name for the resulting part; used for the definition row and barony key."),
+	}, "x", "y")
+	seeds := arrayProperty("Growth origins, one per resulting province. The largest resulting part keeps the original province id and colour.", seed)
+	seeds["minItems"] = 2
+	seeds["maxItems"] = 16
+	return seeds
 }
 
 func mapRouteSchema() map[string]any {

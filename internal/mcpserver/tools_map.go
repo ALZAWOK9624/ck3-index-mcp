@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"ck3-index/internal/indexer"
@@ -108,6 +109,62 @@ func handleMapProvinceInfo(ctx context.Context, runtime *Runtime, definition *To
 	}
 	value, err := runtime.DB.LLMMapProvinceInfo(ctx, args.ID, args.Year, opts)
 	return toolOutput{Value: value, Visibility: visibility}, err
+}
+
+func handleMapSplitProvince(ctx context.Context, runtime *Runtime, definition *ToolDefinition, raw json.RawMessage) (toolOutput, error) {
+	var args mapSplitProvinceArgs
+	if err := decodeToolArgs(raw, definition.InputSchema, definition.CompatibilityProperties, &args); err != nil {
+		return toolOutput{}, err
+	}
+	_, visibility, err := args.options(0)
+	if err != nil {
+		return toolOutput{}, err
+	}
+	// A split plan names source geometry and the owning county, so it carries
+	// the same provenance a public response must not disclose.
+	if err := requireSourceTrackedMapVisibility(visibility); err != nil {
+		return toolOutput{}, err
+	}
+	// Terrain awareness is the point of this tool, so it defaults on; a caller
+	// wanting geometric edges has to ask for them explicitly.
+	weight := 3.0
+	if args.TerrainWeight != nil {
+		weight = *args.TerrainWeight
+	}
+	result, plan, err := runtime.DB.SplitProvince(ctx,
+		indexer.MapSplitRequest{ProvinceID: args.ProvinceID, Seeds: args.Seeds, TerrainWeight: weight},
+		indexer.MapSplitEmit{
+			Definition:   args.EmitDefinition,
+			History:      args.EmitHistory,
+			LandedTitles: args.EmitLandedTitles,
+		})
+	if err != nil {
+		// A seed in the wrong place is the caller's to fix, not a server fault,
+		// and saying so tells them to correct the request rather than retry it.
+		var inputErr *indexer.MapSplitInputError
+		if errors.As(err, &inputErr) {
+			return toolOutput{}, invalidArgument("seeds", inputErr.Error())
+		}
+		return toolOutput{}, err
+	}
+	value := map[string]any{
+		"operation":    "split_province",
+		"province_id":  result.ProvinceID,
+		"source_pixel": result.SourcePixel,
+		"parts":        result.Parts,
+		"plan":         plan,
+		"applied":      false,
+		"guidance": []string{
+			"Nothing was written. Review plan.blockers first: a blocked plan would corrupt the map if applied.",
+			"provinces.png is not modified by this tool; the plan describes which pixels each new province claims.",
+			"Re-scan after applying so the index matches the new geometry before splitting anything else.",
+		},
+	}
+	if len(plan.Blockers) > 0 {
+		value["guidance"] = append(value["guidance"].([]string),
+			"This plan cannot be applied as-is.")
+	}
+	return toolOutput{Value: value, Visibility: visibility}, nil
 }
 
 func handleMapPhysicalContext(ctx context.Context, runtime *Runtime, definition *ToolDefinition, raw json.RawMessage) (toolOutput, error) {

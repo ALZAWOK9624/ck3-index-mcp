@@ -26,6 +26,49 @@ func refreshActivityKey(runtime *Runtime) string {
 	return "default"
 }
 
+// checkConfigDrift refuses a scan whose configuration has changed on disk since
+// this process loaded it. The MCP server parses ck3-index.toml exactly once at
+// startup, so a scan started after an edit would index the *old* source roots
+// while reporting a fresh generation and status=ready — a failure that is
+// indistinguishable from success. Comparing the resolved source model (rather
+// than raw bytes) keeps comment and formatting edits from tripping the check.
+func checkConfigDrift(runtime *Runtime) *ToolError {
+	if runtime == nil || strings.TrimSpace(runtime.Config.ConfigPath) == "" {
+		return nil
+	}
+	onDisk, err := indexer.LoadConfig(runtime.Config.ConfigPath)
+	if err != nil {
+		// An unreadable or invalid config is its own problem; leave it to the
+		// scan, which reports parse failures with better context.
+		return nil
+	}
+	loaded, current := indexer.SourceIdentities(runtime.Config), indexer.SourceIdentities(onDisk)
+	if sameSourceModel(loaded, current) {
+		return nil
+	}
+	return newToolError(ErrorConfigChanged, "configuration",
+		"ck3-index.toml changed since this server started; scanning now would index the previously configured source roots and still report success",
+		false,
+		map[string]any{
+			"config_path":     runtime.Config.ConfigPath,
+			"loaded_sources":  loaded,
+			"on_disk_sources": current,
+		},
+		map[string]any{"guidance": "Restart the MCP server so it reloads the configuration, then run ck3_refresh full again. The CLI reads the configuration on every invocation and is unaffected."})
+}
+
+func sameSourceModel(left, right []indexer.SourceIdentity) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func beginRefresh(runtime *Runtime) (func(error), bool) {
 	key := refreshActivityKey(runtime)
 	refreshActivities.Lock()
@@ -71,6 +114,22 @@ func refreshStatusOutput(ctx context.Context, runtime *Runtime) (map[string]any,
 		"scan_generation": status.Index.Generation,
 		"needs_full_scan": status.NeedsFullScan,
 	}
+	// Report which roots this server would actually scan. Every refresh response
+	// is private-visibility (see handleRefresh), so this is the same disclosure
+	// boundary ck3_health uses; unlike a raw error string it is structured and
+	// intentional rather than an incidental path leak.
+	if roots := indexer.SourceIdentities(runtime.Config); len(roots) > 0 {
+		result["source_roots"] = roots
+	}
+	if path := indexer.DisplayConfigPath(runtime.Config); path != "" {
+		result["config_path"] = path
+	}
+	if scanError := status.LastScanError; scanError != nil && scanError.Detail != "" {
+		// The durable detail is already path-redacted (see RefreshScanError), so
+		// it can be reported instead of forcing callers to guess why a scan
+		// failed from a bare code.
+		result["last_scan_error_detail"] = scanError.Detail
+	}
 	if activity.LastErrorCode != "" {
 		// Do not retain a raw scan error: it could contain a configured source
 		// path. The request that failed already received its structured detail.
@@ -99,6 +158,9 @@ func handleRefresh(ctx context.Context, runtime *Runtime, definition *ToolDefini
 		if len(args.Paths) > 0 {
 			return toolOutput{}, invalidArgument("paths", "paths are only valid with operation=files")
 		}
+		if drift := checkConfigDrift(runtime); drift != nil {
+			return toolOutput{}, drift
+		}
 		finish, acquired := beginRefresh(runtime)
 		if !acquired {
 			return toolOutput{}, newToolError(ErrorConflictingGeneration, "concurrency", "another refresh is already running for this index", true, nil,
@@ -126,6 +188,12 @@ func handleRefresh(ctx context.Context, runtime *Runtime, definition *ToolDefini
 	case "files":
 		if len(args.Paths) == 0 {
 			return toolOutput{}, missingArgument("paths")
+		}
+		// Incremental refresh resolves the named paths against the configured
+		// project root, so stale configuration corrupts it the same way it
+		// corrupts a full scan.
+		if drift := checkConfigDrift(runtime); drift != nil {
+			return toolOutput{}, drift
 		}
 		normalizedPaths := make([]string, 0, len(args.Paths))
 		for _, path := range args.Paths {

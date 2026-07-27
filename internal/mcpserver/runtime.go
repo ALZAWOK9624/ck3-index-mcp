@@ -218,7 +218,17 @@ func sanitizeToolError(err error, runtime *Runtime) string {
 		if path == "" {
 			continue
 		}
-		for _, variant := range []string{path, filepath.ToSlash(path), filepath.FromSlash(path)} {
+		// filepath.ToSlash and filepath.FromSlash only normalize the host
+		// platform's separators. Error strings can still contain a Windows path
+		// while the MCP server runs on Linux, so include explicit cross-platform
+		// separator variants before applying the case-insensitive redaction.
+		for _, variant := range []string{
+			path,
+			filepath.ToSlash(path),
+			filepath.FromSlash(path),
+			strings.ReplaceAll(path, "\\", "/"),
+			strings.ReplaceAll(path, "/", "\\"),
+		} {
 			message = replaceAllCaseInsensitive(message, variant, "<redacted-path>")
 		}
 	}

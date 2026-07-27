@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -41,23 +42,72 @@ func (e *PublicationConflictError) Unwrap() error {
 // stagedFullScanFailure keeps ephemeral staging paths out of the MCP-facing
 // error text while retaining the original cause for cancellation and durable
 // failure-code classification.
+//
+// The reported text keeps the cause with host paths redacted rather than
+// dropping it. Callers driving this through MCP see only the tool result: a
+// bare "did not complete" leaves them unable to distinguish an unreadable
+// asset from a disk error, with no log to fall back on.
 type stagedFullScanFailure struct {
 	cause error
+	// detail is the cause text after host paths were replaced by their
+	// trailing segments. Empty when redaction could not be applied.
+	detail string
 }
 
 func (e *stagedFullScanFailure) Error() string {
-	return "the staged full scan did not complete"
+	if e.detail == "" {
+		return "the staged full scan did not complete"
+	}
+	return "the staged full scan did not complete: " + e.detail
 }
 
 func (e *stagedFullScanFailure) Unwrap() error {
 	return e.cause
 }
 
-func sanitizeStagedFullScanFailure(err error) error {
+func sanitizeStagedFullScanFailure(err error, hostPaths []string) error {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
-	return &stagedFullScanFailure{cause: err}
+	return &stagedFullScanFailure{cause: err, detail: redactHostPaths(err.Error(), hostPaths)}
+}
+
+// scanRedactionPaths lists the host locations that must not appear in a
+// user-visible scan error: the live cache, its staging sibling, and every
+// configured source root.
+func scanRedactionPaths(cfg Config, dbPath, stagePath string) []string {
+	paths := []string{stagePath, dbPath}
+	if dbPath != "" {
+		paths = append(paths, filepath.Dir(dbPath))
+	}
+	for _, source := range cfg.Sources {
+		paths = append(paths, source.Path)
+	}
+	// Redact longer paths first so a parent directory cannot partially rewrite
+	// a longer child path and leave a mangled fragment behind.
+	sort.SliceStable(paths, func(i, j int) bool { return len(paths[i]) > len(paths[j]) })
+	return paths
+}
+
+// redactHostPaths replaces known host paths with their trailing segments,
+// preserving the diagnostic sentence around them. Substituting known prefixes
+// rather than pattern-matching anything path-shaped keeps ordinary message
+// text (ids, relative filenames, engine terms) intact.
+func redactHostPaths(text string, hostPaths []string) string {
+	for _, hostPath := range hostPaths {
+		hostPath = strings.TrimSpace(hostPath)
+		if len(hostPath) < 4 {
+			continue
+		}
+		replacement := displayPath(hostPath)
+		for _, variant := range []string{filepath.ToSlash(hostPath), filepath.FromSlash(hostPath)} {
+			if variant == "" || variant == replacement {
+				continue
+			}
+			text = strings.ReplaceAll(text, variant, replacement)
+		}
+	}
+	return text
 }
 
 // ScanFullStaged performs a full rebuild without exposing a partial cache to
@@ -90,7 +140,7 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 	}
 	stagePath, err := stagedFullScanPath(dbPath)
 	if err != nil {
-		err = sanitizeStagedFullScanFailure(err)
+		err = sanitizeStagedFullScanFailure(err, scanRedactionPaths(normalized, dbPath, ""))
 		recordStagedFullScanFailure(normalized, err)
 		return ScanStats{}, err
 	}
@@ -101,7 +151,7 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 	stageConfig.ForceClean = true
 	stats, err := scanWithMode(ctx, stageConfig, true)
 	if err != nil {
-		err = sanitizeStagedFullScanFailure(err)
+		err = sanitizeStagedFullScanFailure(err, scanRedactionPaths(normalized, dbPath, stagePath))
 		recordStagedFullScanFailure(normalized, err)
 		return ScanStats{}, err
 	}
@@ -111,7 +161,7 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 	}
 	publishStart := time.Now()
 	if err := publishStagedFullScan(ctx, normalized, stagePath, base); err != nil {
-		err = sanitizeStagedFullScanFailure(err)
+		err = sanitizeStagedFullScanFailure(err, scanRedactionPaths(normalized, dbPath, stagePath))
 		recordStagedFullScanFailure(normalized, err)
 		return ScanStats{}, err
 	}

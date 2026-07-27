@@ -1126,6 +1126,8 @@ func run(ctx context.Context, args []string) error {
 		default:
 			return errors.New("usage: ck3-index map <audit|province-mapping|physical-context|migration-snapshot|migrate|recipes|metric|route|render> [operation|spec.json] [--out path]")
 		}
+	case "migrate":
+		return runRebaseCLI(ctx, cfgPath, args)
 	case "validate":
 		db, err := openDB(ctx, cfgPath)
 		if err != nil {
@@ -1198,6 +1200,102 @@ func run(ctx context.Context, args []string) error {
 			return nil
 		}
 		return fmt.Errorf("unknown command %q", cmd)
+	}
+}
+
+func runRebaseCLI(ctx context.Context, cfgPath string, args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: ck3-index migrate <init|plan|review|status|build|validate|approve-smoke|promote|rollback> ... (status: <transaction-id> [--resume])")
+	}
+	switch args[0] {
+	case "init":
+		if len(args) != 2 {
+			return errors.New("usage: ck3-index migrate init <profile.toml>")
+		}
+		return migrator.WriteRebaseProfileTemplate(args[1])
+	case "plan":
+		if len(args) != 2 {
+			return errors.New("usage: ck3-index migrate plan <spec.json>")
+		}
+		var spec migrator.RebasePlanSpec
+		if err := readStrictJSONFile(args[1], &spec); err != nil {
+			return err
+		}
+		cfg, err := indexer.LoadConfig(cfgPath)
+		if err != nil {
+			return err
+		}
+		transaction, err := migrator.PlanRebase(ctx, cfg, spec, migrator.RebaseOptions{})
+		if err != nil {
+			return err
+		}
+		return printJSON(transaction)
+	case "status":
+		if len(args) != 2 && (len(args) != 3 || args[2] != "--resume") {
+			return errors.New("usage: ck3-index migrate status <transaction-id> [--resume]")
+		}
+		cfg, err := indexer.LoadConfig(cfgPath)
+		if err != nil {
+			return err
+		}
+		var transaction migrator.RebaseTransaction
+		if len(args) == 3 {
+			transaction, err = migrator.ResumeRebase(ctx, cfg, args[1], migrator.RebaseOptions{})
+		} else {
+			transaction, err = migrator.LoadRebaseTransaction(cfg, args[1], migrator.RebaseOptions{})
+		}
+		if err != nil {
+			return err
+		}
+		return printJSON(transaction)
+	case "review":
+		if len(args) < 2 || len(args) > 4 || (len(args) == 4 && args[2] != "--addr") || len(args) == 3 {
+			return errors.New("usage: ck3-index migrate review <transaction-id> [--addr 127.0.0.1:0]")
+		}
+		cfg, err := indexer.LoadConfig(cfgPath)
+		if err != nil {
+			return err
+		}
+		address := "127.0.0.1:0"
+		if len(args) == 4 {
+			address = args[3]
+		}
+		server, err := migrator.StartRebaseReview(ctx, cfg, args[1], migrator.RebaseOptions{}, address)
+		if err != nil {
+			return err
+		}
+		defer server.Close()
+		if err := printJSON(map[string]string{"url": server.URL, "transaction_id": args[1]}); err != nil {
+			return err
+		}
+		return server.Wait(ctx)
+	case "build", "validate", "approve-smoke", "promote", "rollback":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: ck3-index migrate %s <transaction-id>", args[0])
+		}
+		cfg, err := indexer.LoadConfig(cfgPath)
+		if err != nil {
+			return err
+		}
+		var transaction migrator.RebaseTransaction
+		switch args[0] {
+		case "build":
+			transaction, err = migrator.BuildRebase(ctx, cfg, args[1], migrator.RebaseOptions{})
+		case "validate":
+			transaction, err = migrator.ValidateRebase(ctx, cfg, args[1], migrator.RebaseOptions{})
+		case "approve-smoke":
+			transaction, err = migrator.ApproveRebaseSmoke(ctx, cfg, args[1], migrator.RebaseOptions{})
+		case "promote":
+			transaction, err = migrator.PromoteRebase(ctx, cfg, args[1], migrator.RebaseOptions{})
+		case "rollback":
+			transaction, err = migrator.RollbackRebase(ctx, cfg, args[1], migrator.RebaseOptions{})
+		}
+		if err != nil {
+			return err
+		}
+		return printJSON(transaction)
+	default:
+		return errors.New("usage: ck3-index migrate <init|plan|review|status|build|validate|approve-smoke|promote|rollback> ... (status: <transaction-id> [--resume])")
 	}
 }
 
@@ -1360,6 +1458,15 @@ func printHelp() {
 	  map physical-context     query normalized terrain, hydrology, water bodies, and relative bathymetry
 	  map migration-snapshot  persist the old-upstream/current-project baseline before a map update
 	  map migrate <json>       create a validated local fork from a saved snapshot and new upstream
+	  migrate init <profile>   write a generic upstream-rebase profile template
+	  migrate plan <spec>      classify Base/Ours/Theirs and create a reviewable transaction
+	  migrate status <id> [--resume] inspect a transaction, or resume only a checkpointed interrupted stage
+	  migrate review <id>      serve a capability-protected transaction report on loopback only
+	  migrate build <id>       materialize a full-project migration copy; never writes the formal project
+	  migrate validate <id>    validate old, target-only, and migrated real load stacks before smoke approval
+	  migrate approve-smoke <id> record the explicit isolated-playset smoke confirmation
+	  migrate promote <id>     atomically promote an approved migration copy with a durable rollback receipt
+	  migrate rollback <id>    restore the backed-up formal project when transaction hashes match
 	  map recipes              list thematic map recipes and supported fields/layers
   map metric <json>        build an auditable indexed/custom map metric
   map route <json>         resolve places and calculate a legal land, sea, or mixed route

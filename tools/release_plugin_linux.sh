@@ -103,6 +103,8 @@ case "$stage" in "$repo"/cache/plugin-stage-linux/ck3-index) ;; *) echo "unsafe 
 case "$extract" in "$repo"/cache/plugin-stage-linux/whitebox-extract) ;; *) echo "unsafe extract path" >&2; exit 1;; esac
 rm -rf -- "$stage" "$extract"
 cp -R "$repo/plugin/ck3-index" "$stage"
+tr -d '\r' < "$stage/scripts/start-ck3-index.sh" > "$stage/scripts/start-ck3-index.sh.tmp"
+mv "$stage/scripts/start-ck3-index.sh.tmp" "$stage/scripts/start-ck3-index.sh"
 mkdir -p "$extract" "$stage/bin" "$stage/sidecar" "$stage/third_party"
 unzip -q "$archive" -d "$extract"
 wbt_source="$extract/$archive_root"

@@ -37,23 +37,40 @@ func encodeToolResultWithBudget(value any, visibility string, responseBudget int
 	}
 	if rendered, ok := value.(indexer.MapRenderResult); ok {
 		pngData := rendered.PNG
+		hitData := rendered.HitPNG
 		rendered.PNG = nil
+		rendered.HitPNG = nil
 		data, structured, err := encodeStructuredValue(rendered)
 		if err != nil {
 			return nil, err
 		}
-		result := map[string]any{
-			"content": []map[string]any{
-				{"type": "text", "text": string(data)},
-				{
-					"type":     "image",
-					"data":     base64.StdEncoding.EncodeToString(pngData),
-					"mimeType": "image/png",
-					"annotations": map[string]any{
-						"audience": []string{"user"},
-					},
+		content := []map[string]any{
+			{"type": "text", "text": string(data)},
+			{
+				"type":     "image",
+				"data":     base64.StdEncoding.EncodeToString(pngData),
+				"mimeType": "image/png",
+				"annotations": map[string]any{
+					"audience": []string{"user"},
 				},
 			},
+		}
+		if len(hitData) > 0 {
+			// The companion lookup plate is addressed to the assistant, not the
+			// reader: it is an index of flat entity colours, not something to look
+			// at. Without it a caller receives overlay.hit_map and every entity's
+			// hit_color but has no plate to sample, so hover cannot be built.
+			content = append(content, map[string]any{
+				"type":     "image",
+				"data":     base64.StdEncoding.EncodeToString(hitData),
+				"mimeType": "image/png",
+				"annotations": map[string]any{
+					"audience": []string{"assistant"},
+				},
+			})
+		}
+		result := map[string]any{
+			"content":           content,
 			"structuredContent": structured,
 		}
 		return enforceResponseBudget(result, responseBudget)
@@ -284,6 +301,14 @@ func mcpHealthReport(h indexer.HealthReport) map[string]any {
 		"mcp_configured":         h.MCPConfigured,
 		"mcp_serving":            true,
 		"guidance":               h.Guidance,
+	}
+	// Health is served only under private visibility (see handleHealth), so the
+	// resolved config path and source roots stay out of any public response.
+	if h.ConfigPath != "" {
+		result["config_path"] = h.ConfigPath
+	}
+	if len(h.Sources) > 0 {
+		result["sources"] = h.Sources
 	}
 	if h.GIS != nil {
 		result["gis"] = *h.GIS

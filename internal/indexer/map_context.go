@@ -237,7 +237,9 @@ func rebuildMapCache(ctx context.Context, tx *sql.Tx, cfg Config) error {
 		return err
 	}
 	if err := rebuildMapSurfaceMaterialCache(ctx, tx, active, fingerprint); err != nil {
-		return err
+		if err := degradeSurfaceMaterialCache(ctx, tx, active, err); err != nil {
+			return err
+		}
 	}
 	if err := insertMapTitleAdjacencies(ctx, tx, provinces, adj, titles, titleProvinces); err != nil {
 		return err

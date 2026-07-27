@@ -443,7 +443,7 @@ func checkModifierContainerFields(nodes []*script.Node, relPath string) []ctxDia
 			out = append(out, ctxDiag{
 				severity: "error",
 				code:     "invalid_modifier_context",
-				msg:      fmt.Sprintf("modifier field %q is valid for %s but not for %s; move it to a compatible modifier container", field.Key, strings.Join(modifier.UseAreas, "/"), node.Key),
+				msg:      invalidModifierContextMessage(field.Key, node.Key, rel, modifier),
 				line:     field.Line,
 				col:      field.Col,
 			})
@@ -453,6 +453,39 @@ func checkModifierContainerFields(nodes []*script.Node, relPath string) []ctxDia
 		out = append(out, checkIllegalBuildingModifierContainers(nodes)...)
 	}
 	return out
+}
+
+// moduleModifierContainerAreas lists every scope a module's own modifier
+// containers can reach. When a field's engine use areas miss all of them, no
+// container in that module can apply it and the generic "move it to a
+// compatible container" advice is not merely unhelpful but impossible to
+// follow — a reader acting on it literally makes edits that change nothing.
+var moduleModifierContainerAreas = map[string][]string{
+	// Per game/common/buildings/_buildings.info, a building declares character,
+	// province, county and duchy-capital-county containers. None of them apply
+	// to a culture, so culture-scope modifiers cannot take effect in a building.
+	"common/buildings/": {"character", "province", "county"},
+}
+
+// invalidModifierContextMessage states the engine provenance alongside the
+// verdict. The use areas come from modifiers.log rather than a heuristic, and
+// saying so is what keeps a correct finding from being dismissed as a false
+// positive when the field name reads like it belongs in the container.
+func invalidModifierContextMessage(field, container, rel string, modifier ModifierLookup) string {
+	areas := strings.Join(modifier.UseAreas, "/")
+	provenance := modifier.Source
+	if provenance == "" {
+		provenance = "engine evidence"
+	}
+	for prefix, reachable := range moduleModifierContainerAreas {
+		if !strings.HasPrefix(rel, prefix) || modifierUseAreaAllowed(modifier.UseAreas, reachable) {
+			continue
+		}
+		return fmt.Sprintf("modifier field %q is valid for %s (per %s) but not for %s, and this module declares no container reaching %s; moving it between containers cannot make it apply, so deliver the effect through a mechanism that owns that scope",
+			field, areas, provenance, container, areas)
+	}
+	return fmt.Sprintf("modifier field %q is valid for %s (per %s) but not for %s; move it to a compatible modifier container",
+		field, areas, provenance, container)
 }
 
 func modifierUseAreaAllowed(actual, allowed []string) bool {

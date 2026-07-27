@@ -23,12 +23,16 @@ type RefreshEngineStatus struct {
 	Current   bool `json:"current"`
 }
 
-// RefreshScanError is a durable, path-free scan failure marker. It is kept in
-// the rebuildable cache so `ck3_refresh status` survives an MCP process
-// restart without exposing a source path or raw parser error.
+// RefreshScanError is a durable, path-redacted scan failure marker. It is kept
+// in the rebuildable cache so `ck3_refresh status` survives an MCP process
+// restart without exposing a source path.
 type RefreshScanError struct {
 	Code string `json:"code"`
 	At   string `json:"at"`
+	// Detail is the cause with host paths replaced by their trailing segments.
+	// It is what makes a failure actionable for a caller who has only the tool
+	// result and no access to the server's logs.
+	Detail string `json:"detail,omitempty"`
 }
 
 // RefreshStatus is a read-only preflight for the MCP refresh operations. It
@@ -125,13 +129,19 @@ func (db *DB) recordScanFailure(ctx context.Context, err error) {
 		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, code)
 	_, _ = db.sql.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('last_scan_error_at',?)
 		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, time.Now().UTC().Format(time.RFC3339Nano))
+	if detail := scanFailureDetail(err); detail != "" {
+		_, _ = db.sql.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('last_scan_error_detail',?)
+			ON CONFLICT(key) DO UPDATE SET value=excluded.value`, detail)
+	} else {
+		_, _ = db.sql.ExecContext(ctx, `DELETE FROM meta WHERE key='last_scan_error_detail'`)
+	}
 }
 
 func (db *DB) clearScanFailure(ctx context.Context) {
 	if !db.tableExists(ctx, "meta") {
 		return
 	}
-	_, _ = db.sql.ExecContext(ctx, `DELETE FROM meta WHERE key IN ('last_scan_error_code','last_scan_error_at')`)
+	_, _ = db.sql.ExecContext(ctx, `DELETE FROM meta WHERE key IN ('last_scan_error_code','last_scan_error_at','last_scan_error_detail')`)
 }
 
 func (db *DB) lastScanError(ctx context.Context) (*RefreshScanError, error) {
@@ -146,7 +156,22 @@ func (db *DB) lastScanError(ctx context.Context) (*RefreshScanError, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &RefreshScanError{Code: code, At: at}, nil
+	detail, err := db.metaValue(ctx, "last_scan_error_detail")
+	if err != nil {
+		return nil, err
+	}
+	return &RefreshScanError{Code: code, At: at, Detail: detail}, nil
+}
+
+// scanFailureDetail returns a redacted cause description, and only for failures
+// that were already sanitized. Any other error may still embed a raw host path,
+// so it contributes a code but no detail.
+func scanFailureDetail(err error) string {
+	var staged *stagedFullScanFailure
+	if errors.As(err, &staged) {
+		return staged.detail
+	}
+	return ""
 }
 
 func scanFailureCode(err error) string {

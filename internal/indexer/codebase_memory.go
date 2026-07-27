@@ -317,12 +317,20 @@ func (db *DB) appendDiagnosticHotspots(ctx context.Context, r *LLMResult, limit 
 	return err
 }
 
+// diagnosticHotspots counts every indexed layer, so each hotspot also reports
+// how many of its findings belong to the project itself. Without that split a
+// count dominated by upstream layers reads as though the project owned it, and
+// the obvious next step — opening those files to fix them — is spent on code
+// the project does not control.
 func diagnosticHotspots(ctx context.Context, q queryer, limit int) ([]LLMEvidence, error) {
-	rows, err := q.QueryContext(ctx, `SELECT code,severity,COUNT(*)
-		FROM diagnostics
-		GROUP BY code,severity
-		ORDER BY CASE severity WHEN 'error' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, COUNT(*) DESC, code
-		LIMIT ?`, limit)
+	rows, err := q.QueryContext(ctx, `SELECT d.code,d.severity,COUNT(*),
+		SUM(CASE WHEN sl.role=? THEN 1 ELSE 0 END)
+		FROM diagnostics d
+		LEFT JOIN files fi ON fi.id=d.file_id
+		LEFT JOIN source_layers sl ON lower(sl.name)=lower(COALESCE(fi.source_name,d.source_layer,''))
+		GROUP BY d.code,d.severity
+		ORDER BY CASE d.severity WHEN 'error' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, COUNT(*) DESC, d.code
+		LIMIT ?`, string(SourceRoleProject), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -331,13 +339,14 @@ func diagnosticHotspots(ctx context.Context, q queryer, limit int) ([]LLMEvidenc
 	for rows.Next() {
 		var code, severity string
 		var total int
-		if err := rows.Scan(&code, &severity, &total); err != nil {
+		var projectTotal sql.NullInt64
+		if err := rows.Scan(&code, &severity, &total, &projectTotal); err != nil {
 			return nil, err
 		}
 		out = append(out, LLMEvidence{
 			Kind:       "diagnostic_hotspot",
 			Name:       code,
-			Detail:     fmt.Sprintf("%s count=%d", severity, total),
+			Detail:     fmt.Sprintf("%s count=%d project=%d", severity, total, projectTotal.Int64),
 			Suggestion: diagnosticNextStep(code),
 		})
 	}

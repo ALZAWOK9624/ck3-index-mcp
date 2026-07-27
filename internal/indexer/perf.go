@@ -45,6 +45,46 @@ type HealthReport struct {
 	FTS5Available         bool              `json:"fts5_available"`
 	GIS                   *GISSidecarStatus `json:"gis,omitempty"`
 	Guidance              []string          `json:"guidance,omitempty"`
+
+	// ConfigPath and Sources answer "which configuration is live, and which
+	// trees does it actually point at". A workspace can hold several
+	// ck3-index.toml files, and a scan of the wrong tree is indistinguishable
+	// from a correct one unless the resolved roots are reported. Both are
+	// shortened by displayPath so they identify a tree without disclosing the
+	// host layout. Only populated by HealthConfigured, which has the config.
+	ConfigPath string           `json:"config_path,omitempty"`
+	Sources    []SourceIdentity `json:"sources,omitempty"`
+}
+
+// SourceIdentity is the resolved identity of one configured source: enough of
+// the root it scans to tell trees apart, plus the fields deciding precedence.
+type SourceIdentity struct {
+	Name string `json:"name"`
+	// Root is the final segments of the resolved absolute root, not the whole
+	// path. Sibling trees such as "release/22" and "staging/22" stay
+	// distinguishable while the drive and parent directories stay undisclosed.
+	Root         string `json:"root"`
+	Rank         int    `json:"rank"`
+	Role         string `json:"role,omitempty"`
+	Private      bool   `json:"private,omitempty"`
+	ResourceOnly bool   `json:"resource_only,omitempty"`
+}
+
+// displayPath keeps the last two segments of a path. Reporting a full absolute
+// path would leak the host's directory layout, which this package deliberately
+// withholds elsewhere; reporting nothing is what let a scan of the wrong tree
+// look exactly like a correct one. The tail is the smallest disclosure that
+// still distinguishes configured trees from each other.
+func displayPath(path string) string {
+	trimmed := strings.TrimRight(filepath.ToSlash(strings.TrimSpace(path)), "/")
+	if trimmed == "" {
+		return ""
+	}
+	segments := strings.Split(trimmed, "/")
+	if len(segments) <= 2 {
+		return trimmed
+	}
+	return strings.Join(segments[len(segments)-2:], "/")
 }
 
 type HealthFile struct {
@@ -147,7 +187,45 @@ func (db *DB) HealthConfigured(ctx context.Context, cfg Config) (HealthReport, e
 	if err != nil {
 		return HealthReport{}, err
 	}
-	return db.health(ctx, configuredPath)
+	report, err := db.health(ctx, configuredPath)
+	if err != nil {
+		return HealthReport{}, err
+	}
+	report.ConfigPath = displayPath(cfg.ConfigPath)
+	report.Sources = SourceIdentities(cfg)
+	return report, nil
+}
+
+// DisplayConfigPath reports the live configuration file in the same shortened
+// form used by health, for callers outside this package.
+func DisplayConfigPath(cfg Config) string {
+	return displayPath(cfg.ConfigPath)
+}
+
+// SourceIdentities resolves every configured source to the root it actually
+// reads, shortened by displayPath. Callers use it to verify the index is
+// pointed where they expect before trusting counts or diagnostics attributed
+// to a source name.
+func SourceIdentities(cfg Config) []SourceIdentity {
+	if len(cfg.Sources) == 0 {
+		return nil
+	}
+	identities := make([]SourceIdentity, 0, len(cfg.Sources))
+	for _, source := range cfg.Sources {
+		root := source.Path
+		if absolute, err := filepath.Abs(root); err == nil {
+			root = absolute
+		}
+		identities = append(identities, SourceIdentity{
+			Name:         source.Name,
+			Root:         displayPath(root),
+			Rank:         source.Rank,
+			Role:         string(source.Role),
+			Private:      source.Private,
+			ResourceOnly: source.ResourceOnly,
+		})
+	}
+	return identities
 }
 
 func (db *DB) health(ctx context.Context, configuredPath string) (HealthReport, error) {

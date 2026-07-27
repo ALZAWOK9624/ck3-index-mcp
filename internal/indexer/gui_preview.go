@@ -537,7 +537,14 @@ func (layout *guiPreviewLayout) layoutElement(element GUIElement, parent GUIPrev
 	textureSlice := guiPreviewTextureSlice(element)
 	fitTypeApproximate := fitType != "" && (!guiPreviewFitTypeSupported(fitType) || textureFrames != nil || textureSlice != nil)
 	alignApproximate := align != "" && !guiPreviewAlignSupported(align)
+	behaviorOnly := strings.EqualFold(strings.TrimSpace(element.Kind), "state")
 	approximate := size.approximate || lineGeometry != nil || (textureBlendMode != "" && !textureBlendSupported) || fitTypeApproximate || alignApproximate
+	// A state block changes properties over time; it is never laid out and is
+	// skipped by every renderer. Reporting uncertainty about the geometry of
+	// something that has none only inflates the approximate count.
+	if behaviorOnly {
+		approximate = false
+	}
 	node := GUIPreviewNode{
 		Index: len(layout.nodes), Parent: parentIndex, Depth: depth, Kind: element.Kind, TypeChain: append([]string(nil), element.TypeChain...), Name: element.Name,
 		Source: element.Source, Line: element.Span.Line, Bounds: bounds, Texture: texture,
@@ -551,7 +558,7 @@ func (layout *guiPreviewLayout) layoutElement(element GUIElement, parent GUIPrev
 		TextureBlendMode: textureBlendMode, TextureBlendSupported: textureBlendSupported, Mirror: guiPreviewMirror(element), FitType: fitType, Align: align,
 		Text: text, Semantics: guiPreviewSemantics(element), StateDefinition: guiPreviewStateDefinition(element),
 		Layout:       guiPreviewElementLayout(element),
-		BehaviorOnly: strings.EqualFold(strings.TrimSpace(element.Kind), "state"), Approximate: approximate,
+		BehaviorOnly: behaviorOnly, Approximate: approximate,
 	}
 	if element.modelRow != nil {
 		node.ModelRow = &GUIPreviewModelRow{
@@ -1543,23 +1550,30 @@ func (layout *guiPreviewLayout) measure(element GUIElement, parentW, parentH, de
 			approximate = true
 		}
 	}
+	fillsParent := guiPreviewFillsParent(element.Kind)
 	if !wKnown {
-		if strings.EqualFold(guiPreviewProperty(element, "layoutpolicy_horizontal"), "expanding") && parentW > 0 {
+		switch {
+		case fillsParent && parentW > 0:
 			w = parentW
-		} else {
+		case strings.EqualFold(guiPreviewProperty(element, "layoutpolicy_horizontal"), "expanding") && parentW > 0:
+			w = parentW
+		default:
 			w = guiPreviewDefaultSize(element, true)
+			approximate = true
+			layout.warn("inferred-size", "Some GUI elements have no static size; the preview infers conservative diagnostic dimensions")
 		}
-		approximate = true
-		layout.warn("inferred-size", "Some GUI elements have no static size; the preview infers conservative diagnostic dimensions")
 	}
 	if !hKnown {
-		if strings.EqualFold(guiPreviewProperty(element, "layoutpolicy_vertical"), "expanding") && parentH > 0 {
+		switch {
+		case fillsParent && parentH > 0:
 			h = parentH
-		} else {
+		case strings.EqualFold(guiPreviewProperty(element, "layoutpolicy_vertical"), "expanding") && parentH > 0:
+			h = parentH
+		default:
 			h = guiPreviewDefaultSize(element, false)
+			approximate = true
+			layout.warn("inferred-size", "Some GUI elements have no static size; the preview infers conservative diagnostic dimensions")
 		}
-		approximate = true
-		layout.warn("inferred-size", "Some GUI elements have no static size; the preview infers conservative diagnostic dimensions")
 	}
 	minWidth, maxWidth := guiPreviewDimensionConstraints(element, true)
 	minHeight, maxHeight := guiPreviewDimensionConstraints(element, false)
@@ -2082,6 +2096,28 @@ func guiPreviewProperties(element GUIElement, name string) []string {
 		}
 	}
 	return values
+}
+
+// guiPreviewFillsParent reports widget kinds whose omitted size is *defined*
+// rather than unknown: the engine stretches them over their parent.
+//
+// This distinction is what separates an honest "approximate" marker from noise.
+// In game/gui, 2087 of 2102 background blocks (99%) and 2021 of 2021
+// modify_texture blocks (100%) declare no size at all — an idiom that only
+// works because omitting it means "cover the parent". Treating those as
+// inferred guesses flagged half of a typical preview as uncertain for doing
+// the standard thing, which trains the reader to ignore the marker entirely.
+//
+// Kinds that usually *do* declare a size stay out of this list: icon omits it
+// only 4% of the time, so an icon without a size really is under-specified and
+// its fallback dimensions remain approximate.
+func guiPreviewFillsParent(kind string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "background", "modify_texture":
+		return true
+	default:
+		return false
+	}
 }
 
 func guiPreviewDefaultSize(element GUIElement, horizontal bool) int {

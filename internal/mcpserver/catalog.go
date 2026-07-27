@@ -169,7 +169,7 @@ func buildCanonicalTools() []ToolDefinition {
 		{
 			Name:         "ck3_health",
 			Title:        "Check CK3 Index Health",
-			Description:  "Check whether the database, schema, indexes, and MCP registration are trustworthy. Returns a short path-redacted health report.",
+			Description:  "Check whether the database, schema, indexes, and MCP registration are trustworthy, and confirm which configuration is live. Reports the active config path and every source's resolved root so a workspace with multiple ck3-index.toml files cannot be misread; the database path itself stays redacted.",
 			InputSchema:  objectSchema(map[string]any{}),
 			OutputSchema: output, Annotations: annotations, Handler: handleHealth,
 		},
@@ -314,10 +314,10 @@ func standardizeCanonicalToolDescriptions(definitions []ToolDefinition) []ToolDe
 			Unlike:   "ck3_prepare_edit, it retrieves one reference fact rather than combined authoring context",
 		},
 		"ck3_health": {
-			When:     "checking whether the MCP registration and index database are trustworthy",
+			When:     "checking whether the MCP registration and index database are trustworthy, or confirming which configuration and source trees are live",
 			DoNotUse: "the task is to diagnose CK3 source logic; use ck3_diagnostics or ck3_review instead",
 			Input:    "no arguments",
-			Returns:  "a path-redacted database, schema, and registration health report",
+			Returns:  "database, schema, and registration health, plus the active config path and each source's resolved root",
 			Unlike:   "ck3_refresh, it observes health and does not update the index",
 		},
 		"ck3_package": {

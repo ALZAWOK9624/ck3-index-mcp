@@ -580,6 +580,36 @@ func TestMCPMapToolsRegisteredAndCallable(t *testing.T) {
 	if len(content) != 2 || content[1]["type"] != "image" || !strings.Contains(content[0]["text"].(string), `"year":6254`) {
 		t.Fatalf("expected atlas recipe metadata plus PNG ImageContent, got %+v", content)
 	}
+	// A basemap with hit_map has to return both plates. The overlay advertises
+	// every entity's hit_color and the plate's size, so shipping only the visible
+	// image would promise a hover capability the caller cannot implement.
+	raw = json.RawMessage(`{"name":"map_render","arguments":{"recipe":"political_atlas","target":"e_test","level":"county","layout":"basemap","width":400,"hit_map":true}}`)
+	got, err = callMCPTool(context.Background(), db, emptyMCPConfig(filepath.Join(dir, "cache", "test.sqlite")), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer = got.(map[string]any)
+	content = outer["content"].([]map[string]any)
+	if len(content) != 3 {
+		t.Fatalf("basemap with hit_map must return metadata plus two plates, got %d content blocks", len(content))
+	}
+	if content[1]["type"] != "image" || content[2]["type"] != "image" {
+		t.Fatalf("expected two image blocks, got %+v", content)
+	}
+	// The lookup plate is for sampling, not for reading, so it is addressed to the
+	// assistant while the drawn map is addressed to the user.
+	visible := content[1]["annotations"].(map[string]any)["audience"].([]string)
+	lookup := content[2]["annotations"].(map[string]any)["audience"].([]string)
+	if len(visible) != 1 || visible[0] != "user" {
+		t.Fatalf("drawn plate audience = %v, want [user]", visible)
+	}
+	if len(lookup) != 1 || lookup[0] != "assistant" {
+		t.Fatalf("lookup plate audience = %v, want [assistant]", lookup)
+	}
+	if !strings.Contains(content[0]["text"].(string), `"hit_color"`) {
+		t.Fatalf("basemap metadata omitted per-entity hit colours: %s", content[0]["text"])
+	}
+
 	raw = json.RawMessage(`{"name":"map_render","arguments":{"recipe":"thematic_atlas","theme":"culture","level":"barony","target":"e_test","width":400}}`)
 	got, err = callMCPTool(context.Background(), db, emptyMCPConfig(filepath.Join(dir, "cache", "test.sqlite")), raw)
 	if err != nil {

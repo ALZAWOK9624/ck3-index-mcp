@@ -31,6 +31,7 @@ const (
 	ErrorIncompleteFileContent      = "INCOMPLETE_FILE_CONTENT"
 	ErrorInvalidPatch               = "INVALID_PATCH"
 	ErrorConflictingGeneration      = "CONFLICTING_GENERATION"
+	ErrorConfigChanged              = "CONFIG_CHANGED_RESTART_REQUIRED"
 	ErrorServerBusy                 = "SERVER_BUSY"
 	ErrorOperationCancelled         = "OPERATION_CANCELLED"
 	ErrorOperationTimeout           = "OPERATION_TIMEOUT"

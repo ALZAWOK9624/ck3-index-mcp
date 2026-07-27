@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
@@ -78,6 +79,11 @@ type tgaReader struct {
 	Width, Height, Depth int
 	TopOrigin            bool
 	DataOffset           int64
+	// pixels holds the whole decoded image in file row order when the source
+	// was RLE-encoded. Run-length packets have no fixed row stride, so random
+	// row access requires the frame up front. Uncompressed sources leave this
+	// nil and keep reading rows straight from the file.
+	pixels []byte
 }
 
 func rebuildMapSurfaceMaterialCache(ctx context.Context, tx *sql.Tx, active map[string]activeMapFile, geometryFingerprint string) error {
@@ -120,7 +126,7 @@ func rebuildMapSurfaceMaterialCache(ctx context.Context, tx *sql.Tx, active map[
 	}
 	defer intensityTGA.Close()
 	if indexTGA.Width != intensityTGA.Width || indexTGA.Height != intensityTGA.Height || indexTGA.Depth != 32 || intensityTGA.Depth != 32 {
-		return fmt.Errorf("surface material TGAs must be matching uncompressed 32-bit images")
+		return fmt.Errorf("surface material TGAs must be matching 32-bit images")
 	}
 
 	runsByY, err := loadMaterialProvinceRuns(ctx, tx, indexTGA.Height)
@@ -267,6 +273,30 @@ func rebuildMapSurfaceMaterialCache(ctx context.Context, tx *sql.Tx, active map[
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('map_surface_material_build_count','1')
 		ON CONFLICT(key) DO UPDATE SET value=CAST(meta.value AS INTEGER)+1`)
+	return err
+}
+
+// degradeSurfaceMaterialCache records an unreadable terrain material asset as
+// an integrity issue instead of aborting the scan.
+//
+// By the time this runs, the script, localization, and reference indexes are
+// already complete; discarding a whole publication because one texture could
+// not be decoded costs far more than the surface material tables are worth. The
+// absent-asset path above already degrades exactly this way — an asset that is
+// present but unreadable is no more fatal than one that is missing.
+func degradeSurfaceMaterialCache(ctx context.Context, tx *sql.Tx, active map[string]activeMapFile, cause error) error {
+	if err := clearMapSurfaceMaterialCache(ctx, tx); err != nil {
+		return err
+	}
+	indexFile := active["gfx/map/terrain/detail_index.tga"]
+	message := "surface material cache unavailable: " + redactHostPaths(cause.Error(), []string{
+		active["gfx/map/terrain/materials.settings"].Path,
+		indexFile.Path,
+		active["gfx/map/terrain/detail_intensity.tga"].Path,
+	})
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO map_integrity_issues(code,title_id,province_id,message,source_name,path,line) VALUES(?,?,?,?,?,?,?)`,
+		"surface_material_unavailable", "", 0, message, indexFile.Src.Name, indexFile.Rel, 0)
 	return err
 }
 
@@ -500,9 +530,9 @@ func openTGA(path string) (*tgaReader, error) {
 		f.Close()
 		return nil, err
 	}
-	if header[1] != 0 || header[2] != 2 {
+	if header[1] != 0 || (header[2] != 2 && header[2] != 10) {
 		f.Close()
-		return nil, fmt.Errorf("only uncompressed true-color TGA is supported")
+		return nil, fmt.Errorf("only uncompressed or RLE true-color TGA is supported")
 	}
 	width := int(binary.LittleEndian.Uint16(header[12:14]))
 	height := int(binary.LittleEndian.Uint16(header[14:16]))
@@ -511,7 +541,51 @@ func openTGA(path string) (*tgaReader, error) {
 		f.Close()
 		return nil, fmt.Errorf("invalid TGA dimensions or depth %dx%dx%d", width, height, depth)
 	}
-	return &tgaReader{File: f, Width: width, Height: height, Depth: depth, TopOrigin: header[17]&0x20 != 0, DataOffset: int64(18 + int(header[0]))}, nil
+	reader := &tgaReader{File: f, Width: width, Height: height, Depth: depth, TopOrigin: header[17]&0x20 != 0, DataOffset: int64(18 + int(header[0]))}
+	if header[2] == 10 {
+		pixels, err := decodeRLETGA(f, reader.DataOffset, width, height)
+		if err != nil {
+			f.Close()
+			return nil, err
+		}
+		reader.pixels = pixels
+	}
+	return reader, nil
+}
+
+// decodeRLETGA expands a run-length encoded 32-bit true-color image into a
+// flat file-row-ordered buffer. Packets may span row boundaries, so the stream
+// is decoded as one continuous pixel sequence rather than row by row.
+func decodeRLETGA(f *os.File, dataOffset int64, width, height int) ([]byte, error) {
+	if _, err := f.Seek(dataOffset, io.SeekStart); err != nil {
+		return nil, err
+	}
+	total := width * height
+	pixels := make([]byte, total*4)
+	src := bufio.NewReaderSize(f, 1<<20)
+	pixel := make([]byte, 4)
+	for written := 0; written < total; {
+		packet, err := src.ReadByte()
+		if err != nil {
+			return nil, fmt.Errorf("truncated RLE stream after %d of %d pixels: %w", written, total, err)
+		}
+		count := int(packet&0x7F) + 1
+		if written+count > total {
+			return nil, fmt.Errorf("RLE packet overruns image by %d pixels", written+count-total)
+		}
+		if packet&0x80 != 0 {
+			if _, err := io.ReadFull(src, pixel); err != nil {
+				return nil, fmt.Errorf("truncated RLE run at pixel %d: %w", written, err)
+			}
+			for i := 0; i < count; i++ {
+				copy(pixels[(written+i)*4:], pixel)
+			}
+		} else if _, err := io.ReadFull(src, pixels[written*4:(written+count)*4]); err != nil {
+			return nil, fmt.Errorf("truncated raw packet at pixel %d: %w", written, err)
+		}
+		written += count
+	}
+	return pixels, nil
 }
 
 func (t *tgaReader) Close() error { return t.File.Close() }
@@ -523,6 +597,10 @@ func (t *tgaReader) ReadRow(y int, buffer []byte) error {
 	fileY := y
 	if !t.TopOrigin {
 		fileY = t.Height - 1 - y
+	}
+	if t.pixels != nil {
+		copy(buffer[:t.Width*4], t.pixels[fileY*t.Width*4:])
+		return nil
 	}
 	offset := t.DataOffset + int64(fileY*t.Width*4)
 	_, err := t.File.ReadAt(buffer[:t.Width*4], offset)

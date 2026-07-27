@@ -10,6 +10,8 @@
 # Runtime caches and generated indexes
 /cache/
 /.gocache/
+/.gocache-overlay/
+/.tmp-rebase-gocache/
 /tmp/
 __pycache__/
 *.sqlite

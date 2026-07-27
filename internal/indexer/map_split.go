@@ -70,7 +70,13 @@ type MapSplitResult struct {
 	SourcePixel int            `json:"source_pixel_count"`
 	Parts       []MapSplitPart `json:"parts"`
 	Unreachable int            `json:"unreachable_pixel_count"`
-	Warnings    []string       `json:"warnings,omitempty"`
+	// OrphanPieces counts disconnected pieces of the source province that no
+	// seed could grow into and were attached to their nearest seed instead.
+	// Non-zero is normal for islands and exclaves; it is reported so the caller
+	// can place a seed inside a piece when the automatic choice is wrong.
+	OrphanPieces int      `json:"orphan_piece_count"`
+	OrphanPixels int      `json:"orphan_pixel_count"`
+	Warnings     []string `json:"warnings,omitempty"`
 }
 
 // MapSplitTerrain supplies per-pixel traversal resistance in [0,1], where 1 is
@@ -196,6 +202,17 @@ func SplitProvinceGeometry(runs []MapRun, request MapSplitRequest, terrain MapSp
 		}
 	}
 
+	// Pixels no seed could reach sit in a disconnected piece of the province.
+	// That is ordinary, not broken: islands, exclaves and decorative terrain are
+	// routinely painted as one province in several pieces, and in this workspace
+	// 987 playable provinces are built that way. Such a piece is still part of
+	// the province and has to end up somewhere once the province is divided, so
+	// each piece is attached whole to its nearest seed.
+	//
+	// Whole pieces rather than individual pixels: splitting one island between
+	// two provinces is a worse answer than either province owning all of it.
+	orphanPieces, orphanPixels := assignOrphanPieces(inside, owner, width, minX, minY, request.Seeds)
+
 	parts := make([]MapSplitPart, len(request.Seeds))
 	for i, seed := range request.Seeds {
 		parts[i] = MapSplitPart{Index: i, Seed: seed, MinX: math.MaxInt, MinY: math.MaxInt, MaxX: -1, MaxY: -1}
@@ -248,9 +265,14 @@ func SplitProvinceGeometry(runs []MapRun, request MapSplitRequest, terrain MapSp
 			result.Warnings = append(result.Warnings, fmt.Sprintf("seed %d claimed no pixels; it was likely enclosed by a cheaper neighbour", i))
 		}
 	}
+	if orphanPieces > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf(
+			"province %d is painted in %d disconnected piece(s) totalling %d pixel(s); each was attached whole to its nearest seed. Place a seed inside a piece to control which part keeps it",
+			request.ProvinceID, orphanPieces, orphanPixels))
+	}
 	if unreachable > 0 {
 		result.Warnings = append(result.Warnings,
-			fmt.Sprintf("%d pixel(s) were unreachable from every seed, so province %d is not fully connected; place a seed in each disconnected piece", unreachable, request.ProvinceID))
+			fmt.Sprintf("%d pixel(s) could not be attached to any seed", unreachable))
 	}
 	if _, uniform := terrain.(uniformTerrain); uniform {
 		result.Warnings = append(result.Warnings,
@@ -258,7 +280,65 @@ func SplitProvinceGeometry(runs []MapRun, request MapSplitRequest, terrain MapSp
 	}
 	result.Parts = parts
 	result.Unreachable = unreachable
+	result.OrphanPieces = orphanPieces
+	result.OrphanPixels = orphanPixels
 	return result, nil
+}
+
+// assignOrphanPieces attaches every pixel the growth could not reach to the
+// seed nearest that piece, and reports how many pieces and pixels were moved.
+func assignOrphanPieces(inside []bool, owner []int32, width, minX, minY int, seeds []MapSplitSeed) (int, int) {
+	visited := make([]bool, len(inside))
+	pieces, moved := 0, 0
+	for start := range inside {
+		if !inside[start] || owner[start] >= 0 || visited[start] {
+			continue
+		}
+		visited[start] = true
+		queue := []int{start}
+		component := []int{start}
+		sumX, sumY := 0, 0
+		for len(queue) > 0 {
+			cell := queue[0]
+			queue = queue[1:]
+			cx, cy := cell%width, cell/width
+			sumX += cx
+			sumY += cy
+			for _, step := range [4][2]int{{1, 0}, {-1, 0}, {0, 1}, {0, -1}} {
+				nx, ny := cx+step[0], cy+step[1]
+				if nx < 0 || nx >= width || ny < 0 || ny >= len(inside)/width {
+					continue
+				}
+				next := ny*width + nx
+				if !inside[next] || owner[next] >= 0 || visited[next] {
+					continue
+				}
+				visited[next] = true
+				queue = append(queue, next)
+				component = append(component, next)
+			}
+		}
+		// Compare against the piece's centroid rather than any single pixel of
+		// it, so a long island is judged by where it sits as a whole.
+		centroidX := float64(sumX)/float64(len(component)) + float64(minX)
+		centroidY := float64(sumY)/float64(len(component)) + float64(minY)
+		nearest, nearestDistance := -1, math.Inf(1)
+		for seedIndex, seed := range seeds {
+			distance := math.Hypot(float64(seed.X)-centroidX, float64(seed.Y)-centroidY)
+			if distance < nearestDistance {
+				nearest, nearestDistance = seedIndex, distance
+			}
+		}
+		if nearest < 0 {
+			continue
+		}
+		for _, cell := range component {
+			owner[cell] = int32(nearest)
+		}
+		pieces++
+		moved += len(component)
+	}
+	return pieces, moved
 }
 
 func runBounds(runs []MapRun) (minX, minY, maxX, maxY int) {

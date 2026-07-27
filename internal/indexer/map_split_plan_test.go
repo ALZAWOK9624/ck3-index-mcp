@@ -192,7 +192,11 @@ func TestPlanSplitBlocksWhenUniquenessCannotBeProven(t *testing.T) {
 	}
 }
 
-func TestPlanSplitBlocksUnreachablePixels(t *testing.T) {
+// TestPlanSplitAcceptsFragmentedProvince pins the behaviour that a province
+// painted in several pieces is planned, not refused. Islands and exclaves are
+// how real maps are built -- 987 playable provinces in this workspace are
+// fragmented -- so blocking on them would reject ordinary input.
+func TestPlanSplitAcceptsFragmentedProvince(t *testing.T) {
 	runs := append(rectRuns(0, 0, 9, 9), rectRuns(40, 0, 49, 9)...)
 	result, err := SplitProvinceGeometry(runs, MapSplitRequest{
 		ProvinceID: 9, Seeds: []MapSplitSeed{{X: 2, Y: 2}, {X: 7, Y: 7}},
@@ -201,7 +205,42 @@ func TestPlanSplitBlocksUnreachablePixels(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan, err := PlanProvinceSplit(result, MapSplitContext{
-		UsedProvinceIDs: map[int]bool{9: true}, UsedColors: map[uint32]bool{1: true}, SourceName: "Split",
+		UsedProvinceIDs: map[int]bool{9: true}, UsedColors: map[uint32]bool{1: true},
+		SourceName: "Split", SourceColor: 0x445566,
+	}, MapSplitEmit{Definition: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Blockers) != 0 {
+		t.Fatalf("a fragmented province was blocked: %v", plan.Blockers)
+	}
+	// It must still be reported, because which part inherits an island is a
+	// judgement the caller may want to override with an extra seed.
+	found := false
+	for _, warning := range plan.Warnings {
+		if strings.Contains(warning, "disconnected piece") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the attached island was not reported: %v", plan.Warnings)
+	}
+}
+
+// TestPlanSplitBlocksTrulyUnattachedPixels keeps the defensive path honest: if
+// geometry ever reaches the planner with pixels belonging to no part, applying
+// it would erase them from provinces.png, so it must still refuse.
+func TestPlanSplitBlocksTrulyUnattachedPixels(t *testing.T) {
+	result := MapSplitResult{
+		ProvinceID: 9, SourcePixel: 200, Unreachable: 100,
+		Parts: []MapSplitPart{
+			{Index: 0, PixelCount: 60, Runs: rectRuns(0, 0, 5, 9)},
+			{Index: 1, PixelCount: 40, Runs: rectRuns(6, 0, 9, 9)},
+		},
+	}
+	plan, err := PlanProvinceSplit(result, MapSplitContext{
+		UsedProvinceIDs: map[int]bool{9: true}, UsedColors: map[uint32]bool{1: true},
+		SourceName: "Split", SourceColor: 0x445566,
 	}, MapSplitEmit{Definition: true})
 	if err != nil {
 		t.Fatal(err)
@@ -213,7 +252,7 @@ func TestPlanSplitBlocksUnreachablePixels(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("unreachable pixels did not block the plan: %v", plan.Blockers)
+		t.Fatalf("unattached pixels did not block the plan: %v", plan.Blockers)
 	}
 }
 

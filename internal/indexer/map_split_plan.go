@@ -113,6 +113,10 @@ func PlanProvinceSplit(result MapSplitResult, context MapSplitContext, emit MapS
 	plan.RetainedPart = retained
 	plan.RetainedPixels = result.Parts[retained].PixelCount
 
+	// Only pixels that could not be attached at all are fatal. A disconnected
+	// piece that was attached to its nearest seed is not: provinces painted in
+	// several pieces are ordinary in CK3, and refusing them would reject most of
+	// the map's islands and exclaves.
 	if result.Unreachable > 0 {
 		plan.Blockers = append(plan.Blockers, fmt.Sprintf(
 			"%d pixel(s) belong to no part; applying this would erase them from provinces.png", result.Unreachable))

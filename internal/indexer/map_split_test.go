@@ -25,9 +25,12 @@ func partPixels(t *testing.T, part MapSplitPart) map[[2]int]bool {
 }
 
 // assertConnected fails unless every pixel of the part is reachable from any
-// other by 4-way steps. CK3 cannot represent a province made of detached
-// islands, so a split that produces one is unusable regardless of how good the
-// boundary looks.
+// other by 4-way steps.
+//
+// This only holds when the source province was itself connected. CK3 happily
+// represents a province painted in several pieces, and real maps are full of
+// them, so a part inheriting a detached island is correct rather than broken --
+// callers must not assert this on a fragmented source.
 func assertConnected(t *testing.T, part MapSplitPart) {
 	t.Helper()
 	pixels := partPixels(t, part)
@@ -179,10 +182,12 @@ func TestSplitProvinceIsDeterministic(t *testing.T) {
 	}
 }
 
-// TestSplitProvinceReportsDisconnectedSource covers a province made of two
-// detached blobs with a seed in only one: the far blob cannot be reached, and
-// silently dropping those pixels would corrupt provinces.png.
-func TestSplitProvinceReportsDisconnectedSource(t *testing.T) {
+// TestSplitProvinceAttachesDetachedPieces covers a province painted as two
+// separate blobs with both seeds in one of them. Provinces built this way are
+// ordinary in CK3 -- islands, exclaves, decorative terrain -- so the far blob
+// must be attached to a seed rather than dropped or refused. Dropping it would
+// erase land from provinces.png; refusing would reject most of a real map.
+func TestSplitProvinceAttachesDetachedPieces(t *testing.T) {
 	runs := append(rectRuns(0, 0, 9, 9), rectRuns(40, 0, 49, 9)...)
 	result, err := SplitProvinceGeometry(runs, MapSplitRequest{
 		ProvinceID: 9,
@@ -191,18 +196,42 @@ func TestSplitProvinceReportsDisconnectedSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Unreachable != 100 {
-		t.Fatalf("unreachable = %d, want the 100 pixels of the detached blob", result.Unreachable)
+	if result.Unreachable != 0 {
+		t.Fatalf("unreachable = %d, every pixel should have been attached", result.Unreachable)
 	}
-	found := false
-	for _, warning := range result.Warnings {
-		if len(warning) > 0 && warning[0] == '1' {
-			found = true
+	if result.OrphanPieces != 1 || result.OrphanPixels != 100 {
+		t.Fatalf("orphan report = %d piece(s)/%d px, want 1/100", result.OrphanPieces, result.OrphanPixels)
+	}
+	assigned := 0
+	for _, part := range result.Parts {
+		assigned += part.PixelCount
+	}
+	if assigned != result.SourcePixel {
+		t.Fatalf("parts cover %d pixels, source has %d", assigned, result.SourcePixel)
+	}
+	// The detached blob sits right of both seeds; the rightmost seed is nearer,
+	// so it should take the whole piece rather than have it divided.
+	if result.Parts[1].PixelCount != 100+partSeedShare(t, result, 1) {
+		t.Logf("part1=%d part0=%d", result.Parts[1].PixelCount, result.Parts[0].PixelCount)
+	}
+	if result.Parts[1].MaxX < 49 {
+		t.Fatalf("the nearer seed did not take the detached blob: part1 maxX=%d", result.Parts[1].MaxX)
+	}
+	if result.Parts[0].MaxX >= 40 {
+		t.Fatalf("the detached blob was divided between parts: part0 maxX=%d", result.Parts[0].MaxX)
+	}
+}
+
+// partSeedShare returns how many pixels a part holds inside the main blob.
+func partSeedShare(t *testing.T, result MapSplitResult, index int) int {
+	t.Helper()
+	count := 0
+	for _, run := range result.Parts[index].Runs {
+		if int(run.X0) < 40 {
+			count += int(run.X1) - int(run.X0) + 1
 		}
 	}
-	if !found {
-		t.Fatalf("no warning named the unreachable pixels: %v", result.Warnings)
-	}
+	return count
 }
 
 func TestSplitProvinceRejectsUnusableRequests(t *testing.T) {

@@ -270,11 +270,14 @@ func (db *DB) QueryGUI(ctx context.Context, options GUIQueryOptions) (GUIQueryRe
 			}
 		}
 		if symbolKind != "" {
-			preparedModelSamples, err := prepareGUIModelSamples(result.Query, &element, options.ModelSamples)
+			// element is a shallow copy of an entry in the shared resolution
+			// cache. Model sample expansion therefore returns a private tree
+			// instead of writing rows into the cached one.
+			element, preparedModelSamples, err := prepareGUIModelSamples(result.Query, element, options.ModelSamples)
 			if err != nil {
 				return result, err
 			}
-			preview, err := RenderGUIPreview(result.Query, symbolKind, source, element, options.Width, options.Height, guiQueryNodeLimit(limit))
+			preview, err := BuildGUIPreviewScene(result.Query, symbolKind, source, element, options.Width, options.Height, guiQueryNodeLimit(limit))
 			if err != nil {
 				return result, err
 			}
@@ -290,13 +293,26 @@ func (db *DB) QueryGUI(ctx context.Context, options GUIQueryOptions) (GUIQueryRe
 			if err := applyGUIPreviewModelSamples(&preview, preparedModelSamples); err != nil {
 				return result, err
 			}
-			if err := refreshGUIPreviewPNG(&preview); err != nil {
-				return result, err
-			}
 			if err := db.bindGUIPreviewTextures(ctx, &preview, options.AllowProject); err != nil {
 				return result, err
 			}
 			preview.Format = previewFormat
+			// The diagnostic raster is encoded exactly once, and only for the
+			// formats that actually carry one. Rendering it during scene
+			// construction and again after localization, runtime facts,
+			// scenario values, and model rows meant every request paid for two
+			// PNG encodes, including format=html which then discarded both.
+			if previewFormat == "png" || previewFormat == "both" {
+				if err := refreshGUIPreviewPNG(&preview); err != nil {
+					return result, err
+				}
+			} else {
+				// HTML still needs the view transform recomputed over the
+				// post-sample node set; it just never needs the pixels.
+				fitGUIPreviewScene(&preview)
+				preview.PNG = nil
+				preview.Bytes = 0
+			}
 			if previewFormat == "html" || previewFormat == "both" {
 				if err := embedGUIPreviewTextures(ctx, &preview); err != nil {
 					return result, err
@@ -306,10 +322,6 @@ func (db *DB) QueryGUI(ctx context.Context, options GUIQueryOptions) (GUIQueryRe
 					return result, err
 				}
 				preview.HTML = &htmlPreview
-			}
-			if previewFormat == "html" {
-				preview.PNG = nil
-				preview.Bytes = 0
 			}
 			result.Preview = &preview
 			result.Found = true
@@ -654,26 +666,51 @@ func normalizeGUIQueryPath(value string, exact bool) (string, error) {
 	return value, nil
 }
 
+// guiDiagnosticSeverityRank orders diagnostics by how much they matter, which
+// a string comparison does not: "error" < "info" < "warning" alphabetically
+// puts informational findings ahead of warnings.
+func guiDiagnosticSeverityRank(severity string) int {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case "error":
+		return 0
+	case "warning":
+		return 1
+	case "info":
+		return 2
+	default:
+		return 3
+	}
+}
+
+func sortGUIDiagnostics(values []GUIDiagnostic) {
+	sort.SliceStable(values, func(i, j int) bool {
+		leftRank, rightRank := guiDiagnosticSeverityRank(values[i].Severity), guiDiagnosticSeverityRank(values[j].Severity)
+		if leftRank != rightRank {
+			return leftRank < rightRank
+		}
+		if values[i].Source != values[j].Source {
+			return values[i].Source < values[j].Source
+		}
+		return values[i].Span.Line < values[j].Span.Line
+	})
+}
+
+// selectGUIDiagnostics collects every relevant diagnostic, orders it by
+// severity, and only then applies the caller's limit. Truncating during the
+// scan and sorting afterwards let a run of leading informational findings push
+// the real errors out of the response entirely.
 func selectGUIDiagnostics(values []GUIDiagnostic, symbol, source string, limit int) []GUIDiagnostic {
-	selected := make([]GUIDiagnostic, 0, limit)
+	selected := make([]GUIDiagnostic, 0, len(values))
 	for _, diagnostic := range values {
 		if !guiResolutionLimitDiagnostic(diagnostic.Code) && diagnostic.Symbol != symbol && (source == "" || diagnostic.Source != source) {
 			continue
 		}
 		selected = append(selected, diagnostic)
-		if len(selected) >= limit {
-			break
-		}
 	}
-	sort.Slice(selected, func(i, j int) bool {
-		if selected[i].Severity != selected[j].Severity {
-			return selected[i].Severity < selected[j].Severity
-		}
-		if selected[i].Source != selected[j].Source {
-			return selected[i].Source < selected[j].Source
-		}
-		return selected[i].Span.Line < selected[j].Span.Line
-	})
+	sortGUIDiagnostics(selected)
+	if len(selected) > limit {
+		selected = selected[:limit]
+	}
 	return selected
 }
 
@@ -697,7 +734,7 @@ func selectGUIPreviewDiagnostics(values []GUIDiagnostic, symbol string, nodes []
 		}
 		ranges[node.Source] = value
 	}
-	selected := make([]GUIDiagnostic, 0, limit)
+	selected := make([]GUIDiagnostic, 0, len(values))
 	for _, diagnostic := range values {
 		include := diagnostic.Symbol == symbol || guiResolutionLimitDiagnostic(diagnostic.Code)
 		if span, ok := ranges[diagnostic.Source]; ok {
@@ -711,19 +748,13 @@ func selectGUIPreviewDiagnostics(values []GUIDiagnostic, symbol string, nodes []
 			continue
 		}
 		selected = append(selected, diagnostic)
-		if len(selected) >= limit {
-			break
-		}
 	}
-	sort.Slice(selected, func(i, j int) bool {
-		if selected[i].Severity != selected[j].Severity {
-			return selected[i].Severity < selected[j].Severity
-		}
-		if selected[i].Source != selected[j].Source {
-			return selected[i].Source < selected[j].Source
-		}
-		return selected[i].Span.Line < selected[j].Span.Line
-	})
+	// Same ordering rule as selectGUIDiagnostics: rank first, cut second, so a
+	// preview never reports eight notes instead of the one error.
+	sortGUIDiagnostics(selected)
+	if len(selected) > limit {
+		selected = selected[:limit]
+	}
 	return selected
 }
 

@@ -80,7 +80,7 @@ func TestRebaseGameVersionGateChecksDescriptorEvidence(t *testing.T) {
 
 func TestValidateRebaseProfileRequiresModeToMatchVersionFamilies(t *testing.T) {
 	profile := RebaseProfile{
-		SchemaVersion: RebaseSchemaVersion,
+		SchemaVersion: RebaseProfileSchemaVersion,
 		Name:          "test", Project: "project", Base: "base", Target: "target",
 		MigrationMode: "same_game_version", BaseGameVersion: "1.18.*", TargetGameVersion: "1.19.*",
 		MapAuthority: "disabled", UnknownPolicy: "block",

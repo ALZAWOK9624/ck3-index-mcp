@@ -800,6 +800,11 @@ parsedFilesComplete:
 		ON CONFLICT(key) DO UPDATE SET value=excluded.value`); err != nil {
 		return ScanStats{}, err
 	}
+	// A completed scan is exactly the recovery a deliberate invalidation asked
+	// for, so its explanation must not survive into the new generation.
+	if err := clearIndexStaleMarkers(ctx, tx); err != nil {
+		return ScanStats{}, err
+	}
 	// The overview is derived only from the semantic tables. A map-only input
 	// change therefore has nothing new to publish here.
 	if fileChanges {

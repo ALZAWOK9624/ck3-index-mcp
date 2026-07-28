@@ -329,10 +329,15 @@ type guiPreviewMargins struct {
 	left, right, top, bottom int
 }
 
-// RenderGUIPreview lays out a resolved GUI element using CK3/Jomini fields
+// BuildGUIPreviewScene lays out a resolved GUI element using CK3/Jomini fields
 // observed in active GUI files: parentanchor, widgetanchor, position, size,
 // hbox/vbox flow, spacing, margins, percentage sizes, and expanding policies.
-func RenderGUIPreview(symbol, symbolKind, source string, element GUIElement, width, height, nodeLimit int) (GUIPreviewResult, error) {
+//
+// It stops at the laid-out scene and does not encode an image. Localization,
+// runtime facts, scenario values, and model rows are all applied after layout
+// and all change what a rendered frame would contain, so encoding here would
+// produce a PNG that is thrown away or immediately re-encoded.
+func BuildGUIPreviewScene(symbol, symbolKind, source string, element GUIElement, width, height, nodeLimit int) (GUIPreviewResult, error) {
 	if width <= 0 {
 		width = GUIPreviewDefaultWidth
 	}
@@ -357,17 +362,29 @@ func RenderGUIPreview(symbol, symbolKind, source string, element GUIElement, wid
 	viewport := GUIPreviewRect{Width: width, Height: height}
 	layout.layoutElement(element, viewport, nil, 0, -1)
 	applyGUIPreviewScrollClips(layout.nodes)
-	displayNodes, nativeBounds, viewScale, viewOffsetX, viewOffsetY := fitGUIPreviewNodes(layout.nodes, width, height)
-	pngData, err := renderGUIPreviewPNG(width, height, displayNodes)
+	preview := GUIPreviewResult{
+		Symbol: symbol, SymbolKind: symbolKind, Format: "png", Source: source, Width: width, Height: height,
+		Nodes: layout.nodes, TotalNodes: layout.total, RenderedNodes: len(layout.nodes),
+		Truncated: layout.truncated, Approximate: layout.approximate, Warnings: layout.warnings,
+	}
+	// The view transform is cheap and is needed by the HTML renderer as well,
+	// so it is always computed; only the pixel encode is deferred.
+	fitGUIPreviewScene(&preview)
+	return preview, nil
+}
+
+// RenderGUIPreview builds the scene and encodes its diagnostic PNG in one
+// step. Callers that apply localization or runtime facts afterwards should use
+// BuildGUIPreviewScene and encode once at the end instead.
+func RenderGUIPreview(symbol, symbolKind, source string, element GUIElement, width, height, nodeLimit int) (GUIPreviewResult, error) {
+	preview, err := BuildGUIPreviewScene(symbol, symbolKind, source, element, width, height, nodeLimit)
 	if err != nil {
 		return GUIPreviewResult{}, err
 	}
-	return GUIPreviewResult{
-		Symbol: symbol, SymbolKind: symbolKind, Format: "png", Source: source, Width: width, Height: height,
-		NativeBounds: nativeBounds, ViewScale: viewScale, ViewOffsetX: viewOffsetX, ViewOffsetY: viewOffsetY,
-		Bytes: len(pngData), Nodes: layout.nodes, TotalNodes: layout.total, RenderedNodes: len(layout.nodes),
-		Truncated: layout.truncated, Approximate: layout.approximate, Warnings: layout.warnings, PNG: pngData,
-	}, nil
+	if err := refreshGUIPreviewPNG(&preview); err != nil {
+		return GUIPreviewResult{}, err
+	}
+	return preview, nil
 }
 
 func fitGUIPreviewNodes(nodes []GUIPreviewNode, width, height int) ([]GUIPreviewNode, GUIPreviewRect, float64, int, int) {
@@ -2315,19 +2332,30 @@ func guiPreviewRGBA(raw string) (color.RGBA, bool) {
 	}, true
 }
 
-func refreshGUIPreviewPNG(preview *GUIPreviewResult) error {
+// fitGUIPreviewScene recomputes the view transform from the current nodes. It
+// is separate from PNG encoding because the HTML preview needs the transform
+// but never needs the raster.
+func fitGUIPreviewScene(preview *GUIPreviewResult) []GUIPreviewNode {
 	if preview == nil {
 		return nil
 	}
 	displayNodes, nativeBounds, viewScale, viewOffsetX, viewOffsetY := fitGUIPreviewNodes(preview.Nodes, preview.Width, preview.Height)
-	pngData, err := renderGUIPreviewPNG(preview.Width, preview.Height, displayNodes)
-	if err != nil {
-		return err
-	}
 	preview.NativeBounds = nativeBounds
 	preview.ViewScale = viewScale
 	preview.ViewOffsetX = viewOffsetX
 	preview.ViewOffsetY = viewOffsetY
+	return displayNodes
+}
+
+func refreshGUIPreviewPNG(preview *GUIPreviewResult) error {
+	if preview == nil {
+		return nil
+	}
+	displayNodes := fitGUIPreviewScene(preview)
+	pngData, err := renderGUIPreviewPNG(preview.Width, preview.Height, displayNodes)
+	if err != nil {
+		return err
+	}
 	preview.PNG = pngData
 	preview.Bytes = len(pngData)
 	return nil

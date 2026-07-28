@@ -30,43 +30,43 @@ func refreshActivityKey(runtime *Runtime) string {
 // this process loaded it. The MCP server parses ck3-index.toml exactly once at
 // startup, so a scan started after an edit would index the *old* source roots
 // while reporting a fresh generation and status=ready — a failure that is
-// indistinguishable from success. Comparing the resolved source model (rather
-// than raw bytes) keeps comment and formatting edits from tripping the check.
+// indistinguishable from success.
+//
+// It fails closed in both directions. A configuration that cannot be reloaded
+// is refused rather than deferred to the scan: the scan does not reload it, it
+// runs from the copy this process kept in memory, so a deleted, half-written,
+// or invalid file would silently scan the old roots and publish a new
+// generation. And the comparison uses the internal scan fingerprint over full
+// canonical paths, not the redacted display identity, because two unrelated
+// roots can share the same trailing path segments.
 func checkConfigDrift(runtime *Runtime) *ToolError {
 	if runtime == nil || strings.TrimSpace(runtime.Config.ConfigPath) == "" {
 		return nil
 	}
 	onDisk, err := indexer.LoadConfig(runtime.Config.ConfigPath)
 	if err != nil {
-		// An unreadable or invalid config is its own problem; leave it to the
-		// scan, which reports parse failures with better context.
-		return nil
+		return newToolError(ErrorConfigChanged, "configuration",
+			"ck3-index.toml can no longer be read or parsed; this server would scan the source roots it loaded at startup and still report success",
+			false,
+			map[string]any{
+				"config_path":    indexer.DisplayConfigPath(runtime.Config),
+				"load_error":     err.Error(),
+				"loaded_sources": indexer.SourceIdentities(runtime.Config),
+			},
+			map[string]any{"guidance": "Repair ck3-index.toml, then restart the MCP server so it reloads the configuration. The CLI reads the configuration on every invocation and is unaffected."})
 	}
-	loaded, current := indexer.SourceIdentities(runtime.Config), indexer.SourceIdentities(onDisk)
-	if sameSourceModel(loaded, current) {
+	if indexer.ScanConfigFingerprint(runtime.Config) == indexer.ScanConfigFingerprint(onDisk) {
 		return nil
 	}
 	return newToolError(ErrorConfigChanged, "configuration",
 		"ck3-index.toml changed since this server started; scanning now would index the previously configured source roots and still report success",
 		false,
 		map[string]any{
-			"config_path":     runtime.Config.ConfigPath,
-			"loaded_sources":  loaded,
-			"on_disk_sources": current,
+			"config_path":     indexer.DisplayConfigPath(runtime.Config),
+			"loaded_sources":  indexer.SourceIdentities(runtime.Config),
+			"on_disk_sources": indexer.SourceIdentities(onDisk),
 		},
 		map[string]any{"guidance": "Restart the MCP server so it reloads the configuration, then run ck3_refresh full again. The CLI reads the configuration on every invocation and is unaffected."})
-}
-
-func sameSourceModel(left, right []indexer.SourceIdentity) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func beginRefresh(runtime *Runtime) (func(error), bool) {

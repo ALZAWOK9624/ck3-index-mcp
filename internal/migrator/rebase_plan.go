@@ -64,14 +64,19 @@ func PlanRebase(ctx context.Context, cfg indexer.Config, spec RebasePlanSpec, op
 	if err := ensureStorageOutsideSources(outputDir, cfg.Sources); err != nil {
 		return RebaseTransaction{}, err
 	}
-	if !strings.EqualFold(filepath.VolumeName(outputDir), filepath.VolumeName(project.Path)) {
-		return RebaseTransaction{}, fmt.Errorf("migration copy must be on the same volume as the project for atomic promotion")
+	if err := rebaseVerifyRenameDomain(outputDir, project.Path); err != nil {
+		return RebaseTransaction{}, err
 	}
 
 	id, err := newRebaseTransactionID()
 	if err != nil {
 		return RebaseTransaction{}, err
 	}
+	lock, err := acquireRebaseTransactionLock(root, id, "plan")
+	if err != nil {
+		return RebaseTransaction{}, err
+	}
+	defer func() { _ = lock.Release() }()
 	now := time.Now().UTC()
 	transaction := RebaseTransaction{
 		SchemaVersion:   RebaseSchemaVersion,
@@ -129,7 +134,7 @@ func PlanRebase(ctx context.Context, cfg indexer.Config, spec RebasePlanSpec, op
 	transaction.ProjectFingerprint = inventoryFingerprint(projectFiles)
 	transaction.Counts["project_files"] = len(projectFiles)
 	transaction.Counts["project_excluded"] = len(projectExcluded)
-	projectTreeFiles, projectTreeExcluded, err := collectRebaseOverlayFiles(project.Path)
+	projectTreeFiles, projectTreeExcluded, err := collectRebaseOverlayFiles(project.Path, newRebaseOverlayPolicy(profile))
 	if err != nil {
 		return fail(fmt.Errorf("project full-tree inventory: %w", err))
 	}
@@ -238,10 +243,11 @@ func PlanRebase(ctx context.Context, cfg indexer.Config, spec RebasePlanSpec, op
 		}
 		transaction.Progress.Completed = index + 1
 		transaction.Progress.CurrentPath = rel
-		// Every classified file is a resumable checkpoint. The report itself is
-		// refreshed at the phase boundary so planning a large Mod does not spend
-		// most of its time re-rendering HTML.
-		if err := writeRebaseTransaction(root, &transaction); err != nil {
+		// Only the small progress projection moves per file. Rewriting the whole
+		// manifest here made planning quadratic in the file count, and it bought
+		// nothing: an interrupted plan publishes no output and is restarted under
+		// a fresh transaction id rather than resumed mid-classification.
+		if err := checkpointRebaseProgress(root, transaction, index+1, len(paths)); err != nil {
 			return transaction, err
 		}
 	}
@@ -263,6 +269,11 @@ func PlanRebase(ctx context.Context, cfg indexer.Config, spec RebasePlanSpec, op
 	transaction.Progress.Phase = "planned"
 	transaction.Progress.CurrentPath = ""
 	if err := writeRebaseResolutions(root, transaction.ID, nil); err != nil {
+		return fail(err)
+	}
+	// The decision journal is published once, after cross-file safety has had
+	// its chance to convert individual decisions into conflicts.
+	if err := writeRebaseDecisions(root, transaction.ID, transaction.Files); err != nil {
 		return fail(err)
 	}
 	if err := writeRebaseTransaction(root, &transaction); err != nil {
@@ -628,6 +639,15 @@ func planBothChangedPath(
 		decision.Action, decision.Reason, decision.ConflictIDs = "conflict", conflict.Message, []string{conflict.ID}
 		return decision, []RebaseConflict{conflict}, nil
 	}
+	if rebaseSemanticAdapterRequiresVersionGate(adapter) && !rebaseSemanticMergeAllowedForPath(rel) {
+		conflict := newRebaseConflict(
+			"semantic_domain_not_allowlisted", rel, "",
+			"automatic Jomini object merge is only enabled for CK3 file families with a proven object identity; this path is not one of them",
+			[]string{"keep_project", "use_target", "manual"}, "manual", baseFile, projectFile, targetFile,
+		)
+		decision.Action, decision.Reason, decision.ConflictIDs = "conflict", conflict.Message, []string{conflict.ID}
+		return decision, []RebaseConflict{conflict}, nil
+	}
 	if adapter == "unknown" || adapter == "binary" {
 		code := "unsupported_both_changed"
 		if adapter == "binary" {
@@ -697,6 +717,41 @@ func rebaseTargetAuthorityReferenceNeedsRewrite(baseFile, projectFile *SnapshotF
 		return false
 	}
 	return baseFile == nil || projectFile.SHA256 != baseFile.SHA256
+}
+
+// rebaseSemanticMergeDomains is the explicit allowlist of CK3 file families
+// whose top-level object identity this migrator can prove.
+//
+// Opening automatic Jomini merge to every .txt/.gui/.asset/.settings/.mod file
+// was too wide: those formats routinely repeat one generic top-level key
+// (widget, object, locator) and carry their real identity in a child field, so
+// a generic key-based merge can rewrite the wrong object or append a duplicate.
+// A path outside this list is not refused - it becomes a review conflict with
+// keep_project / use_target / manual, which is the same treatment any other
+// unsupported both-changed file gets.
+var rebaseSemanticMergeDomains = []string{
+	"events/",
+	"common/scripted_effects/",
+	"common/scripted_triggers/",
+	"common/scripted_modifiers/",
+	"common/culture/cultures/",
+	"common/culture/traditions/",
+	"common/religion/religions/",
+	"common/religion/faiths/",
+	"common/landed_titles/",
+	"history/characters/",
+	"history/provinces/",
+	"history/titles/",
+}
+
+func rebaseSemanticMergeAllowedForPath(rel string) bool {
+	lower := strings.ToLower(filepath.ToSlash(rel))
+	for _, prefix := range rebaseSemanticMergeDomains {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func rebaseAdapterForPath(rel string) string {

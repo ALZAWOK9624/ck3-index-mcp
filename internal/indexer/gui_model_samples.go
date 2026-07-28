@@ -88,14 +88,24 @@ type guiSelectedModelGrid struct {
 	Candidate  guiModelGridCandidate
 }
 
-func prepareGUIModelSamples(symbol string, element *GUIElement, collections []GUIModelSampleCollection) (*guiPreparedModelSamples, error) {
-	if element == nil || len(collections) == 0 {
-		return nil, nil
+// prepareGUIModelSamples returns a new tree with the requested rows expanded.
+// It deliberately takes and returns a value rather than mutating through a
+// pointer: the element handed in by a preview query is a shallow copy of an
+// entry in the shared GUI resolution cache, so replacing an item template in
+// place would rewrite the cached tree that every later request reuses. A
+// request without model_samples would then inherit rows injected by an earlier
+// request, and two concurrent ck3_gui previews would race on the same slices.
+func prepareGUIModelSamples(symbol string, element GUIElement, collections []GUIModelSampleCollection) (GUIElement, *guiPreparedModelSamples, error) {
+	if len(collections) == 0 {
+		return element, nil, nil
 	}
 	if len(collections) > GUIModelSamplesMaxCollections {
-		return nil, fmt.Errorf("GUI model_samples has %d collections; maximum is %d", len(collections), GUIModelSamplesMaxCollections)
+		return element, nil, fmt.Errorf("GUI model_samples has %d collections; maximum is %d", len(collections), GUIModelSamplesMaxCollections)
 	}
-	candidates := collectGUIModelGridCandidates(*element, symbol)
+	// Every path below this point may write into the tree, so work on a private
+	// deep copy from here on.
+	private := cloneGUIElement(element)
+	candidates := collectGUIModelGridCandidates(private, symbol)
 	selected := make([]guiSelectedModelGrid, 0, len(collections))
 	totalRows := 0
 	result := &GUIPreviewModelSamples{Source: "provided"}
@@ -103,23 +113,23 @@ func prepareGUIModelSamples(symbol string, element *GUIElement, collections []GU
 		target := strings.TrimSpace(collection.Target)
 		dataModel := strings.TrimSpace(collection.DataModel)
 		if target == "" && dataModel == "" {
-			return nil, fmt.Errorf("GUI model_samples collection %d requires target or datamodel", collectionIndex)
+			return element, nil, fmt.Errorf("GUI model_samples collection %d requires target or datamodel", collectionIndex)
 		}
 		if len([]rune(target)) > guiScenarioMaxExpression {
-			return nil, fmt.Errorf("GUI model_samples collection %d target exceeds %d characters", collectionIndex, guiScenarioMaxExpression)
+			return element, nil, fmt.Errorf("GUI model_samples collection %d target exceeds %d characters", collectionIndex, guiScenarioMaxExpression)
 		}
 		if len([]rune(dataModel)) > guiScenarioMaxExpression {
-			return nil, fmt.Errorf("GUI model_samples collection %d datamodel exceeds %d characters", collectionIndex, guiScenarioMaxExpression)
+			return element, nil, fmt.Errorf("GUI model_samples collection %d datamodel exceeds %d characters", collectionIndex, guiScenarioMaxExpression)
 		}
 		if len(collection.Rows) == 0 {
-			return nil, fmt.Errorf("GUI model_samples collection %d requires at least one row", collectionIndex)
+			return element, nil, fmt.Errorf("GUI model_samples collection %d requires at least one row", collectionIndex)
 		}
 		if len(collection.Rows) > GUIModelSamplesMaxRows {
-			return nil, fmt.Errorf("GUI model_samples collection %d has %d rows; maximum is %d", collectionIndex, len(collection.Rows), GUIModelSamplesMaxRows)
+			return element, nil, fmt.Errorf("GUI model_samples collection %d has %d rows; maximum is %d", collectionIndex, len(collection.Rows), GUIModelSamplesMaxRows)
 		}
 		totalRows += len(collection.Rows)
 		if totalRows > GUIModelSamplesMaxTotalRows {
-			return nil, fmt.Errorf("GUI model_samples has %d total rows; maximum is %d", totalRows, GUIModelSamplesMaxTotalRows)
+			return element, nil, fmt.Errorf("GUI model_samples has %d total rows; maximum is %d", totalRows, GUIModelSamplesMaxTotalRows)
 		}
 
 		matches := make([]guiModelGridCandidate, 0, 1)
@@ -133,20 +143,20 @@ func prepareGUIModelSamples(symbol string, element *GUIElement, collections []GU
 			matches = append(matches, candidate)
 		}
 		if len(matches) == 0 {
-			return nil, fmt.Errorf("GUI model_samples collection %d did not exactly match a fixedgridbox or dynamicgridbox", collectionIndex)
+			return element, nil, fmt.Errorf("GUI model_samples collection %d did not exactly match a fixedgridbox or dynamicgridbox", collectionIndex)
 		}
 		if len(matches) > 1 {
-			return nil, fmt.Errorf("GUI model_samples collection %d matched %d grids; provide an exact target to disambiguate", collectionIndex, len(matches))
+			return element, nil, fmt.Errorf("GUI model_samples collection %d matched %d grids; provide an exact target to disambiguate", collectionIndex, len(matches))
 		}
 		if len(matches[0].ItemPath) == 0 {
-			return nil, fmt.Errorf("GUI model_samples collection %d grid %q must contain exactly one item template", collectionIndex, matches[0].Name)
+			return element, nil, fmt.Errorf("GUI model_samples collection %d grid %q must contain exactly one item template", collectionIndex, matches[0].Name)
 		}
 		for _, prior := range selected {
 			if equalGUIElementPath(prior.Candidate.Path, matches[0].Path) {
-				return nil, fmt.Errorf("GUI model_samples collections %d and %d select the same grid", prior.Collection, collectionIndex)
+				return element, nil, fmt.Errorf("GUI model_samples collections %d and %d select the same grid", prior.Collection, collectionIndex)
 			}
 			if isGUIElementPathPrefix(prior.Candidate.Path, matches[0].Path) || isGUIElementPathPrefix(matches[0].Path, prior.Candidate.Path) {
-				return nil, fmt.Errorf("GUI model_samples collections %d and %d select nested grids; nested model expansion is not supported", prior.Collection, collectionIndex)
+				return element, nil, fmt.Errorf("GUI model_samples collections %d and %d select nested grids; nested model expansion is not supported", prior.Collection, collectionIndex)
 			}
 		}
 
@@ -157,23 +167,23 @@ func prepareGUIModelSamples(symbol string, element *GUIElement, collections []GU
 		for rowIndex, row := range collection.Rows {
 			id := strings.TrimSpace(row.ID)
 			if id == "" {
-				return nil, fmt.Errorf("GUI model_samples collection %d row %d requires an id", collectionIndex, rowIndex)
+				return element, nil, fmt.Errorf("GUI model_samples collection %d row %d requires an id", collectionIndex, rowIndex)
 			}
 			if len([]rune(id)) > GUIModelSamplesMaxIDLength {
-				return nil, fmt.Errorf("GUI model_samples collection %d row %d id exceeds %d characters", collectionIndex, rowIndex, GUIModelSamplesMaxIDLength)
+				return element, nil, fmt.Errorf("GUI model_samples collection %d row %d id exceeds %d characters", collectionIndex, rowIndex, GUIModelSamplesMaxIDLength)
 			}
 			if strings.IndexFunc(id, unicode.IsControl) >= 0 {
-				return nil, fmt.Errorf("GUI model_samples collection %d row %d id contains control characters", collectionIndex, rowIndex)
+				return element, nil, fmt.Errorf("GUI model_samples collection %d row %d id contains control characters", collectionIndex, rowIndex)
 			}
 			if seenIDs[id] {
-				return nil, fmt.Errorf("GUI model_samples collection %d repeats row id %q", collectionIndex, id)
+				return element, nil, fmt.Errorf("GUI model_samples collection %d repeats row id %q", collectionIndex, id)
 			}
 			seenIDs[id] = true
 			if len(row.Samples) == 0 {
-				return nil, fmt.Errorf("GUI model_samples collection %d row %d requires at least one sample", collectionIndex, rowIndex)
+				return element, nil, fmt.Errorf("GUI model_samples collection %d row %d requires at least one sample", collectionIndex, rowIndex)
 			}
 			if _, err := validateGUIScenarioSamples(row.Samples, GUIModelSamplesMaxSamples, fmt.Sprintf("GUI model_samples collection %d row %d", collectionIndex, rowIndex)); err != nil {
-				return nil, err
+				return element, nil, err
 			}
 			collectionResult.Rows = append(collectionResult.Rows, GUIPreviewModelSampleRowResult{ID: id, Index: rowIndex})
 		}
@@ -188,13 +198,13 @@ func prepareGUIModelSamples(symbol string, element *GUIElement, collections []GU
 		return compareGUIElementPath(selected[left].Candidate.Path, selected[right].Candidate.Path) > 0
 	})
 	for _, selection := range selected {
-		grid := guiElementAtPath(element, selection.Candidate.Path)
+		grid := guiElementAtPath(&private, selection.Candidate.Path)
 		if grid == nil {
-			return nil, fmt.Errorf("GUI model_samples internal grid path became invalid")
+			return element, nil, fmt.Errorf("GUI model_samples internal grid path became invalid")
 		}
 		template := guiElementAtPath(grid, selection.Candidate.ItemPath)
 		if template == nil {
-			return nil, fmt.Errorf("GUI model_samples internal item template path became invalid")
+			return element, nil, fmt.Errorf("GUI model_samples internal item template path became invalid")
 		}
 		rows := collections[selection.Collection].Rows
 		replacements := make([]GUIElement, 0, len(rows))
@@ -211,12 +221,12 @@ func prepareGUIModelSamples(symbol string, element *GUIElement, collections []GU
 			replacements = append(replacements, clone)
 		}
 		if !replaceGUIElementAtPath(grid, selection.Candidate.ItemPath, replacements) {
-			return nil, fmt.Errorf("GUI model_samples could not replace item template")
+			return element, nil, fmt.Errorf("GUI model_samples could not replace item template")
 		}
 	}
 	result.AppliedCollections = len(selected)
 	result.AppliedRows = totalRows
-	return &guiPreparedModelSamples{Input: collections, Result: result}, nil
+	return private, &guiPreparedModelSamples{Input: collections, Result: result}, nil
 }
 
 func applyGUIPreviewModelSamples(preview *GUIPreviewResult, prepared *guiPreparedModelSamples) error {

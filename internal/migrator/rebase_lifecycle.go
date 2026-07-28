@@ -16,6 +16,11 @@ import (
 // migration-copy directory.  It deliberately never copies the target
 // upstream: files that should inherit the target are absent from the overlay.
 func BuildRebase(ctx context.Context, cfg indexer.Config, id string, opts RebaseOptions) (RebaseTransaction, error) {
+	lock, err := lockRebaseLifecycle(cfg, id, "build", opts)
+	if err != nil {
+		return RebaseTransaction{}, err
+	}
+	defer func() { _ = lock.Release() }()
 	root, transaction, project, base, target, err := loadRebaseLifecycle(cfg, id, opts)
 	if err != nil {
 		return transaction, err
@@ -35,6 +40,11 @@ func BuildRebase(ctx context.Context, cfg indexer.Config, id string, opts Rebase
 	if transaction.Status == RebaseStatusNeedsReview {
 		transaction.Status = RebaseStatusReadyToBuild
 		transaction.Progress = RebaseProgress{Phase: "reviewed", Message: "all conflicts have recorded materializable resolutions"}
+		// Review resolutions rewrote the planned actions; republish the journal
+		// so a later resume replays the reviewed decisions, not the raw plan.
+		if err := persistRebaseDecisions(root, &transaction); err != nil {
+			return transaction, err
+		}
 		if err := persistRebaseLifecycle(root, &transaction); err != nil {
 			return transaction, err
 		}
@@ -49,7 +59,7 @@ func BuildRebase(ctx context.Context, cfg indexer.Config, id string, opts Rebase
 	}
 	if _, err := os.Lstat(outputDir); err == nil {
 		if resumingBuild || (transaction.Status == RebaseStatusReadyToBuild && transaction.Progress.Phase == "build") {
-			copySHA, verifyErr := verifyRebaseOverlay(outputDir, decisions, projectTreeFiles)
+			copySHA, verifyErr := verifyRebaseOverlay(outputDir, decisions, projectTreeFiles, newRebaseOverlayPolicy(transaction.Profile))
 			if verifyErr != nil {
 				return transaction, fmt.Errorf("interrupted migration copy cannot be recovered: %w", verifyErr)
 			}
@@ -127,7 +137,7 @@ func BuildRebase(ctx context.Context, cfg indexer.Config, id string, opts Rebase
 		}
 	}
 
-	copySHA, err := verifyRebaseOverlay(stageRoot, decisions, projectTreeFiles)
+	copySHA, err := verifyRebaseOverlay(stageRoot, decisions, projectTreeFiles, newRebaseOverlayPolicy(transaction.Profile))
 	if err != nil {
 		return rebaseLifecycleFailure(root, transaction, "build", err)
 	}
@@ -162,6 +172,11 @@ func BuildRebase(ctx context.Context, cfg indexer.Config, id string, opts Rebase
 // migration copy is always the highest-priority project source in the new
 // stack, followed by the new upstream and the profile's validation sources.
 func ValidateRebase(ctx context.Context, cfg indexer.Config, id string, opts RebaseOptions) (RebaseTransaction, error) {
+	lock, err := lockRebaseLifecycle(cfg, id, "validate", opts)
+	if err != nil {
+		return RebaseTransaction{}, err
+	}
+	defer func() { _ = lock.Release() }()
 	root, transaction, project, base, target, err := loadRebaseLifecycle(cfg, id, opts)
 	if err != nil {
 		return transaction, err
@@ -177,7 +192,7 @@ func ValidateRebase(ctx context.Context, cfg indexer.Config, id string, opts Reb
 	if err != nil {
 		return transaction, err
 	}
-	copyFiles, _, err := collectRebaseOverlayFiles(outputDir)
+	copyFiles, _, err := collectRebaseOverlayFiles(outputDir, newRebaseOverlayPolicy(transaction.Profile))
 	if err != nil {
 		return transaction, fmt.Errorf("migration copy inventory: %w", err)
 	}
@@ -307,6 +322,11 @@ func ApproveRebaseSmoke(ctx context.Context, cfg indexer.Config, id string, opts
 	if err := ctx.Err(); err != nil {
 		return RebaseTransaction{}, err
 	}
+	lock, err := lockRebaseLifecycle(cfg, id, "approve-smoke", opts)
+	if err != nil {
+		return RebaseTransaction{}, err
+	}
+	defer func() { _ = lock.Release() }()
 	root, transaction, project, base, target, err := loadRebaseLifecycle(cfg, id, opts)
 	if err != nil {
 		return transaction, err
@@ -321,7 +341,7 @@ func ApproveRebaseSmoke(ctx context.Context, cfg indexer.Config, id string, opts
 	if err != nil {
 		return transaction, err
 	}
-	copySHA, err := rebaseDirectoryFingerprint(outputDir)
+	copySHA, err := rebaseDirectoryFingerprint(outputDir, newRebaseOverlayPolicy(transaction.Profile))
 	if err != nil {
 		return transaction, err
 	}
@@ -343,6 +363,11 @@ func PromoteRebase(ctx context.Context, cfg indexer.Config, id string, opts Reba
 	if err := ctx.Err(); err != nil {
 		return RebaseTransaction{}, err
 	}
+	lock, err := lockRebaseLifecycle(cfg, id, "promote", opts)
+	if err != nil {
+		return RebaseTransaction{}, err
+	}
+	defer func() { _ = lock.Release() }()
 	root, transaction, project, base, target, err := loadRebaseLifecycle(cfg, id, opts)
 	if err != nil {
 		return transaction, err
@@ -368,7 +393,7 @@ func PromoteRebase(ctx context.Context, cfg indexer.Config, id string, opts Reba
 	if _, err := rebaseVerifyInputs(cfg, transaction, project, base, target); err != nil {
 		return transaction, err
 	}
-	copySHA, err := rebaseDirectoryFingerprint(outputDir)
+	copySHA, err := rebaseDirectoryFingerprint(outputDir, newRebaseOverlayPolicy(transaction.Profile))
 	if err != nil {
 		return transaction, fmt.Errorf("migration copy inventory: %w", err)
 	}
@@ -383,10 +408,27 @@ func PromoteRebase(ctx context.Context, cfg indexer.Config, id string, opts Reba
 	if err := rebaseRequireRegularDirectory(projectPath); err != nil {
 		return transaction, fmt.Errorf("formal project: %w", err)
 	}
+	// Re-prove the rename domain immediately before the first rename. Planning
+	// already checked it, but a remount between plan and promote would
+	// otherwise be discovered only after the formal project had been moved
+	// aside.
+	if err := rebaseVerifyRenameDomain(outputDir, projectPath); err != nil {
+		return transaction, err
+	}
 
+	// The index must be invalidated before the first rename, not after the last
+	// one. Between the two renames the SQLite cache still describes the old
+	// project while its recorded absolute paths already resolve to migrated
+	// files, so a query would mix an old object graph with new file contents
+	// under a cache key derived from the old hashes.
+	if err := rebaseInvalidateIndex(ctx, cfg, opts, "project_tree_replaced", "full_refresh"); err != nil {
+		return transaction, fmt.Errorf("invalidate main index before promotion: %w", err)
+	}
 	transaction.Promotion = &RebasePromotionReceipt{
 		Stage: rebasePromotionIntentStage, FormalPath: projectPath, BackupPath: backupPath,
 		PromotedSHA256: copySHA, PreviousSHA256: transaction.ProjectTreeFingerprint,
+		IndexInvalidated: true,
+		IndexRecovery:    "run a full ck3-index refresh before trusting any index-backed query",
 	}
 	transaction.Status = RebaseStatusPromoting
 	transaction.Progress = RebaseProgress{Phase: "promote", Total: 2, Message: "durably recording promotion intent before moving the formal project"}
@@ -402,6 +444,11 @@ func RollbackRebase(ctx context.Context, cfg indexer.Config, id string, opts Reb
 	if err := ctx.Err(); err != nil {
 		return RebaseTransaction{}, err
 	}
+	lock, err := lockRebaseLifecycle(cfg, id, "rollback", opts)
+	if err != nil {
+		return RebaseTransaction{}, err
+	}
+	defer func() { _ = lock.Release() }()
 	root, transaction, project, _, _, err := loadRebaseLifecycle(cfg, id, opts)
 	if err != nil {
 		return transaction, err
@@ -427,27 +474,34 @@ func RollbackRebase(ctx context.Context, cfg indexer.Config, id string, opts Reb
 	if err := rebaseValidatePromotionReceipt(transaction, projectPath, backupPath); err != nil {
 		return transaction, err
 	}
-	currentSHA, err := rebaseDirectoryFingerprint(projectPath)
+	currentSHA, err := rebaseDirectoryFingerprint(projectPath, newRebaseOverlayPolicy(transaction.Profile))
 	if err != nil {
 		return transaction, err
 	}
 	if currentSHA != transaction.Promotion.PromotedSHA256 {
 		return transaction, fmt.Errorf("formal project changed after promotion; refusing rollback")
 	}
-	backupSHA, err := rebaseDirectoryFingerprint(backupPath)
+	backupSHA, err := rebaseDirectoryFingerprint(backupPath, newRebaseOverlayPolicy(transaction.Profile))
 	if err != nil {
 		return transaction, err
 	}
 	if backupSHA != transaction.Promotion.PreviousSHA256 {
 		return transaction, fmt.Errorf("promotion backup changed after promotion; refusing rollback")
 	}
-	layout, err := rebaseRollbackLayout(projectPath, backupPath, outputDir, transaction.Promotion)
+	layout, err := rebaseRollbackLayout(projectPath, backupPath, outputDir, transaction.Promotion, newRebaseOverlayPolicy(transaction.Profile))
 	if err != nil {
 		return transaction, err
 	}
 	if layout != rebaseRollbackIntentStage {
 		return transaction, fmt.Errorf("rollback requires an intact promoted-project layout")
 	}
+	// Rollback replaces the project tree exactly as promotion did, so the index
+	// is invalidated on this path too.
+	if err := rebaseInvalidateIndex(ctx, cfg, opts, "project_tree_replaced", "full_refresh"); err != nil {
+		return transaction, fmt.Errorf("invalidate main index before rollback: %w", err)
+	}
+	transaction.Promotion.IndexInvalidated = true
+	transaction.Promotion.IndexRecovery = "run a full ck3-index refresh before trusting any index-backed query"
 	transaction.Promotion.Stage = rebaseRollbackIntentStage
 	transaction.Status = RebaseStatusRollingBack
 	transaction.Progress = RebaseProgress{Phase: "rollback", Total: 2, Message: "durably recording rollback intent before moving the promoted project"}
@@ -455,6 +509,18 @@ func RollbackRebase(ctx context.Context, cfg indexer.Config, id string, opts Reb
 		return transaction, err
 	}
 	return resumeRebaseRollback(ctx, root, &transaction, projectPath, backupPath, outputDir)
+}
+
+// lockRebaseLifecycle serializes every operation that can change a
+// transaction. The status check and the publication that follows it sit at
+// opposite ends of a long copy or rename, so without this two concurrent
+// invocations can both pass the check and then write contradictory end states.
+func lockRebaseLifecycle(cfg indexer.Config, id, operation string, opts RebaseOptions) (*RebaseTransactionLock, error) {
+	root, err := rebaseArtifactRoot(cfg, opts)
+	if err != nil {
+		return nil, err
+	}
+	return acquireRebaseTransactionLock(root, id, operation)
 }
 
 func loadRebaseLifecycle(cfg indexer.Config, id string, opts RebaseOptions) (string, RebaseTransaction, indexer.Source, indexer.Source, indexer.Source, error) {
@@ -474,6 +540,35 @@ func loadRebaseLifecycle(cfg indexer.Config, id string, opts RebaseOptions) (str
 		return root, transaction, project, base, target, err
 	}
 	return root, transaction, project, base, target, nil
+}
+
+// rebaseInvalidateIndex marks the configured main index stale so no reader can
+// keep treating it as a ready description of the project tree that is about to
+// be replaced. It fails closed: when a database is configured but cannot be
+// marked, the caller must not proceed with the directory swap.
+//
+// A workspace with no configured database has no published index to mislead
+// anyone, and a configured database file that does not exist yet has never
+// published a generation; both skip cleanly.
+func rebaseInvalidateIndex(ctx context.Context, cfg indexer.Config, opts RebaseOptions, reason, requiredAction string) error {
+	if opts.DB != nil {
+		return opts.DB.MarkIndexStale(ctx, reason, requiredAction)
+	}
+	path, err := indexer.ConfiguredDatabasePath(cfg)
+	if err != nil || strings.TrimSpace(path) == "" {
+		return nil
+	}
+	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+		return nil
+	} else if statErr != nil {
+		return statErr
+	}
+	db, err := indexer.Open(path)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return db.MarkIndexStale(ctx, reason, requiredAction)
 }
 
 func rebaseRequireNoConflicts(decisions []RebaseFileDecision) error {
@@ -501,7 +596,7 @@ func rebaseVerifyInputs(cfg indexer.Config, transaction RebaseTransaction, proje
 	if !validSHA256(transaction.ProjectTreeFingerprint) {
 		return nil, fmt.Errorf("rebase transaction has no valid full-tree project fingerprint; create a new rebase plan")
 	}
-	projectTreeFiles, _, err := collectRebaseOverlayFiles(project.Path)
+	projectTreeFiles, _, err := collectRebaseOverlayFiles(project.Path, newRebaseOverlayPolicy(transaction.Profile))
 	if err != nil {
 		return nil, fmt.Errorf("project full-tree inventory: %w", err)
 	}
@@ -581,7 +676,7 @@ func rebaseVerifySourceIdentityFingerprints(transaction RebaseTransaction, proje
 func rebaseValidationSourceFingerprints(cfg indexer.Config, profile RebaseProfile) (map[string]string, error) {
 	fingerprints := make(map[string]string)
 	seen := make(map[string]struct{})
-	for _, configuredName := range profile.ValidationSources {
+	for _, configuredName := range rebaseProfileValidationSourceNames(profile) {
 		name := strings.TrimSpace(configuredName)
 		if name == "" {
 			return nil, fmt.Errorf("validation source name is empty")
@@ -755,8 +850,8 @@ func verifyRebasePlannedFile(path string, expected RebaseFileState, rel string) 
 // verifyRebaseOverlay proves both halves of a built overlay: planned CK3 load
 // files have the reviewed result hashes, and every project pass-through file
 // that is not governed by a decision survived byte-for-byte.
-func verifyRebaseOverlay(root string, decisions []RebaseFileDecision, projectTreeFiles []SnapshotFile) (string, error) {
-	files, _, err := collectRebaseOverlayFiles(root)
+func verifyRebaseOverlay(root string, decisions []RebaseFileDecision, projectTreeFiles []SnapshotFile, policy rebaseOverlayPolicy) (string, error) {
+	files, _, err := collectRebaseOverlayFiles(root, policy)
 	if err != nil {
 		return "", err
 	}
@@ -808,13 +903,15 @@ func verifyRebaseOverlay(root string, decisions []RebaseFileDecision, projectTre
 	return inventoryFingerprint(files), nil
 }
 
+// rebaseCheckpoint records per-file progress. It deliberately does not rewrite
+// the manifest: an interrupted build leaves no published output (the copy is
+// staged in a temporary directory and removed), so per-file manifest durability
+// bought nothing while making the build quadratic in the file count. Both the
+// progress projection and the HTML report are refreshed at bounded intervals.
 func rebaseCheckpoint(root string, transaction *RebaseTransaction, completed, total int) error {
-	if err := writeRebaseTransaction(root, transaction); err != nil {
+	if err := checkpointRebaseProgress(root, *transaction, completed, total); err != nil {
 		return err
 	}
-	// The durable manifest checkpoints every file. Rendering the full report
-	// per file would dominate large migrations, so refresh its presentation at
-	// bounded intervals and at the phase boundary.
 	if completed%100 != 0 && completed != total {
 		return nil
 	}
@@ -826,6 +923,14 @@ func persistRebaseLifecycle(root string, transaction *RebaseTransaction) error {
 		return err
 	}
 	return writeRebaseReport(root, *transaction)
+}
+
+// persistRebaseDecisions republishes the decision journal. Only the stages
+// that actually rewrite decisions (planning, and applying review resolutions
+// before a build) call it, so the O(files) journal write happens a fixed number
+// of times per transaction instead of once per file.
+func persistRebaseDecisions(root string, transaction *RebaseTransaction) error {
+	return writeRebaseDecisions(root, transaction.ID, transaction.Files)
 }
 
 func rebaseLifecycleFailure(root string, transaction RebaseTransaction, phase string, cause error) (RebaseTransaction, error) {
@@ -848,35 +953,70 @@ type rebaseStackValidation struct {
 	MapWarnings int
 }
 
+// rebaseValidationStackConfig assembles the load order a validation scan uses.
+//
+// The migration overlay is always the highest-priority source. Everything else
+// is placed relative to the new upstream by the profile: validation_sources is
+// the shorthand for "these all load below the target", while validation_stack
+// states the position of each source explicitly. Silently forcing every
+// auxiliary source below the target would misreport any playset where a
+// dependency actually overrides it.
 func rebaseValidationStackConfig(baseCfg indexer.Config, profile RebaseProfile, overlayPath string, upstream indexer.Source, databasePath, overlayName string) (indexer.Config, error) {
 	if strings.TrimSpace(overlayName) == "" || strings.EqualFold(overlayName, upstream.Name) {
 		return indexer.Config{}, fmt.Errorf("invalid validation overlay source name")
 	}
-	sources := []indexer.Source{{Name: overlayName, Path: overlayPath, Rank: 1, Role: indexer.SourceRoleProject, Private: true},
-		{Name: upstream.Name, Path: upstream.Path, Rank: 2, Role: indexer.SourceRoleDependency, Private: upstream.Private, ResourceOnly: upstream.ResourceOnly}}
+	entries := profile.ValidationStack
+	if len(entries) == 0 {
+		for _, sourceName := range profile.ValidationSources {
+			entries = append(entries, RebaseValidationStackEntry{Source: sourceName, Position: RebaseValidationBelowTarget})
+		}
+	}
 	used := map[string]bool{strings.ToLower(overlayName): true, strings.ToLower(upstream.Name): true}
-	rank := 3
-	for _, sourceName := range profile.ValidationSources {
-		if strings.EqualFold(sourceName, profile.Project) || strings.EqualFold(sourceName, profile.Base) {
-			return indexer.Config{}, fmt.Errorf("validation_sources may not include the mutable project or old base source")
+	resolve := func(position string) ([]indexer.Source, error) {
+		var out []indexer.Source
+		for _, entry := range entries {
+			if !strings.EqualFold(strings.TrimSpace(entry.Position), position) {
+				continue
+			}
+			sourceName := entry.Source
+			if strings.EqualFold(sourceName, profile.Project) || strings.EqualFold(sourceName, profile.Base) {
+				return nil, fmt.Errorf("validation sources may not include the mutable project or old base source")
+			}
+			if strings.EqualFold(sourceName, upstream.Name) {
+				continue
+			}
+			source, err := sourceByName(baseCfg, sourceName)
+			if err != nil {
+				return nil, err
+			}
+			if used[strings.ToLower(source.Name)] {
+				return nil, fmt.Errorf("duplicate validation source %q", source.Name)
+			}
+			used[strings.ToLower(source.Name)] = true
+			if source.Role == indexer.SourceRoleProject {
+				source.Role = indexer.SourceRoleDependency
+			}
+			out = append(out, source)
 		}
-		if strings.EqualFold(sourceName, upstream.Name) {
-			continue
-		}
-		source, err := sourceByName(baseCfg, sourceName)
-		if err != nil {
-			return indexer.Config{}, err
-		}
-		if used[strings.ToLower(source.Name)] {
-			return indexer.Config{}, fmt.Errorf("duplicate validation source %q", source.Name)
-		}
-		used[strings.ToLower(source.Name)] = true
-		source.Rank = rank
-		rank++
-		if source.Role == indexer.SourceRoleProject {
-			source.Role = indexer.SourceRoleDependency
-		}
-		sources = append(sources, source)
+		return out, nil
+	}
+	above, err := resolve(RebaseValidationAboveTarget)
+	if err != nil {
+		return indexer.Config{}, err
+	}
+	below, err := resolve(RebaseValidationBelowTarget)
+	if err != nil {
+		return indexer.Config{}, err
+	}
+
+	// Lower rank wins in CK3 override precedence, so the stack is emitted in
+	// priority order and ranks are assigned from the top down.
+	sources := []indexer.Source{{Name: overlayName, Path: overlayPath, Rank: 0, Role: indexer.SourceRoleProject, Private: true}}
+	sources = append(sources, above...)
+	sources = append(sources, indexer.Source{Name: upstream.Name, Path: upstream.Path, Role: indexer.SourceRoleDependency, Private: upstream.Private, ResourceOnly: upstream.ResourceOnly})
+	sources = append(sources, below...)
+	for index := range sources {
+		sources[index].Rank = index + 1
 	}
 	return indexer.Config{
 		ConfigPath:   filepath.Join(filepath.Dir(databasePath), "ck3-index.toml"),
@@ -1123,11 +1263,11 @@ func rebaseAddPrefixedCounts(out map[string]int, prefix string, values map[strin
 	}
 }
 
-func rebaseDirectoryFingerprint(root string) (string, error) {
+func rebaseDirectoryFingerprint(root string, policy rebaseOverlayPolicy) (string, error) {
 	if err := rebaseRequireRegularDirectory(root); err != nil {
 		return "", err
 	}
-	files, _, err := collectRebaseOverlayFiles(root)
+	files, _, err := collectRebaseOverlayFiles(root, policy)
 	if err != nil {
 		return "", err
 	}

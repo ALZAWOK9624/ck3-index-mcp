@@ -2,10 +2,14 @@ package indexer
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 	"time"
 )
@@ -200,6 +204,67 @@ func (db *DB) HealthConfigured(ctx context.Context, cfg Config) (HealthReport, e
 // form used by health, for callers outside this package.
 func DisplayConfigPath(cfg Config) string {
 	return displayPath(cfg.ConfigPath)
+}
+
+// ScanConfigFingerprint is the internal identity of everything that decides
+// what a scan reads and where it writes. It deliberately uses full canonical
+// absolute paths rather than the shortened display form: two different roots
+// such as D:/workspace/release/my-mod and E:/backup/release/my-mod share the
+// same trailing segments, so a display identity cannot be used to decide
+// whether a configuration still points at the same trees.
+//
+// This value is never returned to a caller; SourceIdentities remains the
+// redacted, presentational view.
+func ScanConfigFingerprint(cfg Config) string {
+	hash := sha256.New()
+	fmt.Fprintf(hash, "scan-config-v1\x00")
+	for _, item := range []struct{ key, value string }{
+		{"database", canonicalConfigPath(configuredDatabasePathOrRaw(cfg))},
+		{"engine_logs", canonicalConfigPath(cfg.EngineLogs)},
+		{"artifact_root", canonicalConfigPath(cfg.ArtifactRoot)},
+		{"migration_snapshot_root", canonicalConfigPath(cfg.MigrationSnapshotRoot)},
+	} {
+		fmt.Fprintf(hash, "%s\x00%s\x00", item.key, item.value)
+	}
+	sources := append([]Source(nil), cfg.Sources...)
+	sort.Slice(sources, func(i, j int) bool {
+		if !strings.EqualFold(sources[i].Name, sources[j].Name) {
+			return strings.ToLower(sources[i].Name) < strings.ToLower(sources[j].Name)
+		}
+		return sources[i].Rank < sources[j].Rank
+	})
+	fmt.Fprintf(hash, "sources\x00%d\x00", len(sources))
+	for _, source := range sources {
+		fmt.Fprintf(hash, "%s\x00%s\x00%d\x00%s\x00%t\x00%t\x00",
+			strings.ToLower(strings.TrimSpace(source.Name)), canonicalConfigPath(source.Path),
+			source.Rank, string(source.Role), source.Private, source.ResourceOnly)
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+// canonicalConfigPath normalizes for comparison only. CK3 workspaces are
+// predominantly Windows, where a case-only spelling difference names the same
+// directory; on case-sensitive hosts the spelling is preserved.
+func canonicalConfigPath(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	if absolute, err := filepath.Abs(value); err == nil {
+		value = absolute
+	}
+	value = filepath.ToSlash(filepath.Clean(value))
+	if runtime.GOOS == "windows" {
+		value = strings.ToLower(value)
+	}
+	return value
+}
+
+func configuredDatabasePathOrRaw(cfg Config) string {
+	if path, err := ConfiguredDatabasePath(cfg); err == nil {
+		return path
+	}
+	return cfg.Database
 }
 
 // SourceIdentities resolves every configured source to the root it actually

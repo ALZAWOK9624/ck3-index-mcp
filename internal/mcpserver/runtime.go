@@ -67,6 +67,16 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 	if beforeErr == nil && indexStatePublishing(before) && !indexStateIndependentRequest(definition.Name, handlerArguments) {
 		return encodeInternalToolError(ErrorIndexFinalizing, "ck3-index is rebuilding or finalizing a new scan generation; retry this query after the index reports ready."), nil
 	}
+	// A deliberately invalidated index is worse than an unavailable one: its
+	// rows still look complete, but they describe a project tree that has since
+	// been replaced. Refuse every index-backed tool until a full refresh
+	// republishes the cache, rather than answering from the old generation.
+	if beforeErr == nil && before.Status == indexer.IndexStatusStale && !indexStateIndependentRequest(definition.Name, handlerArguments) {
+		return encodeToolError(newToolError(ErrorIndexStale, "index_state",
+			"the ck3-index cache was explicitly invalidated and no longer describes the project on disk", false,
+			map[string]any{"scan_status": before.Status, "reason": before.StaleReason, "required_action": before.RequiredAction},
+			map[string]any{"operation": "full", "guidance": "Run ck3_refresh with operation=full to rebuild the index before using any index-backed tool."}), runtime), nil
+	}
 	output, err := definition.Handler(ctx, runtime, definition, handlerArguments)
 	if err != nil {
 		return encodeToolError(err, runtime), nil

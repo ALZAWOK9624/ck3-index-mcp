@@ -10,7 +10,17 @@ const (
 	// RebaseSchemaVersion is deliberately independent from the legacy map
 	// snapshot schema. Rebase transactions describe a project overlay rather
 	// than a complete target-upstream fork.
-	RebaseSchemaVersion = 2
+	//
+	// Version 3 splits the per-file decision list out of the manifest into a
+	// separate journal and adds the monotonic Revision used for compare-and-set
+	// writes, so an older manifest cannot be loaded as if it were current.
+	RebaseSchemaVersion = 3
+
+	// RebaseProfileSchemaVersion versions the user-authored migration profile.
+	// It is deliberately independent of the transaction storage layout: moving
+	// decisions into their own journal changed how a transaction is persisted,
+	// not what a project's migration policy looks like.
+	RebaseProfileSchemaVersion = 2
 
 	RebaseStatusPlanning     = "planning"
 	RebaseStatusNeedsReview  = "needs_review"
@@ -41,7 +51,35 @@ type RebaseProfile struct {
 	UnknownPolicy     string   `toml:"unknown_policy" json:"unknown_policy"`
 	OwnedPrefixes     []string `toml:"owned_prefixes" json:"owned_prefixes,omitempty"`
 	ValidationSources []string `toml:"validation_sources" json:"validation_sources,omitempty"`
+	// ValidationStack describes the real ordered load stack when a dependency
+	// does not sit below the new upstream. validation_sources is the shorthand
+	// for the common case and places every named source below the target; a
+	// dependency that actually overrides the target in the playset must be
+	// declared here instead, or validation would measure a load order the game
+	// never uses.
+	ValidationStack []RebaseValidationStackEntry `toml:"validation_stack" json:"validation_stack,omitempty"`
+	// PreservePaths names top-level project entries that are external state
+	// rather than Mod content: VCS metadata, caches, and logs. They are left
+	// out of the overlay inventory, the migration copy, and every transaction
+	// fingerprint, and they stay with the project directory across promotion
+	// and rollback instead of being copied. An omitted key preserves nothing,
+	// which keeps existing profiles behaving exactly as before.
+	PreservePaths []string `toml:"preserve_paths" json:"preserve_paths,omitempty"`
 }
+
+// RebaseValidationStackEntry places one auxiliary source relative to the new
+// upstream in the validation load order.
+type RebaseValidationStackEntry struct {
+	Source string `toml:"source" json:"source"`
+	// Position is "above_target" (the source overrides the new upstream) or
+	// "below_target" (the new upstream overrides the source).
+	Position string `toml:"position" json:"position"`
+}
+
+const (
+	RebaseValidationAboveTarget = "above_target"
+	RebaseValidationBelowTarget = "below_target"
+)
 
 // RebaseGameVersionGate is resolved before any semantic layer is loaded.
 // File hashes and exact raster coordinates remain version-neutral, while
@@ -178,10 +216,20 @@ type RebasePromotionReceipt struct {
 	PreviousSHA256 string `json:"previous_sha256,omitempty"`
 	PromotedAt     string `json:"promoted_at,omitempty"`
 	RolledBackAt   string `json:"rolled_back_at,omitempty"`
+	// IndexInvalidated records that the main ck3-index cache was marked stale
+	// before the first directory rename. Without this the index would keep
+	// reporting a ready generation describing the replaced project.
+	IndexInvalidated bool   `json:"index_invalidated,omitempty"`
+	IndexRecovery    string `json:"index_recovery,omitempty"`
 }
 
 type RebaseTransaction struct {
-	SchemaVersion int                   `json:"schema_version"`
+	SchemaVersion int `json:"schema_version"`
+	// Revision is a monotonic manifest counter. Every manifest write requires
+	// the on-disk revision to still equal the one this in-memory copy was
+	// loaded with, so a second process that raced past the transaction lock
+	// cannot silently overwrite a newer state with its own stale copy.
+	Revision      int64                 `json:"revision"`
 	ID            string                `json:"transaction_id"`
 	Status        string                `json:"status"`
 	Profile       RebaseProfile         `json:"profile"`

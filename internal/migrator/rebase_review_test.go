@@ -109,6 +109,9 @@ func TestRebaseReviewServesHashPinnedCoordinateMapDelta(t *testing.T) {
 	}, &transaction.Files[0]); err != nil {
 		t.Fatal(err)
 	}
+	if err := writeRebaseDecisions(rebaseRoot, transaction.ID, transaction.Files); err != nil {
+		t.Fatal(err)
+	}
 	if err := writeRebaseTransaction(rebaseRoot, &transaction); err != nil {
 		t.Fatal(err)
 	}
@@ -164,6 +167,9 @@ func TestRebaseReviewServerValidatesAndPersistsResolutions(t *testing.T) {
 	}
 	rebaseRoot, err := rebaseArtifactRoot(cfg, RebaseOptions{})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeRebaseDecisions(rebaseRoot, transaction.ID, transaction.Files); err != nil {
 		t.Fatal(err)
 	}
 	if err := writeRebaseTransaction(rebaseRoot, &transaction); err != nil {
@@ -256,6 +262,9 @@ func TestRebaseReviewServerImportsManualCandidateWithCapability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := writeRebaseDecisions(rebaseRoot, transaction.ID, transaction.Files); err != nil {
+		t.Fatal(err)
+	}
 	if err := writeRebaseTransaction(rebaseRoot, &transaction); err != nil {
 		t.Fatal(err)
 	}
@@ -334,6 +343,9 @@ func TestRebaseReviewWaitPreservesServeError(t *testing.T) {
 	}
 	rebaseRoot, err := rebaseArtifactRoot(cfg, RebaseOptions{})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeRebaseDecisions(rebaseRoot, transaction.ID, transaction.Files); err != nil {
 		t.Fatal(err)
 	}
 	if err := writeRebaseTransaction(rebaseRoot, &transaction); err != nil {
@@ -415,6 +427,9 @@ func TestRebaseReviewServerBuildsPinnedPixelConflictMask(t *testing.T) {
 	}
 	rebaseRoot, err := rebaseArtifactRoot(cfg, RebaseOptions{})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeRebaseDecisions(rebaseRoot, transaction.ID, transaction.Files); err != nil {
 		t.Fatal(err)
 	}
 	if err := writeRebaseTransaction(rebaseRoot, &transaction); err != nil {
@@ -521,6 +536,9 @@ func TestRebaseReviewPixelMaskWithholdsDriftedInputs(t *testing.T) {
 	}
 	rebaseRoot, err := rebaseArtifactRoot(cfg, RebaseOptions{})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeRebaseDecisions(rebaseRoot, transaction.ID, transaction.Files); err != nil {
 		t.Fatal(err)
 	}
 	if err := writeRebaseTransaction(rebaseRoot, &transaction); err != nil {

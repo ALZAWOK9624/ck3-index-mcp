@@ -60,7 +60,7 @@ func run(root string, check bool) error {
 	var drift []string
 	for path, expected := range outputs {
 		current, readErr := os.ReadFile(path)
-		if readErr == nil && bytes.Equal(current, expected) {
+		if readErr == nil && sameDocumentContent(current, expected) {
 			continue
 		}
 		if check {
@@ -79,6 +79,26 @@ func run(root string, check bool) error {
 		return fmt.Errorf("generated MCP documentation is stale: %s", strings.Join(drift, ", "))
 	}
 	return nil
+}
+
+// sameDocumentContent compares generated documentation with what is on disk
+// while ignoring how the checkout represents a line break.
+//
+// The generator emits LF and the repository stores LF, but git materialises
+// CRLF on a Windows checkout with core.autocrlf enabled. A raw byte comparison
+// therefore reported every generated document as stale on a clean tree, which
+// made the staleness check fire for a reason that has nothing to do with
+// staleness. Writing is unaffected: it still emits LF and lets git decide how
+// the working tree should look.
+func sameDocumentContent(current, expected []byte) bool {
+	return bytes.Equal(stripCarriageReturns(current), stripCarriageReturns(expected))
+}
+
+func stripCarriageReturns(data []byte) []byte {
+	if !bytes.Contains(data, []byte("\r\n")) {
+		return data
+	}
+	return bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
 }
 
 func replaceSectionFile(path, generated string) ([]byte, error) {

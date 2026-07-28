@@ -31,6 +31,7 @@ type ToolDocumentation struct {
 	InputSchema map[string]any
 	Canonical   string
 	Deprecated  bool
+	Annotations ToolAnnotations
 }
 
 var (
@@ -88,6 +89,7 @@ func CanonicalToolDocumentation() []ToolDocumentation {
 		docs = append(docs, ToolDocumentation{
 			Name: definition.Name, Title: definition.Title, Description: definition.Description,
 			InputSchema: cloneSchema(definition.InputSchema), Canonical: definition.Name,
+			Annotations: definition.Annotations,
 		})
 	}
 	return docs

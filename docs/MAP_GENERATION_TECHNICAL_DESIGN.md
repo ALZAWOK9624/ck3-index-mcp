@@ -35,7 +35,7 @@
 - **可组合**：模型不需要修改 Go 代码即可组合专题指标和五类固定图层。
 - **可审计**：每个指标返回来源、覆盖率、分位数、异常值和缺失值。
 - **确定性**：相同索引、相同 spec 必须生成相同 PNG。
-- **只读安全**：MCP 不写 Mod，不接受任意 SQL、脚本表达式或任意文件路径。
+- **只读安全**：MCP 不写 Mod，不接受任意 SQL、脚本表达式或任意文件路径。地图生成类工具（见 11.6）是查询工具之外的唯一写入方，且只写服务器产物目录，仍然不写 Mod、不接受调用方给定的输出路径。
 - **高分辨率**：允许 4K 级输出，同时保持线条、标签和图例随分辨率缩放。
 - **增量性能**：历史文本变化不得触发 `provinces.png` 或 `heightmap.png` 的重新解码。
 
@@ -687,19 +687,47 @@ PNG 在内存中生成，不写入 Mod 或临时输出目录。
 - 自定义值必须提供来源说明。
 - 未知 ID、重复 ID、非有限值直接报错。
 
+### 11.6 地图生成工具
+
+`map_terrain_edit` 与 `map_apply_split` 都可能产生栅格，因此注解为非只读。`map_terrain_edit` 在 `confirm=false` 时是纯内存预览，只有 `confirm=true` 才发布产物；`map_apply_split` 仍始终要求显式确认。
+
+`map_terrain_edit` 的公开操作固定为：
+
+- `compose`：按数组顺序应用有唯一 `id` 的点、折线或简单多边形地貌图层；高度与强度统一使用 `0..1`。支持陆地的平原、丘陵、山脉、高原、盆地、谷地、峡谷、火山，以及海床的大陆架、陆坡、深海平原、海沟、中洋脊、海山和岛屿。
+- `large_rivers`：在最终高度图上下切大河河谷，并把小河水系状态标为过期。
+- `small_rivers`：读取父产物或当前 `rivers.png`，只替换指定窗口，保留窗口外的调色板索引和河道，并同步下切浅河床。
+
+地貌 `domain` 来自 `default.map + provinces.png + definition.csv`，不会从高度猜测海陆。`island` 只能作用于已经定义为陆地的像素。Gray8 与 Gray16 均保持原位深，其他颜色格式直接拒绝；工作缓冲受 `region` 约束，区域外像素值保持不变。
+
+写入边界如下：
+
+- **输出路径由服务器决定**：正式产物落在 `<artifact_root>/map-edits/map-edit-<128-bit 随机 ID>/`，调用方不能指定路径。
+- **预览不落盘**：`confirm=false` 返回缩略 PNG 与完整校验结果，不创建产物目录。
+- **产物不可变且可串联**：manifest 记录父 ID、规范化 spec、源地图指纹、文件 SHA-256、尺寸、位深、修改框和水系状态；继续编辑时重新校验整条父链。
+- **拒绝不安全来源**：伪造 ID、路径穿越、符号链接、损坏 manifest、哈希漂移与过期源地图均阻塞。
+- **绝不写进已配置来源根目录或覆盖旧产物**。
+- **Mod 由人来改**：结果始终为 `applied: false`。
+
+产物只包含原始 `map_data/heightmap.png`、需要时的 `map_data/rivers.png`、前后 hillshade、diff 与 manifest。它不生成 `packed_heightmap.png`、`indirection_heightmap.png` 或 `heightmap.heightmap`，因此返回值固定包含 `requires_ck3_repack=true`；人工应用后必须在 CK3 地图编辑器中重新打包。
+
+`map_apply_split` 另有两条约束：写入前逐像素比对索引记录的省份颜色，不符即判定索引过期并拒绝写入；方案存在阻塞项时同样拒绝。它同时返回必须一起应用的 definition.csv、history 与领地头衔改动，因为只改栅格不改这些文件，CK3 会加载到没有任何文件描述的省份。
+
 ## 12. CLI 接口
 
 ```text
 ck3-index map recipes
 ck3-index map metric <spec.json>
+ck3-index map terrain-edit <spec.json> [--preview-out <png>] [--confirm]
 ck3-index map render <spec.json> --out <file.png>
 ```
 
-CLI 与 MCP 使用同一指标和渲染核心。区别：
+CLI 与 MCP 使用同一地貌核心、manifest 与产物链。同一 spec 产生相同的栅格哈希。区别：
 
-- CLI 只有明确提供 `--out` 才写文件。
+- `map render` 只有明确提供 `--out` 才写文件。
 - CLI 可使用本地 `font_path`。
 - CLI 返回 JSON 元数据到标准输出，不返回 Base64 图片。
+- `terrain-edit` 默认只预览；`--preview-out` 可在已存在的来源外目录保存缩略图，但拒绝覆盖旧文件或写入任一配置来源；`--confirm` 才创建受控产物。
+- `examples/map-terrain-edit.json` 提供一个限定在 `128×128` 窗口内的丘陵预览请求，可直接作为 compose spec 起点。
 
 ## 13. 调用示例
 

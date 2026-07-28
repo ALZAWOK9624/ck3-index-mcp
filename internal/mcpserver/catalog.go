@@ -369,6 +369,20 @@ func standardizeCanonicalToolDescriptions(definitions []ToolDefinition) []ToolDe
 			Returns:  "the resulting geometry plus collision-free ids, colours, and file edits, or blockers explaining why it cannot be applied",
 			Unlike:   "map_province_mapping, it produces a new division rather than describing one between two maps",
 		},
+		"map_apply_split": {
+			When:     "a split already reviewed through map_split_province must be turned into an actual recoloured provinces.png",
+			DoNotUse: "the division is still being decided; use map_split_province, which writes nothing",
+			Input:    "the same province id, seeds, and terrain weight that were planned, plus explicit confirmation",
+			Returns:  "an artifact directory holding the rewritten raster and the file edits that must accompany it",
+			Unlike:   "map_split_province, it writes files instead of only proposing them",
+		},
+		"map_terrain_edit": {
+			When:     "ordered physical-landform layers or synchronized large/small river edits must be generated from the active map or a verified parent artifact",
+			DoNotUse: "existing terrain only needs describing; use map_physical_context instead",
+			Input:    "compose, large_rivers, or small_rivers settings, an optional region and base_artifact_id, plus confirm=false for preview or true for publication",
+			Returns:  "an in-memory preview or immutable artifact id, relative file hashes, original bit depth, layer statistics, hydrology status, and a CK3-repack requirement",
+			Unlike:   "map_render, it produces CK3 map inputs rather than a picture of the map",
+		},
 		"map_province_info": {
 			When:     "one province or title's exact map, title, terrain, and neighbor context is needed",
 			DoNotUse: "a multi-hop topology question is needed; use map_neighbors instead",
@@ -653,6 +667,17 @@ func buildCanonicalMapTools(annotations ToolAnnotations, output map[string]any) 
 			"emit_landed_titles": booleanProperty("Include barony skeletons for the owning county."),
 			"limit":              limitProperty(), "visibility": visibilityProperty(),
 		}, "province_id", "seeds"), handleMapSplitProvince, legacyPrivacyProperties),
+		mapArtifactTool("map_apply_split", "Apply Province Split", "Replay a province split and write the recoloured provinces.png into the server artifact area, alongside the definition.csv, history, and landed-title edits that must accompany it. Verifies every pixel against the indexed province colour first and refuses to write when the index is stale or the plan has blockers. The Mod itself is never modified.", objectSchema(map[string]any{
+			"province_id":        integerProperty("Indexed province id to divide.", 1, 0, 0),
+			"seeds":              splitSeedsProperty(),
+			"terrain_weight":     map[string]any{"type": "number", "minimum": 0, "maximum": 8, "default": 3, "description": "Must match the value planned with map_split_province, or the geometry written will not be the geometry reviewed."},
+			"emit_definition":    booleanProperty("Include the definition.csv rows for the new provinces."),
+			"emit_history":       booleanProperty("Include history/provinces entries inheriting the parent's culture, faith, and holding."),
+			"emit_landed_titles": booleanProperty("Include barony skeletons for the owning county."),
+			"confirm":            booleanProperty("Must be true. Acknowledges that a new provinces.png will be written to the server artifact area."),
+			"limit":              limitProperty(), "visibility": visibilityProperty(),
+		}, "province_id", "seeds", "confirm"), handleMapApplySplit, legacyPrivacyProperties),
+		mapArtifactTool("map_terrain_edit", "Edit CK3 Physical Terrain", "Compose ordered point, polyline, or polygon physical-landform layers; carve large-river valleys; or replace a bounded small-river window while preserving everything outside it. confirm=false returns an in-memory preview, and confirm=true creates a verified immutable artifact containing only raw heightmap/rivers inputs plus review previews. Never modifies the Mod and always requires CK3 heightmap repacking.", terrainEditSchema(), handleMapTerrainEdit, legacyPrivacyProperties),
 		mapTool("map_province_info", "Inspect Map Province", "Inspect one province's exact geometry, titles, scripted terrain, observed surface-material blend, texture resources, and direct boundaries. Returns read-only precision context and classified neighbors.", objectSchema(map[string]any{
 			"id": stringProperty("Map subject: numeric province id, b_/c_/d_/k_/e_ title id, or an exact unique English or Chinese localized name."), "year": integerProperty("CK3 history year.", 1, 0, 1), "limit": limitProperty(), "visibility": visibilityProperty(),
 		}, "id"), handleMapProvinceInfo, legacyPrivacyProperties),
@@ -737,6 +762,105 @@ func mapRouteSchema() map[string]any {
 
 func mapTool(name, title, description string, input map[string]any, handler ToolHandler, compatibility []string) ToolDefinition {
 	return ToolDefinition{Name: name, Title: title, Description: description, InputSchema: input, OutputSchema: genericOutputSchema(), Annotations: readOnlyAnnotations(), Handler: handler, CompatibilityProperties: compatibility}
+}
+
+// mapArtifactTool is the writing counterpart to mapTool. The only difference is
+// the annotation: these tools produce files in the server artifact area, so a
+// client must not treat them as the freely repeatable reads the rest are.
+func mapArtifactTool(name, title, description string, input map[string]any, handler ToolHandler, compatibility []string) ToolDefinition {
+	definition := mapTool(name, title, description, input, handler, compatibility)
+	definition.Annotations = artifactAnnotations()
+	return definition
+}
+
+func terrainLayerProperty() map[string]any {
+	point := objectSchema(map[string]any{
+		"x": integerProperty("Pixel X on the heightmap.", 0, 0, 0),
+		"y": integerProperty("Pixel Y on the heightmap.", 0, 0, 0),
+	}, "x", "y")
+	coordinates := arrayProperty("Heightmap pixel coordinates, with the top-left pixel as the origin.", point)
+	coordinates["minItems"] = 1
+	coordinates["maxItems"] = 2048
+	geometry := objectSchema(map[string]any{
+		"type":        stringProperty("Geometry type. Point needs one coordinate, polyline at least two, and a simple non-self-intersecting polygon at least three.", indexer.TerrainGeometryPoint, indexer.TerrainGeometryPolyline, indexer.TerrainGeometryPolygon),
+		"coordinates": coordinates,
+	}, "type", "coordinates")
+	layer := objectSchema(map[string]any{
+		"id": stringProperty("Unique stable id within this ordered compose request."),
+		"kind": stringProperty("Physical landform profile; each is a separate algorithm, not a setting of one. Mountains: range is a single graded spine, fold_belt repeats parallel ridges and valleys across the band, massif is blocky summits with cliff bands, karst is isolated steep towers on a flat floor, dome is a broad uplift with no crest. Lowland relief matching CK3 terrain types: dunes for desert, badlands for drylands, floodplain and wetland for their namesakes, steppe for long-wavelength open swells, terraced for terraced_hills. Asymmetric and sequenced kinds require polyline geometry because they are defined by which side of the path a pixel is on or how far along it sits: fault_block has a scarp on one flank and a dip slope on the other, cuesta is its shallower stratified cousin, volcanic_chain places separate cones in sequence, and river_terrace steps benches away from a channel while descending with it.",
+			indexer.TerrainPlain, indexer.TerrainHills, indexer.TerrainRange,
+			indexer.TerrainFoldBelt, indexer.TerrainMassif, indexer.TerrainKarst, indexer.TerrainDome,
+			indexer.TerrainDunes, indexer.TerrainBadlands, indexer.TerrainFloodplain,
+			indexer.TerrainWetland, indexer.TerrainSteppe, indexer.TerrainTerraced,
+			indexer.TerrainFaultBlock, indexer.TerrainCuesta,
+			indexer.TerrainVolcanicChain, indexer.TerrainRiverTerrace,
+			indexer.TerrainPlateau, indexer.TerrainBasin, indexer.TerrainValley, indexer.TerrainCanyon,
+			indexer.TerrainVolcano, indexer.TerrainContinentalShelf, indexer.TerrainContinentalSlope,
+			indexer.TerrainAbyssalPlain, indexer.TerrainTrench, indexer.TerrainOceanRidge,
+			indexer.TerrainSeamount, indexer.TerrainIsland),
+		"geometry":      geometry,
+		"width_px":      map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 8192, "description": "Full influence width in heightmap pixels."},
+		"feather_px":    map[string]any{"type": "number", "minimum": 0, "maximum": 4096, "description": "Smooth falloff beyond the geometry influence."},
+		"domain":        stringProperty("Province-defined target domain. Defaults by landform kind; it is never inferred from elevation.", indexer.TerrainDomainLand, indexer.TerrainDomainOcean, indexer.TerrainDomainLake, indexer.TerrainDomainWater, indexer.TerrainDomainAny),
+		"strength":      map[string]any{"type": "number", "minimum": 0, "maximum": 1, "description": "Normalized 0..1 edit magnitude or blend strength."},
+		"roughness":     map[string]any{"type": "number", "minimum": 0, "maximum": 1, "description": "Mix between the analytic profile and deterministic fractal detail."},
+		"detail":        map[string]any{"type": "number", "minimum": 0, "maximum": 16, "description": "Noise frequency scale."},
+		"target_height": map[string]any{"type": "number", "minimum": 0, "maximum": 1, "description": "Normalized target plane required by plain, continental_shelf, continental_slope, and abyssal_plain."},
+		"seed":          integerProperty("Deterministic noise seed.", 0, 0, 0),
+	}, "id", "kind", "geometry", "width_px", "strength")
+	layers := arrayProperty("Ordered terrain layers. Each layer works from the result of the previous layer.", layer)
+	layers["minItems"] = 1
+	layers["maxItems"] = 128
+	return layers
+}
+
+func terrainEditSchema() map[string]any {
+	erosion := objectSchema(map[string]any{
+		"droplets":  integerProperty("Water particles released. Cost is linear; scale it with the area being eroded.", 0, 5000000, 0),
+		"max_steps": integerProperty("How far one droplet travels before it is abandoned.", 1, 4096, 0),
+		"inertia":   map[string]any{"type": "number", "minimum": 0, "maximum": 1, "description": "Blend of previous direction with the downhill gradient. 0 carves unnaturally straight channels; around 0.05 meanders."},
+		"capacity":  map[string]any{"type": "number", "minimum": 0, "description": "How much sediment moving water can hold."},
+		"erode":     map[string]any{"type": "number", "minimum": 0, "maximum": 1, "description": "Fraction of the gap to capacity eroded per step. Well below 1 spreads the cut along the path instead of gouging a pit."},
+		"deposit":   map[string]any{"type": "number", "minimum": 0, "maximum": 1, "description": "Fraction of the gap to capacity deposited per step."},
+		"evaporate": map[string]any{"type": "number", "minimum": 0, "maximum": 1, "description": "Fraction of water lost per step, which ends a droplet's run."},
+		"radius":    integerProperty("Spreads each erosion event over neighbouring pixels; without it droplets cut single-pixel scratches.", 0, 16, 0),
+		"seed":      integerProperty("Droplet seed.", 0, 0, 0),
+		"sea_level": map[string]any{"type": "number", "minimum": 0, "maximum": 1, "description": "Normalized floor erosion may not cut land below, so a coast cannot erode under the water line. Omit for the same level the river passes use; 0 disables the floor. Land already below it is never raised."},
+	})
+	erosion["description"] = "Hydraulic erosion settings. Omit to skip erosion, which also skips the drainage that ties separately placed landforms into one landscape."
+	largeRivers := objectSchema(map[string]any{
+		"min_drainage": integerProperty("Upstream cells needed before a point counts as a channel. Lower values give denser networks.", 1, 0, 0),
+		"depth":        map[string]any{"type": "number", "minimum": 0, "maximum": 1, "description": "Normalized depth of the largest channels."},
+		"valley_width": integerProperty("How far the cut spreads either side, giving the river a valley instead of a slot.", 0, 64, 0),
+		"sea_level":    map[string]any{"type": "number", "minimum": 0, "maximum": 1, "description": "Normalized water outlet level."},
+	})
+	largeRivers["description"] = "Settings for operation=large_rivers. Major rivers are carved into the raw heightmap and leave small-river hydrology stale."
+	smallRivers := objectSchema(map[string]any{
+		"min_drainage":    integerProperty("Catchment at which a stream appears.", 1, 0, 0),
+		"max_drainage":    integerProperty("Catchment at which a stream becomes a large river. Above this it belongs in the heightmap, so the two systems do not overlap.", 0, 0, 0),
+		"bed_depth":       map[string]any{"type": "number", "minimum": 0, "maximum": 1, "description": "Normalized shallow bed depth."},
+		"sea_level":       map[string]any{"type": "number", "minimum": 0, "maximum": 1, "description": "Normalized water level."},
+		"max_width_index": integerProperty("Caps the painted palette width index. Streams should stay narrow.", 3, 11, 0),
+	})
+	smallRivers["description"] = "Settings for operation=small_rivers. Only the selected window is replaced; palette indices outside it are inherited byte-for-byte."
+	region := objectSchema(map[string]any{
+		"x":      integerProperty("Left edge of the window in heightmap pixels.", 0, 0, 0),
+		"y":      integerProperty("Top edge of the window in heightmap pixels.", 0, 0, 0),
+		"width":  integerProperty("Window width in pixels.", 1, 0, 0),
+		"height": integerProperty("Window height in pixels.", 1, 0, 0),
+	}, "x", "y", "width", "height")
+	region["description"] = "Pixel window the generator may read and change. Erosion and drainage routing both cost time proportional to the area covered, so bound them to the ground you care about. Defaults to the whole map."
+	return objectSchema(map[string]any{
+		"operation":        stringProperty("Which physical-terrain stage to run.", indexer.MapTerrainOpCompose, indexer.MapTerrainOpLargeRivers, indexer.MapTerrainOpSmallRivers),
+		"base_artifact_id": stringProperty("Optional verified parent map-edit artifact id. Omit to read the current effective map."),
+		"layers":           terrainLayerProperty(),
+		"erosion":          erosion,
+		"large_rivers":     largeRivers,
+		"small_rivers":     smallRivers,
+		"region":           region,
+		"confirm":          booleanProperty("False validates and returns an in-memory PNG preview; true creates a new immutable artifact."),
+		"limit":            limitProperty(), "visibility": visibilityProperty(),
+	}, "operation")
 }
 
 func patchFilesProperty() map[string]any {

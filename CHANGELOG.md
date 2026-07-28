@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- 地图编辑能力接入 MCP 与 CLI：`map_terrain_edit` 改为 `compose`、`large_rivers`、`small_rivers` 三段式接口，支持点、折线和简单多边形，以及平原、丘陵、山脉、高原、盆地、谷地、峡谷、火山、大陆架、陆坡、深海平原、海沟、中洋脊、海山和岛屿；移除未发布的 `synthesize/features/amplitude` 工具接口。
+- 地貌合成改用归一化浮点工作高度场，只接受 Gray8/Gray16 并保持原位深；区域窗口现在真正约束图层、侵蚀与水系计算，区域外像素保持不变。海陆域来自 `default.map + provinces.png + definition.csv`，岛屿不能在海洋省份中暗中创造可通行陆地。
+- `small_rivers` 现在从父产物或当前 `rivers.png` 继承，只替换指定窗口并保留窗口外调色板索引与既有河道；边界新河道若不能正交接入旧河道或海洋会被阻塞。它仍会与浅河床高度图成对输出。
+- `map_terrain_edit confirm=false` 只校验并返回内存预览；`confirm=true` 才在 `<artifact_root>/map-edits/map-edit-<随机 ID>/` 创建不可变产物。manifest 记录父 ID、规范化 spec、源指纹、SHA-256、位深、尺寸、修改框与水系状态，并拒绝伪造 ID、路径穿越、符号链接、哈希漂移和过期源地图。
+- 地貌产物只包含原始 `heightmap.png`、必要的 `rivers.png`、前后 hillshade/diff 与 manifest；不生成 packed/indirection/descriptor 文件，固定返回 `requires_ck3_repack=true`。新增 `ck3-index map terrain-edit <spec.json> [--preview-out <png>] [--confirm]`，与 MCP 共用同一核心和产物链。
+- `map_apply_split` 仍要求显式 `confirm=true`，且在写入前逐像素比对索引记录的省份颜色；索引过期或方案存在阻塞项时拒绝写入，并同时返回必须一起应用的 definition.csv、history 与领地头衔改动。
+- 补上 `map_split_province` 缺失的中文文档条目。该工具此前已注册，但没有对应中文文本，导致 `cmd/mcp-docgen` 的文档校验一直失败。
+
 - GUI previews now retain `video` expressions and can display an exact caller-provided indexed image as a fixed `sample_values.property=video` poster. This is visibly marked as provided scenario data; Bink decoding, frame selection, playback, looping, masks, and timing remain in-game validation boundaries.
 - GUI previews now draw literal `line` `from`/`to` endpoint vectors as bounded parent-local strokes, carrying literal `width`, `line_cap`, color, and embedded HTML texture where available. Dynamic endpoints accept exact caller-provided `sample_values` with `property=from|to`; line shader, UV/mask animation, coordinate-space edge cases, and `resizeparent` remain explicit approximations.
 - GUI inspector now replays dynamic `min_width`/`max_width`, `min_height`/`max_height`, and four-sided margin expressions before direct flow/grid reflow and multiline autoresize. The bounded numeric evaluator now recognizes CK3's `Select_int32` and `Select_CFixedPoint` alongside `Select_float`; missing facts retain the resolved baseline instead of inventing engine state.

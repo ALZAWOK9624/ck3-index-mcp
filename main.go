@@ -925,7 +925,7 @@ func run(ctx context.Context, args []string) error {
 		})
 	case "map":
 		if len(args) < 1 {
-			return errors.New("usage: ck3-index map <audit|province-mapping|physical-context|migration-snapshot|migrate|recipes|metric|route|render> [operation|spec.json] [--out path] [--meta sidecar.json]")
+			return errors.New("usage: ck3-index map <audit|province-mapping|physical-context|migration-snapshot|migrate|recipes|metric|route|render|terrain-edit> [operation|spec.json] [flags]")
 		}
 		switch args[0] {
 		case "audit":
@@ -1064,6 +1064,51 @@ func run(ctx context.Context, args []string) error {
 				return err
 			}
 			return printJSON(result)
+		case "terrain-edit":
+			if len(args) < 2 {
+				return errors.New("usage: ck3-index map terrain-edit <spec.json> [--preview-out <png>] [--confirm]")
+			}
+			previewPath := ""
+			confirm := false
+			for index := 2; index < len(args); {
+				switch args[index] {
+				case "--confirm":
+					confirm = true
+					index++
+				case "--preview-out":
+					if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
+						return errors.New("--preview-out requires a PNG path")
+					}
+					previewPath = args[index+1]
+					index += 2
+				default:
+					return fmt.Errorf("unknown map terrain-edit flag %q", args[index])
+				}
+			}
+			var spec indexer.MapTerrainEditSpec
+			if err := readStrictJSONFile(args[1], &spec); err != nil {
+				return err
+			}
+			cfg, err := indexer.LoadConfig(cfgPath)
+			if err != nil {
+				return err
+			}
+			var result indexer.MapTerrainEditResult
+			if confirm {
+				result, err = indexer.CreateMapTerrainEditArtifact(cfg, spec)
+			} else {
+				result, err = indexer.PreviewMapTerrainEdit(cfg, spec)
+			}
+			if err != nil {
+				return err
+			}
+			if previewPath != "" {
+				if err := indexer.WriteMapTerrainPreview(previewPath, result.PreviewPNG, cfg); err != nil {
+					return err
+				}
+			}
+			result.PreviewPNG = nil
+			return printJSON(result)
 		case "render":
 			if len(args) < 4 {
 				return errors.New("usage: ck3-index map render <spec.json> --out <file.png> [--meta <sidecar.json>] [--hit-out <hit.png>]")
@@ -1124,7 +1169,7 @@ func run(ctx context.Context, args []string) error {
 			}
 			return printJSON(result)
 		default:
-			return errors.New("usage: ck3-index map <audit|province-mapping|physical-context|migration-snapshot|migrate|recipes|metric|route|render> [operation|spec.json] [--out path]")
+			return errors.New("usage: ck3-index map <audit|province-mapping|physical-context|migration-snapshot|migrate|recipes|metric|route|render|terrain-edit> [operation|spec.json] [flags]")
 		}
 	case "migrate":
 		return runRebaseCLI(ctx, cfgPath, args)
@@ -1470,6 +1515,7 @@ func printHelp() {
 	  map recipes              list thematic map recipes and supported fields/layers
   map metric <json>        build an auditable indexed/custom map metric
   map route <json>         resolve places and calculate a legal land, sea, or mixed route
+  map terrain-edit <json>  preview physical terrain; add --confirm for an immutable raw-map artifact
   map render <json> --out  render a thematic or route-context PNG; add --meta for transform JSON
   validate                 run built-in read-only validation
   accuracy [dir]           run golden accuracy fixtures (default testdata/accuracy)

@@ -228,6 +228,27 @@ type mapSplitProvinceArgs struct {
 	EmitLandedTitles bool                   `json:"emit_landed_titles,omitempty"`
 }
 
+// mapApplySplitArgs repeats the planning arguments rather than carrying a plan
+// back in: a plan holds every run of every part, which is megabytes of geometry
+// no caller should have to round-trip. The split is deterministic, so replanning
+// from the same province and seeds reproduces it exactly.
+type mapApplySplitArgs struct {
+	visibilityArgs
+	ProvinceID       int                    `json:"province_id"`
+	Seeds            []indexer.MapSplitSeed `json:"seeds"`
+	TerrainWeight    *float64               `json:"terrain_weight,omitempty"`
+	EmitDefinition   bool                   `json:"emit_definition,omitempty"`
+	EmitHistory      bool                   `json:"emit_history,omitempty"`
+	EmitLandedTitles bool                   `json:"emit_landed_titles,omitempty"`
+	Confirm          bool                   `json:"confirm"`
+}
+
+type mapTerrainEditArgs struct {
+	visibilityArgs
+	indexer.MapTerrainEditSpec
+	Confirm bool `json:"confirm"`
+}
+
 type mapPhysicalContextArgs struct {
 	indexer.MapPhysicalContextSpec
 	visibilityArgs

@@ -153,6 +153,7 @@ func TestSkillDocumentsEveryCanonicalMapCLI(t *testing.T) {
 		"ck3-index map recipes",
 		"ck3-index map metric <spec.json>",
 		"ck3-index map route <spec.json>",
+		"ck3-index map terrain-edit <spec.json>",
 		"ck3-index map render <spec.json>",
 	} {
 		if !strings.Contains(canonical, command) {

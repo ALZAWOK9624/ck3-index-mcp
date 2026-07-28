@@ -1,0 +1,31 @@
+{
+  "operation": "compose",
+  "region": {
+    "x": 0,
+    "y": 0,
+    "width": 128,
+    "height": 128
+  },
+  "layers": [
+    {
+      "id": "preview-hills",
+      "kind": "hills",
+      "geometry": {
+        "type": "point",
+        "coordinates": [
+          {
+            "x": 64,
+            "y": 64
+          }
+        ]
+      },
+      "width_px": 48,
+      "feather_px": 16,
+      "domain": "any",
+      "strength": 0.04,
+      "roughness": 0.45,
+      "detail": 1,
+      "seed": 20260728
+    }
+  ]
+}

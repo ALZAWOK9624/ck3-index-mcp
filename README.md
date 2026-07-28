@@ -106,7 +106,7 @@ resource_only = true
 MCP 只公开一套规范工具；精细能力通过各工具的受限 `operation` 参数提供。详细参数见 [MCP 工具参考](docs/MCP_TOOL_REFERENCE.md)。
 
 <!-- BEGIN GENERATED MCP TOOLS -->
-## MCP 工具（30 个规范工具）
+## MCP 工具（33 个规范工具）
 
 ck3-index 仅公开一套规范 MCP 工具；细分能力通过受限 operation 提供，不再保留旧版专用工具别名。
 
@@ -137,6 +137,9 @@ ck3-index 仅公开一套规范 MCP 工具；细分能力通过受限 operation 
 | `map_province_migration` | 以新上游为底执行保守三方合并和省份语义改写，严格验证通过后才生成独立本地测试 Fork；冲突时只输出报告和 resolution 模板。 |
 | `map_asset_audit` | 审计当前生效的 CK3 地图栅格，检查省份定义覆盖、PNG 编码、河流调色板索引语义和正交河道拓扑；吸收 AzgaarToCK3 的特色校验，但不重复 ck3-index 已有解析与几何。 |
 | `map_province_mapping` | 通过控制点 Delaunay 分片仿射变换比较两个已配置的 CK3 省份地图，返回像素交叠、重编号、拆分、合并、复杂及未映射分组；只提供迁移证据，不写地图或历史文件。 |
+| `map_split_province` | 按调用方给定的种子像素，以地形加权生长把一个已索引省份切开，使边界沿山脊落下而不是切出直线，再规划 CK3 保持一致所需的 definition.csv、history 与领地头衔改动。分配不冲突的省份 ID 与颜色，无法证明唯一性时给出阻塞项。只返回可审查的方案，不写入任何文件。 |
+| `map_apply_split` | 重放一次省份切割，把重新着色的 provinces.png 写入服务器产物目录，并附上必须同时应用的 definition.csv、history 与领地头衔改动。写入前逐像素比对索引记录的省份颜色，索引过期或方案存在阻塞项时拒绝写入。Mod 本身不会被修改。 |
+| `map_terrain_edit` | 按顺序合成点、折线或多边形地貌图层，下切大河河谷，或只替换指定窗口内的小河并保留窗口外内容。confirm=false 仅返回内存预览，confirm=true 才创建带哈希和父级校验的不可变产物。只输出原始高度图与必要的 rivers.png，绝不修改 Mod，并明确要求经 CK3 地图编辑器重新打包。 |
 | `map_province_info` | 检查一个省份的精确几何、头衔、脚本地形、实际地表材质混合、纹理资源与直接边界。返回只读的精确上下文和分类后的邻省。 |
 | `map_physical_context` | 只读检查归一化高程、地形、gfx/map/terrain 地表材质混合及纹理资源、复合河流、水体、相对海床深浅与物理障碍；明确区分 CK3 原生观察事实、GIS 派生值和综合推断。 |
 | `map_neighbors` | 检查某省份或领地头衔周围的受限图邻域。返回按半径分组的方向、距离与边界分类。 |

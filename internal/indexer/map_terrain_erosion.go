@@ -47,7 +47,20 @@ type MapErosionSettings struct {
 	// droplets cut single-pixel scratches.
 	Radius int   `json:"radius"`
 	Seed   int64 `json:"seed"`
+	// SeaLevel is the normalized 0..1 floor erosion may not cut land below.
+	// Without it a coast erodes under the water line and a land province ends
+	// up rendering as submerged ground. Nil takes the same default the two
+	// river passes use; an explicit 0 disables the floor. Ground that already
+	// sits below the floor is never raised to meet it.
+	//
+	// It applies to the normalized terrain-edit path; the legacy grey-level
+	// ErodeHeightmapRegion has no domain mask and ignores it.
+	SeaLevel *float64 `json:"sea_level,omitempty"`
 }
+
+// DefaultErosionSeaLevel matches MapTerrainLargeRiverSettings.SeaLevel so every
+// pass in one edit agrees on where the water line sits.
+const DefaultErosionSeaLevel = 20.0 / 255.0
 
 // DefaultErosion returns settings tuned for CK3-scale heightmaps, where one
 // pixel is a substantial distance and channels should stay legible.

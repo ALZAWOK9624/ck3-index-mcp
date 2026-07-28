@@ -16,6 +16,25 @@ func encodeToolResult(value any, visibility string) (map[string]any, error) {
 
 func encodeToolResultWithBudget(value any, visibility string, responseBudget int) (map[string]any, error) {
 	value = redactToolValue(value, visibility)
+	if rendered, ok := value.(indexer.MapTerrainEditResult); ok && len(rendered.PreviewPNG) > 0 {
+		pngData := rendered.PreviewPNG
+		rendered.PreviewPNG = nil
+		data, structured, err := encodeStructuredValue(rendered)
+		if err != nil {
+			return nil, err
+		}
+		result := map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": string(data)},
+				{
+					"type": "image", "data": base64.StdEncoding.EncodeToString(pngData), "mimeType": "image/png",
+					"annotations": map[string]any{"audience": []string{"user"}},
+				},
+			},
+			"structuredContent": structured,
+		}
+		return enforceResponseBudget(result, responseBudget)
+	}
 	if rendered, ok := value.(indexer.GUIQueryResult); ok && rendered.Preview != nil && len(rendered.Preview.PNG) > 0 {
 		pngData := rendered.Preview.PNG
 		rendered.Preview.PNG = nil

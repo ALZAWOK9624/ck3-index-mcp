@@ -28,6 +28,7 @@ $cover
 
 # Local project config and transient outputs
 /ck3-index.toml
+/ck3-terrain-work.toml
 /deploy/
 /SESSION_SUMMARY.md
 /examples/*.html

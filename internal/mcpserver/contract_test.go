@@ -19,11 +19,11 @@ import (
 
 func TestToolRegistryContract(t *testing.T) {
 	definitions := registry()
-	if len(definitions) != 31 {
-		t.Fatalf("standard registry count = %d, want 31", len(definitions))
+	if len(definitions) != 33 {
+		t.Fatalf("standard registry count = %d, want 33", len(definitions))
 	}
-	if got := len(mcpTools()); got != 31 {
-		t.Fatalf("tools/list count = %d, want 31", got)
+	if got := len(mcpTools()); got != 33 {
+		t.Fatalf("tools/list count = %d, want 33", got)
 	}
 
 	seen := make(map[string]struct{}, len(definitions))
@@ -47,7 +47,7 @@ func TestToolRegistryContract(t *testing.T) {
 		if got := definition.OutputSchema["type"]; got != "object" {
 			t.Fatalf("tool %q output schema type = %v, want object", definition.Name, got)
 		}
-		if definition.Name == "ck3_refresh" || definition.Name == "ck3_package" || definition.Name == "map_migration_snapshot" || definition.Name == "map_province_migration" {
+		if definition.Name == "ck3_refresh" || definition.Name == "ck3_package" || definition.Name == "map_migration_snapshot" || definition.Name == "map_province_migration" || definition.Name == "map_apply_split" || definition.Name == "map_terrain_edit" {
 			if definition.Annotations.ReadOnlyHint || definition.Annotations.DestructiveHint || definition.Annotations.OpenWorldHint {
 				t.Fatalf("tool %q annotations must be non-read-only, non-destructive, and closed-world", definition.Name)
 			}
@@ -352,6 +352,8 @@ func TestCanonicalSchemasMatchTypedArguments(t *testing.T) {
 		"map_province_migration":  reflect.TypeOf(mapProvinceMigrationArgs{}),
 		"map_province_info":       reflect.TypeOf(mapProvinceInfoArgs{}),
 		"map_split_province":      reflect.TypeOf(mapSplitProvinceArgs{}),
+		"map_apply_split":         reflect.TypeOf(mapApplySplitArgs{}),
+		"map_terrain_edit":        reflect.TypeOf(mapTerrainEditArgs{}),
 		"map_physical_context":    reflect.TypeOf(mapPhysicalContextArgs{}),
 		"map_neighbors":           reflect.TypeOf(mapNeighborsArgs{}),
 		"map_spatial_relation":    reflect.TypeOf(mapSpatialRelationArgs{}),
@@ -469,6 +471,19 @@ func TestNestedMapSchemasMatchTypedArguments(t *testing.T) {
 	assertClosedSchemaMatchesType(t, "map render route failure", failureSchema, reflect.TypeOf(indexer.MapRouteFailure{}), nil)
 	assertClosedSchemaMatchesType(t, "map render route candidate", failureSchema["properties"].(map[string]any)["resolution_candidates"].(map[string]any)["items"].(map[string]any), reflect.TypeOf(indexer.MapSubjectCandidate{}), nil)
 	assertClosedSchemaMatchesType(t, "map render route timings", routeProperties["timings_ms"].(map[string]any), reflect.TypeOf(indexer.MapRouteTimings{}), nil)
+
+	terrain, _ := findCanonicalTool("map_terrain_edit")
+	terrainProperties := terrain.InputSchema["properties"].(map[string]any)
+	terrainLayer := terrainProperties["layers"].(map[string]any)["items"].(map[string]any)
+	assertClosedSchemaMatchesType(t, "terrain layer", terrainLayer, reflect.TypeOf(indexer.MapTerrainLayer{}), nil)
+	terrainLayerProperties := terrainLayer["properties"].(map[string]any)
+	terrainGeometry := terrainLayerProperties["geometry"].(map[string]any)
+	assertClosedSchemaMatchesType(t, "terrain geometry", terrainGeometry, reflect.TypeOf(indexer.MapTerrainGeometry{}), nil)
+	assertClosedSchemaMatchesType(t, "terrain point", terrainGeometry["properties"].(map[string]any)["coordinates"].(map[string]any)["items"].(map[string]any), reflect.TypeOf(indexer.MapTerrainPoint{}), nil)
+	assertClosedSchemaMatchesType(t, "terrain erosion", terrainProperties["erosion"].(map[string]any), reflect.TypeOf(indexer.MapErosionSettings{}), nil)
+	assertClosedSchemaMatchesType(t, "terrain large rivers", terrainProperties["large_rivers"].(map[string]any), reflect.TypeOf(indexer.MapTerrainLargeRiverSettings{}), nil)
+	assertClosedSchemaMatchesType(t, "terrain small rivers", terrainProperties["small_rivers"].(map[string]any), reflect.TypeOf(indexer.MapTerrainSmallRiverSettings{}), nil)
+	assertClosedSchemaMatchesType(t, "terrain region", terrainProperties["region"].(map[string]any), reflect.TypeOf(indexer.MapTerrainRegion{}), nil)
 }
 
 func assertClosedSchemaMatchesType(t *testing.T, label string, schema map[string]any, typ reflect.Type, ignored []string) {
@@ -588,13 +603,22 @@ func TestEveryCallableToolHasSuccessAndMalformedArgumentCases(t *testing.T) {
 			"metadata": map[string]any{"name": "Contract Mod", "slug": "contract_mod", "version": "1.0", "supported_version": "1.19.*", "tags": []string{"Gameplay"}},
 			"files":    []map[string]any{{"path": "common/scripted_triggers/contract_package.txt", "content": "contract_package_trigger = { always = yes }"}},
 		},
-		"ck3_gui":                 {"operation": "summary", "limit": 2},
-		"map_asset_audit":         {"operation": "summary", "limit": 2},
-		"map_province_mapping":    {"source": "project", "target": "active", "limit": 2},
-		"map_migration_snapshot":  {"project": "project", "base": "base"},
-		"map_province_migration":  {"snapshot_id": snapshot.SnapshotID, "target": "target", "output_name": "contract_fork"},
-		"map_province_info":       {"id": "1", "year": 6253, "limit": 2},
-		"map_split_province":      {"province_id": 1, "seeds": []any{map[string]any{"x": 0, "y": 0}, map[string]any{"x": 0, "y": 1}}},
+		"ck3_gui":                {"operation": "summary", "limit": 2},
+		"map_asset_audit":        {"operation": "summary", "limit": 2},
+		"map_province_mapping":   {"source": "project", "target": "active", "limit": 2},
+		"map_migration_snapshot": {"project": "project", "base": "base"},
+		"map_province_migration": {"snapshot_id": snapshot.SnapshotID, "target": "target", "output_name": "contract_fork"},
+		"map_province_info":      {"id": "1", "year": 6253, "limit": 2},
+		"map_split_province":     {"province_id": 1, "seeds": []any{map[string]any{"x": 0, "y": 0}, map[string]any{"x": 0, "y": 1}}},
+		"map_apply_split":        {"province_id": 1, "seeds": []any{map[string]any{"x": 0, "y": 0}, map[string]any{"x": 0, "y": 1}}, "confirm": true},
+		"map_terrain_edit": {
+			"operation": "compose", "confirm": true,
+			"layers": []any{map[string]any{
+				"id": "contract-range", "kind": "range", "domain": "land",
+				"geometry": map[string]any{"type": "point", "coordinates": []any{map[string]any{"x": 0, "y": 0}}},
+				"width_px": 3, "strength": 0.1,
+			}},
+		},
 		"map_physical_context":    {"target_type": "region", "target": "region:test_region", "operation": "oceanography", "include_adjacent_water": true, "limit": 2},
 		"map_neighbors":           {"id": "1", "radius": 1, "year": 6253, "limit": 2},
 		"map_spatial_relation":    {"from": "1", "to": "2", "year": 6253, "limit": 2},
@@ -607,8 +631,8 @@ func TestEveryCallableToolHasSuccessAndMalformedArgumentCases(t *testing.T) {
 		"map_route":               {"from": "1", "to": "2", "mode": "land", "year": 6253, "limit": 2},
 		"map_render":              {"target": "k_k11", "year": 6253, "width": 400, "layers": []map[string]any{{"type": "borders", "level": "county"}}},
 	}
-	if len(successArguments) != 31 {
-		t.Fatalf("success case count = %d, want 31 canonical names", len(successArguments))
+	if len(successArguments) != 33 {
+		t.Fatalf("success case count = %d, want 33 canonical names", len(successArguments))
 	}
 	for name, args := range successArguments {
 		name, args := name, args

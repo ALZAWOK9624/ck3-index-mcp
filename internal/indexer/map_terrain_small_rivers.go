@@ -244,17 +244,21 @@ func GenerateSmallRivers(height *image.Gray, region image.Rectangle, settings Ma
 }
 
 const (
-	// riverLand is 254, not 0. Measuring the upstream map settles it: index 254
-	// covers 39.4% of the image and 255 covers 60.4%, which is exactly the
-	// land/sea split, while index 0 appears essentially nowhere. Painting land
-	// as 0 leaves the engine without the land marker it expects underneath the
-	// channels, which is how rivers end up drawn outside the land.
-	riverLand       = 254
+	// Land is 255 and water is 254, and neither is 0.
+	//
+	// An earlier reading of this got the two backwards by matching whole-image
+	// index ratios against an assumed land/sea split. Ratios cannot settle it;
+	// provinces.png and default.map can, because they define the domains. Cross
+	// tabulating the upstream map's rivers.png against them is unambiguous:
+	// 99.2% of ocean-province pixels and 98.1% of lake-province pixels carry
+	// index 254, while 80.2% of land-province pixels carry 255. Swapping them
+	// paints every channel onto water and the whole sea onto land.
+	riverLand       = 255
 	riverSource     = 1
 	riverConfluence = 2
 	riverBodyMin    = 3
 	riverBodyMax    = 11
-	riverSea        = 255
+	riverSea        = 254
 )
 
 // hasUpstreamStream reports whether any neighbour that flows into this cell is

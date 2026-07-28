@@ -193,7 +193,10 @@ func rebaseSemanticIDOccurrences(rel, text, semanticID string) (int, error) {
 	}
 	count := 0
 	for _, node := range parsed.Nodes {
-		if strings.EqualFold(semanticNodeID(rel, node), semanticID) {
+		id, stable := semanticNodeID(rel, node)
+		// Only a stable identity may be counted as an occurrence of the
+		// reviewed object; a positional placeholder never is.
+		if stable && strings.EqualFold(id, semanticID) {
 			count++
 		}
 	}

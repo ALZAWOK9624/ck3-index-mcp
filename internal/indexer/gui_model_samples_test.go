@@ -52,14 +52,20 @@ func TestGUIModelSamplesInstantiateAndIsolateGridRows(t *testing.T) {
 			}},
 		},
 	}}
-	prepared, err := prepareGUIModelSamples("traditions", &root, collections)
+	originalChildren := len(root.Children)
+	expanded, prepared, err := prepareGUIModelSamples("traditions", root, collections)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(root.Children) != 3 {
-		t.Fatalf("item template was not expanded to three rows: %+v", root.Children)
+	if len(expanded.Children) != 3 {
+		t.Fatalf("item template was not expanded to three rows: %+v", expanded.Children)
 	}
-	preview, err := RenderGUIPreview("traditions", "element", "gui/test.gui", root, 600, 300, 100)
+	// The caller's tree is a shallow copy of a shared resolution cache entry;
+	// expansion must not reach back into it.
+	if len(root.Children) != originalChildren {
+		t.Fatalf("model sample expansion mutated the caller's tree: %d children, want %d", len(root.Children), originalChildren)
+	}
+	preview, err := RenderGUIPreview("traditions", "element", "gui/test.gui", expanded, 600, 300, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,11 +147,11 @@ func TestGUIModelSamplesTextureOverrideStaysRowLocal(t *testing.T) {
 			}}},
 		},
 	}}
-	prepared, err := prepareGUIModelSamples("portraits", &root, collections)
+	expanded, prepared, err := prepareGUIModelSamples("portraits", root, collections)
 	if err != nil {
 		t.Fatal(err)
 	}
-	preview, err := RenderGUIPreview("portraits", "type", "gui/test.gui", root, 400, 200, 50)
+	preview, err := RenderGUIPreview("portraits", "type", "gui/test.gui", expanded, 400, 200, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +183,7 @@ func TestGUIModelSamplesRejectAmbiguousOrUnsafeInputs(t *testing.T) {
 			modelSampleTestGrid("one", "[Rows]"),
 			modelSampleTestGrid("two", "[Rows]"),
 		}}
-		_, err := prepareGUIModelSamples("root", &root, []GUIModelSampleCollection{{
+		_, _, err := prepareGUIModelSamples("root", root, []GUIModelSampleCollection{{
 			DataModel: "[Rows]",
 			Rows: []GUIModelSampleRow{{ID: "row", Samples: []GUIScenarioSample{{
 				Property: "text", Expression: "[Row.Name]", Value: "One",
@@ -190,7 +196,7 @@ func TestGUIModelSamplesRejectAmbiguousOrUnsafeInputs(t *testing.T) {
 
 	t.Run("duplicate row id", func(t *testing.T) {
 		root := modelSampleTestGrid("grid", "[Rows]")
-		_, err := prepareGUIModelSamples("root", &root, []GUIModelSampleCollection{{
+		_, _, err := prepareGUIModelSamples("root", root, []GUIModelSampleCollection{{
 			Target: "grid",
 			Rows: []GUIModelSampleRow{
 				{ID: "same", Samples: []GUIScenarioSample{{Property: "text", Expression: "[Row.Name]", Value: "One"}}},
@@ -205,7 +211,7 @@ func TestGUIModelSamplesRejectAmbiguousOrUnsafeInputs(t *testing.T) {
 	t.Run("multiple item templates", func(t *testing.T) {
 		root := modelSampleTestGrid("grid", "[Rows]")
 		root.Children = append(root.Children, root.Children[0])
-		_, err := prepareGUIModelSamples("root", &root, []GUIModelSampleCollection{{
+		_, _, err := prepareGUIModelSamples("root", root, []GUIModelSampleCollection{{
 			Target: "grid",
 			Rows: []GUIModelSampleRow{{ID: "row", Samples: []GUIScenarioSample{{
 				Property: "text", Expression: "[Row.Name]", Value: "One",
@@ -219,7 +225,7 @@ func TestGUIModelSamplesRejectAmbiguousOrUnsafeInputs(t *testing.T) {
 
 func TestGUIHTMLInspectorExposesModelRowsAndScopesInteractiveMatching(t *testing.T) {
 	root := modelSampleTestGrid("grid", "[Rows]")
-	prepared, err := prepareGUIModelSamples("root", &root, []GUIModelSampleCollection{{
+	expanded, prepared, err := prepareGUIModelSamples("root", root, []GUIModelSampleCollection{{
 		Target: "grid",
 		Rows: []GUIModelSampleRow{
 			{ID: "first", Samples: []GUIScenarioSample{{Property: "text", Expression: "[Row.Name]", Value: "First"}}},
@@ -229,7 +235,7 @@ func TestGUIHTMLInspectorExposesModelRowsAndScopesInteractiveMatching(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	preview, err := RenderGUIPreview("root", "element", "gui/test.gui", root, 400, 200, 50)
+	preview, err := RenderGUIPreview("root", "element", "gui/test.gui", expanded, 400, 200, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,11 +312,11 @@ func BenchmarkGUIModelSamplesInspector(b *testing.B) {
 	b.ResetTimer()
 	for index := 0; index < b.N; index++ {
 		root := cloneGUIElement(template)
-		prepared, err := prepareGUIModelSamples("grid_benchmark", &root, collections)
+		expanded, prepared, err := prepareGUIModelSamples("grid_benchmark", root, collections)
 		if err != nil {
 			b.Fatal(err)
 		}
-		preview, err := RenderGUIPreview("grid", "type", "gui/benchmark.gui", root, 1280, 720, 500)
+		preview, err := RenderGUIPreview("grid", "type", "gui/benchmark.gui", expanded, 1280, 720, 500)
 		if err != nil {
 			b.Fatal(err)
 		}

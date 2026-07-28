@@ -344,6 +344,9 @@ func publishStagedFullScan(ctx context.Context, cfg Config, stagePath string, ba
 	if _, err := conn.ExecContext(ctx, `DELETE FROM meta WHERE key IN ('last_scan_error_code','last_scan_error_at')`); err != nil {
 		return err
 	}
+	if err := clearIndexStaleMarkers(ctx, conn); err != nil {
+		return err
+	}
 	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
 		return err
 	}

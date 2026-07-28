@@ -41,7 +41,25 @@ type rebaseSemanticRecord struct {
 	Raw    string
 	Digest string
 	Node   *script.Node
+	// Unstable marks a record whose top-level key does not identify one CK3
+	// object: an anonymous block, or a GUI root whose real identity lives in a
+	// child field. Such a record is never merged and never used as evidence
+	// that an object does or does not exist somewhere else.
+	Unstable bool
 }
+
+// rebaseSemanticIdentity distinguishes the three answers an identity lookup can
+// give. Collapsing "not present" and "present more than once" into one boolean
+// is unsafe: a project object whose ID appears twice in the target would look
+// absent, and the merge would append the project copy next to the two target
+// copies instead of stopping for review.
+type rebaseSemanticIdentity int
+
+const (
+	rebaseIdentityAbsent rebaseSemanticIdentity = iota
+	rebaseIdentityUnique
+	rebaseIdentityAmbiguous
+)
 
 func buildRebaseSemanticIndexes(_ context.Context, base, project, target indexer.Source, baseFiles, projectFiles, targetFiles []SnapshotFile) (*rebaseSemanticIndexes, error) {
 	return &rebaseSemanticIndexes{
@@ -103,8 +121,15 @@ func applyRebaseCrossFileSemanticSafety(ctx context.Context, artifactRoot, trans
 		if len(projectRecords) == 0 {
 			continue
 		}
-		baseRecord, baseUnique := indexes.base.unique(id)
-		targetRecord, targetUnique := indexes.target.unique(id)
+		if len(projectRecords) == 1 && projectRecords[0].Unstable {
+			// Nothing about an unnameable declaration can be compared across
+			// files; the file-level adapter already refuses to merge it.
+			continue
+		}
+		baseRecord, baseState := indexes.base.lookup(id)
+		targetRecord, targetState := indexes.target.lookup(id)
+		baseUnique := baseState == rebaseIdentityUnique
+		targetUnique := targetState == rebaseIdentityUnique
 		for _, projectRecord := range projectRecords {
 			// Duplicate project records never have a single semantic owner. The
 			// file-level adapter may already have caught them; this covers an
@@ -115,6 +140,20 @@ func applyRebaseCrossFileSemanticSafety(ctx context.Context, artifactRoot, trans
 					"project contains multiple records with the same semantic ID",
 					[]string{"keep_project", "use_target", "manual"}, "manual",
 					lookupRebaseSnapshot(baseFiles, baseRecord.Path, baseUnique), lookupRebaseSnapshot(projectFiles, projectRecord.Path, true), lookupRebaseSnapshot(targetFiles, targetRecord.Path, targetUnique),
+				)
+				appendRebaseCrossFileConflict(transaction, conflict, projectRecord.Path)
+				continue
+			}
+			if targetState == rebaseIdentityAmbiguous {
+				// The new upstream already declares this ID more than once.
+				// Keeping the project copy as well adds a further live
+				// definition, so the ownership question must be answered by a
+				// reviewer rather than assumed away.
+				conflict := newRebaseConflict(
+					"semantic_ambiguous_identity", projectRecord.Path, projectRecord.ID,
+					"the new upstream declares this semantic ID more than once, so the project override has no single counterpart",
+					[]string{"keep_project", "use_target", "manual"}, "manual",
+					lookupRebaseSnapshot(baseFiles, baseRecord.Path, baseUnique), lookupRebaseSnapshot(projectFiles, projectRecord.Path, true), nil,
 				)
 				appendRebaseCrossFileConflict(transaction, conflict, projectRecord.Path)
 				continue
@@ -192,9 +231,10 @@ func (layer *rebaseSemanticLayer) load(ctx context.Context) error {
 				break
 			}
 			raw := string([]rune(string(data))[start:end])
+			id, stable := semanticNodeID(file.Path, node)
 			record := rebaseSemanticRecord{
-				ID: semanticNodeID(file.Path, node), Path: file.Path, Raw: raw,
-				Digest: semanticNodeDigest(node), Node: node,
+				ID: id, Path: file.Path, Raw: raw,
+				Digest: semanticNodeDigest(node), Node: node, Unstable: !stable,
 			}
 			key := strings.ToLower(record.ID)
 			layer.recordsByID[key] = append(layer.recordsByID[key], record)
@@ -239,15 +279,84 @@ func semanticDomain(path string) string {
 // migration format is source-root relative on every host, including Windows.
 func pathpkgBase(value string) string { return path.Base(value) }
 
-func semanticNodeID(path string, node *script.Node) string {
+// semanticNodeID derives the identity a three-way merge and the cross-file
+// duplicate check use. It reports stable=false when the top-level key does not
+// identify one CK3 object; callers must then refuse to merge instead of
+// treating a generic key as an object name.
+func semanticNodeID(path string, node *script.Node) (string, bool) {
+	domain := semanticDomain(path)
+	if domain == "gui" {
+		return guiSemanticNodeID(node)
+	}
 	name := strings.ToLower(strings.TrimSpace(node.Key))
 	if node.Kind == "block" && strings.TrimSpace(node.Value) != "" {
 		name += "=" + strings.ToLower(strings.TrimSpace(node.Value))
 	}
 	if name == "" {
-		name = "anonymous@" + fmt.Sprintf("%d", node.Line)
+		// An anonymous top-level block has no name to match on. The line number
+		// only keeps the key unique inside one file; it is not an identity.
+		return domain + ":anonymous@" + fmt.Sprintf("%d", node.Line), false
 	}
-	return semanticDomain(path) + ":" + name
+	return domain + ":" + name, true
+}
+
+// guiSemanticNodeID gives Jomini GUI declarations their own identities. The
+// generic "top-level key" rule collapses every root widget in the game onto a
+// handful of ids (gui:window, gui:widget), because a GUI root's name lives in
+// a child field rather than in its key.
+//
+// script.ParseGUI encodes the declaration forms in Operator:
+//
+//	types Namespace { ... }        -> Key "types",    Operator "namespace"
+//	type child = parent { ... }    -> Key <name>,     Operator "type"
+//	template Name { ... }          -> Key <name>,     Operator "template"
+//	block "slot" { ... }           -> Key "block",    Operator "slot"
+//	window = { name = "x" ... }    -> Key <kind>,     Operator "="
+func guiSemanticNodeID(node *script.Node) (string, bool) {
+	key := strings.ToLower(strings.TrimSpace(node.Key))
+	value := strings.ToLower(strings.TrimSpace(strings.Trim(node.Value, `"`)))
+	switch strings.ToLower(strings.TrimSpace(node.Operator)) {
+	case "namespace":
+		// One namespace is routinely declared by several files, so the block is
+		// a container rather than an object identity.
+		return "gui:types:" + value + "@" + fmt.Sprintf("%d", node.Line), false
+	case "type":
+		if key == "" {
+			return "gui:type:anonymous@" + fmt.Sprintf("%d", node.Line), false
+		}
+		return "gui:type:" + key, true
+	case "template", "local_template":
+		if key == "" {
+			return "gui:template:anonymous@" + fmt.Sprintf("%d", node.Line), false
+		}
+		return "gui:" + strings.ToLower(strings.TrimSpace(node.Operator)) + ":" + key, true
+	case "slot":
+		// A slot name is only unique inside the widget that declares it, and a
+		// top-level block has no owner to qualify it with.
+		return "gui:block:" + value + "@" + fmt.Sprintf("%d", node.Line), false
+	}
+	if key == "" {
+		return "gui:root:anonymous@" + fmt.Sprintf("%d", node.Line), false
+	}
+	if name := guiElementName(node); name != "" {
+		return "gui:root:" + key + ":" + name, true
+	}
+	// An unnamed root widget is addressed positionally by the engine; two of
+	// them share a kind but not an identity.
+	return "gui:root:" + key + "@" + fmt.Sprintf("%d", node.Line), false
+}
+
+func guiElementName(node *script.Node) string {
+	for _, child := range node.Children {
+		if !strings.EqualFold(strings.TrimSpace(child.Key), "name") {
+			continue
+		}
+		value := strings.ToLower(strings.Trim(strings.TrimSpace(child.Value), `"`))
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func semanticNodeDigest(node *script.Node) string {
@@ -272,12 +381,20 @@ func semanticNodeDigest(node *script.Node) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (layer *rebaseSemanticLayer) unique(id string) (rebaseSemanticRecord, bool) {
+func (layer *rebaseSemanticLayer) lookup(id string) (rebaseSemanticRecord, rebaseSemanticIdentity) {
 	records := layer.recordsByID[strings.ToLower(id)]
-	if len(records) != 1 {
-		return rebaseSemanticRecord{}, false
+	switch {
+	case len(records) == 0:
+		return rebaseSemanticRecord{}, rebaseIdentityAbsent
+	case len(records) > 1:
+		return rebaseSemanticRecord{}, rebaseIdentityAmbiguous
+	case records[0].Unstable:
+		// An unstable identity cannot prove uniqueness even when it happens to
+		// occur once, so report it the same way as a duplicate.
+		return rebaseSemanticRecord{}, rebaseIdentityAmbiguous
+	default:
+		return records[0], rebaseIdentityUnique
 	}
-	return records[0], true
 }
 
 func (layer *rebaseSemanticLayer) pathRecords(path string) []rebaseSemanticRecord {
@@ -347,10 +464,33 @@ func mergeJominiThreeWay(rel, baseText, projectText, targetText string, baseFile
 	replacements := map[string]string{}
 	var additions []string
 
+	// A file containing any declaration this adapter cannot name is never
+	// merged. Rewriting the surrounding objects around an unidentifiable block
+	// would silently decide which copy of it survives.
+	for _, records := range [][]rebaseSemanticRecord{baseRecords, projectRecords, targetRecords} {
+		for _, record := range records {
+			if !record.Unstable {
+				continue
+			}
+			return targetText, nil, []RebaseConflict{newRebaseConflict(
+				"semantic_unstable_identity", rel, record.ID,
+				"file contains a top-level declaration with no unambiguous semantic identity",
+				[]string{"keep_project", "use_target", "manual"}, "manual", baseFile, projectFile, targetFile)}
+		}
+	}
+
 	for _, projectRecord := range projectRecords {
 		ids = append(ids, projectRecord.ID)
-		baseRecord, baseOK := semantic.base.unique(projectRecord.ID)
-		targetRecord, targetOK := semantic.target.unique(projectRecord.ID)
+		baseRecord, baseState := semantic.base.lookup(projectRecord.ID)
+		targetRecord, targetState := semantic.target.lookup(projectRecord.ID)
+		if baseState == rebaseIdentityAmbiguous || targetState == rebaseIdentityAmbiguous {
+			// The object exists more than once on one side. Which copy the
+			// project change belongs to is a review decision, never a default.
+			conflicts = append(conflicts, newRebaseConflict("semantic_ambiguous_identity", rel, projectRecord.ID, "the same semantic ID is declared more than once in the old upstream or the new upstream", []string{"keep_project", "use_target", "manual"}, "manual", baseFile, projectFile, targetFile))
+			continue
+		}
+		baseOK := baseState == rebaseIdentityUnique
+		targetOK := targetState == rebaseIdentityUnique
 		if !baseOK {
 			if targetOK {
 				if projectRecord.Digest == targetRecord.Digest {
@@ -366,7 +506,7 @@ func mergeJominiThreeWay(rel, baseText, projectText, targetText string, baseFile
 			continue
 		}
 		if !targetOK {
-			conflicts = append(conflicts, newRebaseConflict("semantic_delete_modify_conflict", rel, projectRecord.ID, "target deleted or ambiguously moved a semantic object that the project changed", []string{"keep_project", "use_target", "manual"}, "manual", baseFile, projectFile, targetFile))
+			conflicts = append(conflicts, newRebaseConflict("semantic_delete_modify_conflict", rel, projectRecord.ID, "target deleted a semantic object that the project changed", []string{"keep_project", "use_target", "manual"}, "manual", baseFile, projectFile, targetFile))
 			continue
 		}
 		merged := targetRecord.Raw
@@ -397,8 +537,12 @@ func mergeJominiThreeWay(rel, baseText, projectText, targetText string, baseFile
 		if _, exists := projectByID[id]; exists {
 			continue
 		}
-		targetRecord, targetOK := semantic.target.unique(baseRecord.ID)
-		if !targetOK {
+		targetRecord, targetState := semantic.target.lookup(baseRecord.ID)
+		if targetState == rebaseIdentityAmbiguous {
+			conflicts = append(conflicts, newRebaseConflict("semantic_ambiguous_identity", rel, baseRecord.ID, "project removed an object whose semantic ID is declared more than once in the new upstream", []string{"keep_project", "use_target", "manual"}, "manual", baseFile, projectFile, targetFile))
+			continue
+		}
+		if targetState != rebaseIdentityUnique {
 			continue
 		}
 		if targetRecord.Path != rel {

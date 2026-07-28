@@ -36,8 +36,27 @@ unknown_policy = "block"
 owned_prefixes = ["k10_"]
 
 # Optional configured source names used when validating the migration copy.
-# The target and migration copy are appended automatically.
+# Every name listed here is placed BELOW the new upstream in the validation
+# load stack; the target and migration copy are added automatically.
 validation_sources = ["game"]
+
+# Use validation_stack instead of validation_sources when a dependency does not
+# actually load below the new upstream in your playset. Position is
+# "above_target" (the source overrides the target) or "below_target".
+# Declaring both keys is an error.
+#
+# validation_stack = [
+#   { source = "compatibility_patch", position = "above_target" },
+#   { source = "game", position = "below_target" },
+# ]
+
+# Top-level project entries that are external state rather than Mod content.
+# They are left out of the overlay inventory, the migration copy, and every
+# transaction fingerprint, and they move with the project directory across
+# promotion and rollback instead of being copied. Omitting the key preserves
+# nothing and carries the whole tree, which is the historical behaviour.
+#
+# preserve_paths = [".git", "cache", "logs"]
 `
 
 func WriteRebaseProfileTemplate(path string) error {
@@ -110,12 +129,30 @@ func normalizeRebaseProfile(profile RebaseProfile) RebaseProfile {
 	for index := range profile.ValidationSources {
 		profile.ValidationSources[index] = strings.TrimSpace(profile.ValidationSources[index])
 	}
+	for index := range profile.ValidationStack {
+		profile.ValidationStack[index].Source = strings.TrimSpace(profile.ValidationStack[index].Source)
+		profile.ValidationStack[index].Position = strings.ToLower(strings.TrimSpace(profile.ValidationStack[index].Position))
+	}
+	for index := range profile.PreservePaths {
+		profile.PreservePaths[index] = strings.Trim(strings.TrimSpace(filepath.ToSlash(profile.PreservePaths[index])), "/")
+	}
 	sort.Strings(profile.OwnedPrefixes)
+	sort.Strings(profile.PreservePaths)
 	return profile
 }
 
+// rebaseProfileValidationSourceNames lists every auxiliary source the profile
+// pulls into a validation stack, in either notation.
+func rebaseProfileValidationSourceNames(profile RebaseProfile) []string {
+	names := append([]string(nil), profile.ValidationSources...)
+	for _, entry := range profile.ValidationStack {
+		names = append(names, entry.Source)
+	}
+	return names
+}
+
 func validateRebaseProfile(profile RebaseProfile) error {
-	if profile.SchemaVersion != RebaseSchemaVersion {
+	if profile.SchemaVersion != RebaseProfileSchemaVersion {
 		return fmt.Errorf("unsupported rebase profile schema %d", profile.SchemaVersion)
 	}
 	for label, value := range map[string]string{
@@ -163,6 +200,31 @@ func validateRebaseProfile(profile RebaseProfile) error {
 			return fmt.Errorf("owned_prefixes contains an invalid basename prefix %q", prefix)
 		}
 	}
+	if len(profile.ValidationStack) > 0 && len(profile.ValidationSources) > 0 {
+		return fmt.Errorf("validation_sources and validation_stack describe the same load order; declare only one")
+	}
+	seenStack := map[string]bool{}
+	for _, entry := range profile.ValidationStack {
+		name := strings.TrimSpace(entry.Source)
+		if name == "" {
+			return fmt.Errorf("validation_stack entry requires a source name")
+		}
+		if seenStack[strings.ToLower(name)] {
+			return fmt.Errorf("validation_stack repeats source %q", name)
+		}
+		seenStack[strings.ToLower(name)] = true
+		switch strings.ToLower(strings.TrimSpace(entry.Position)) {
+		case RebaseValidationAboveTarget, RebaseValidationBelowTarget:
+		default:
+			return fmt.Errorf("validation_stack source %q needs position %s or %s", name, RebaseValidationAboveTarget, RebaseValidationBelowTarget)
+		}
+	}
+	for _, preserve := range profile.PreservePaths {
+		value := strings.Trim(strings.TrimSpace(filepath.ToSlash(preserve)), "/")
+		if value == "" || strings.Contains(value, "/") || strings.ContainsAny(value, `\:`) || value == "." || value == ".." {
+			return fmt.Errorf("preserve_paths entry %q must be a single top-level project entry name", preserve)
+		}
+	}
 	return nil
 }
 
@@ -206,7 +268,7 @@ func resolveRebaseSources(cfg indexer.Config, profile RebaseProfile) (project, b
 	if pathsOverlapResolved(projectPath, basePath) || pathsOverlapResolved(projectPath, targetPath) || pathsOverlapResolved(basePath, targetPath) {
 		return project, base, target, fmt.Errorf("rebase project, base, and target directories must not overlap")
 	}
-	for _, sourceName := range profile.ValidationSources {
+	for _, sourceName := range rebaseProfileValidationSourceNames(profile) {
 		if _, lookupErr := sourceByName(cfg, sourceName); lookupErr != nil {
 			return project, base, target, fmt.Errorf("validation source: %w", lookupErr)
 		}

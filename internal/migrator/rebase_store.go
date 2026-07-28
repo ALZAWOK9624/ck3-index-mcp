@@ -1,6 +1,7 @@
 package migrator
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -19,9 +20,38 @@ import (
 const (
 	rebaseTransactionPrefix = "ck3-rebase-"
 	rebaseManifestName      = "transaction.json"
+	rebaseProgressName      = "progress.json"
+	rebaseDecisionsName     = "decisions.jsonl"
 	rebaseResolutionName    = "resolutions.json"
 	rebaseReportName        = "report.html"
+	// rebaseProgressStride bounds how often the fast-moving progress file is
+	// rewritten during a per-file loop. Progress is observability only: the
+	// manifest still records every durable phase transition.
+	rebaseProgressStride = 25
 )
+
+// rebaseManifestDocument is the on-disk shape of transaction.json. The
+// embedded transaction supplies every durable field except Files, which the
+// shadowing (always nil) member removes from the encoded manifest: keeping the
+// full decision list in the manifest made planning and building rewrite the
+// entire transaction once per file, which is quadratic in the file count. The
+// decisions live in their own journal and are reattached on load.
+//
+// The shadow field also makes the decoder tolerate a "files" key, so a
+// manifest written by a mixed-version toolchain is rejected on its schema
+// version rather than on an unknown-field error.
+type rebaseManifestDocument struct {
+	RebaseTransaction
+	Files json.RawMessage `json:"files,omitempty"`
+}
+
+// rebaseProgressDocument pins live progress to the manifest generation that
+// produced it, so a stale progress file left by an interrupted run can never
+// be shown against a newer transaction state.
+type rebaseProgressDocument struct {
+	Revision int64          `json:"revision"`
+	Progress RebaseProgress `json:"progress"`
+}
 
 func rebaseArtifactRoot(cfg indexer.Config, opts RebaseOptions) (string, error) {
 	root := strings.TrimSpace(opts.ArtifactRoot)
@@ -109,6 +139,10 @@ func ensureRebaseDirectory(path string) (string, error) {
 	return safePath, nil
 }
 
+// writeRebaseTransaction publishes the manifest under a compare-and-set on the
+// monotonic revision. A caller whose in-memory copy is older than the manifest
+// on disk is refused instead of overwriting the newer state; that is the last
+// defence behind the per-transaction lock when two processes still overlap.
 func writeRebaseTransaction(root string, transaction *RebaseTransaction) error {
 	dir, err := rebaseTransactionDir(root, transaction.ID)
 	if err != nil {
@@ -118,8 +152,135 @@ func writeRebaseTransaction(root string, transaction *RebaseTransaction) error {
 	if err != nil {
 		return err
 	}
+	current, err := readRebaseManifestRevision(dir)
+	if err != nil {
+		return err
+	}
+	if current != transaction.Revision {
+		return fmt.Errorf("rebase transaction %s was modified concurrently (expected revision %d, found %d); reload the transaction before writing", transaction.ID, transaction.Revision, current)
+	}
 	transaction.touch(time.Now())
-	return writeJSONAtomic(filepath.Join(dir, rebaseManifestName), transaction, 0o600)
+	next := transaction.Revision + 1
+	document := rebaseManifestDocument{RebaseTransaction: *transaction}
+	document.Revision = next
+	if err := writeJSONAtomic(filepath.Join(dir, rebaseManifestName), document, 0o600); err != nil {
+		return err
+	}
+	transaction.Revision = next
+	// The progress file is a projection of the manifest. Refreshing it here
+	// keeps a reader from seeing progress pinned to a superseded revision.
+	_ = writeRebaseProgress(dir, *transaction)
+	return nil
+}
+
+func readRebaseManifestRevision(dir string) (int64, error) {
+	data, err := os.ReadFile(filepath.Join(dir, rebaseManifestName))
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	var head struct {
+		Revision int64 `json:"revision"`
+	}
+	if err := json.Unmarshal(data, &head); err != nil {
+		return 0, fmt.Errorf("rebase transaction manifest is unreadable: %w", err)
+	}
+	return head.Revision, nil
+}
+
+// writeRebaseProgress rewrites only the small progress projection. It is
+// deliberately not fsynced: losing the last few percent of a progress counter
+// after a crash costs nothing, while fsyncing it once per file was a large
+// part of the old per-file manifest cost.
+func writeRebaseProgress(dir string, transaction RebaseTransaction) error {
+	document := rebaseProgressDocument{Revision: transaction.Revision, Progress: transaction.Progress}
+	data, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, rebaseProgressName), append(data, '\n'), 0o600)
+}
+
+// checkpointRebaseProgress records live per-file progress without touching the
+// manifest. Callers invoke it inside tight loops, so it throttles itself.
+func checkpointRebaseProgress(root string, transaction RebaseTransaction, completed, total int) error {
+	if completed != total && completed%rebaseProgressStride != 0 {
+		return nil
+	}
+	dir, err := rebaseTransactionDir(root, transaction.ID)
+	if err != nil {
+		return err
+	}
+	return writeRebaseProgress(dir, transaction)
+}
+
+func loadRebaseProgress(dir string, revision int64) (RebaseProgress, bool) {
+	data, err := os.ReadFile(filepath.Join(dir, rebaseProgressName))
+	if err != nil {
+		return RebaseProgress{}, false
+	}
+	var document rebaseProgressDocument
+	if err := json.Unmarshal(data, &document); err != nil || document.Revision != revision {
+		return RebaseProgress{}, false
+	}
+	return document.Progress, true
+}
+
+// writeRebaseDecisions replaces the decision journal in one atomic write. It is
+// called at phase boundaries rather than per file, which is what turns the
+// planning and build passes from quadratic into linear manifest traffic.
+func writeRebaseDecisions(root, id string, decisions []RebaseFileDecision) error {
+	dir, err := rebaseTransactionDir(root, id)
+	if err != nil {
+		return err
+	}
+	dir, err = ensureRebaseDirectory(dir)
+	if err != nil {
+		return err
+	}
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	for index := range decisions {
+		if err := encoder.Encode(decisions[index]); err != nil {
+			return err
+		}
+	}
+	return writeBytesAtomic(filepath.Join(dir, rebaseDecisionsName), encoded.Bytes(), 0o600)
+}
+
+func loadRebaseDecisions(dir string) ([]RebaseFileDecision, error) {
+	path := filepath.Join(dir, rebaseDecisionsName)
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("rebase decision journal is not a regular file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	decoder := json.NewDecoder(file)
+	decoder.DisallowUnknownFields()
+	var decisions []RebaseFileDecision
+	for {
+		var decision RebaseFileDecision
+		if err := decoder.Decode(&decision); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, fmt.Errorf("rebase decision journal is invalid: %w", err)
+		}
+		decisions = append(decisions, decision)
+	}
+	return decisions, nil
 }
 
 func LoadRebaseTransaction(cfg indexer.Config, id string, opts RebaseOptions) (RebaseTransaction, error) {
@@ -150,10 +311,11 @@ func loadRebaseTransactionFromRoot(root, id string) (RebaseTransaction, error) {
 	defer file.Close()
 	decoder := json.NewDecoder(file)
 	decoder.DisallowUnknownFields()
-	var transaction RebaseTransaction
-	if err := decoder.Decode(&transaction); err != nil {
+	var document rebaseManifestDocument
+	if err := decoder.Decode(&document); err != nil {
 		return RebaseTransaction{}, err
 	}
+	transaction := document.RebaseTransaction
 	if transaction.SchemaVersion != RebaseSchemaVersion || transaction.ID != id {
 		return RebaseTransaction{}, fmt.Errorf("rebase transaction identity or schema is invalid")
 	}
@@ -162,6 +324,16 @@ func loadRebaseTransactionFromRoot(root, id string) (RebaseTransaction, error) {
 			return RebaseTransaction{}, fmt.Errorf("rebase transaction manifest contains trailing data")
 		}
 		return RebaseTransaction{}, fmt.Errorf("rebase transaction manifest has invalid trailing data: %w", err)
+	}
+	decisions, err := loadRebaseDecisions(dir)
+	if err != nil {
+		return RebaseTransaction{}, err
+	}
+	transaction.Files = decisions
+	// Live progress is only trusted when it belongs to this exact manifest
+	// generation; the manifest itself always carries the durable phase.
+	if progress, ok := loadRebaseProgress(dir, transaction.Revision); ok {
+		transaction.Progress = progress
 	}
 	return transaction, nil
 }
@@ -219,7 +391,10 @@ func writeJSONAtomic(path string, value any, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	data = append(data, '\n')
+	return writeBytesAtomic(path, append(data, '\n'), mode)
+}
+
+func writeBytesAtomic(path string, data []byte, mode os.FileMode) error {
 	parent, err := ensureRebaseDirectory(filepath.Dir(path))
 	if err != nil {
 		return err

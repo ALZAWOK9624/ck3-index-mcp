@@ -115,12 +115,13 @@ func rebuildMapSurfaceMaterialCache(ctx context.Context, tx *sql.Tx, active map[
 	if len(materials) == 0 || len(materials) > 255 {
 		return fmt.Errorf("surface material catalog has unsupported size %d", len(materials))
 	}
-	indexTGA, err := openTGA(indexFile.Path)
+	budget := mapSurfaceTGABudget(ctx, tx)
+	indexTGA, err := openTGA(ctx, indexFile.Path, budget)
 	if err != nil {
 		return fmt.Errorf("detail_index.tga: %w", err)
 	}
 	defer indexTGA.Close()
-	intensityTGA, err := openTGA(intensityFile.Path)
+	intensityTGA, err := openTGA(ctx, intensityFile.Path, budget)
 	if err != nil {
 		return fmt.Errorf("detail_intensity.tga: %w", err)
 	}
@@ -140,6 +141,11 @@ func rebuildMapSurfaceMaterialCache(ctx context.Context, tx *sql.Tx, active map[
 	indexRow := make([]byte, indexTGA.Width*4)
 	intensityRow := make([]byte, intensityTGA.Width*4)
 	for y := 0; y < indexTGA.Height; y++ {
+		// A full-map scan of two rasters is one of the longest single steps in
+		// a rebuild; honour cancellation between rows.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := indexTGA.ReadRow(y, indexRow); err != nil {
 			return err
 		}
@@ -520,7 +526,41 @@ func mapSurfaceResourcePath(value string) string {
 	return pathpkg.Join("gfx/map/terrain", value)
 }
 
-func openTGA(path string) (*tgaReader, error) {
+// tgaBudget bounds what a TGA header is allowed to make this process
+// allocate. The dimension fields are 16-bit, so a corrupt or hostile file can
+// claim 65535x65535 and ask for a 17 GB frame buffer before a single pixel has
+// been validated. Two of these are opened per surface-material rebuild, next
+// to two full-size Gray rasters, so the budget is enforced before allocation.
+type tgaBudget struct {
+	MaxWidth  int
+	MaxHeight int
+	MaxPixels int64
+}
+
+// defaultTGABudget applies when the map dimensions are not yet known. CK3
+// terrain rasters are map-sized (8192x4096 on the vanilla map), so 64
+// megapixels leaves generous headroom for larger custom maps while still
+// bounding a single decode to 256 MB.
+func defaultTGABudget() tgaBudget {
+	return tgaBudget{MaxWidth: 16384, MaxHeight: 16384, MaxPixels: 64 << 20}
+}
+
+// mapSurfaceTGABudget prefers the active map dimensions. The surface material
+// pass indexes province runs by absolute map coordinate straight into TGA
+// rows, so a terrain raster larger than the map is already meaningless.
+func mapSurfaceTGABudget(ctx context.Context, tx *sql.Tx) tgaBudget {
+	budget := defaultTGABudget()
+	var width, height int
+	_ = tx.QueryRowContext(ctx, `SELECT CAST(value AS INTEGER) FROM meta WHERE key='map_width'`).Scan(&width)
+	_ = tx.QueryRowContext(ctx, `SELECT CAST(value AS INTEGER) FROM meta WHERE key='map_height'`).Scan(&height)
+	if width > 0 && height > 0 && int64(width)*int64(height) <= budget.MaxPixels {
+		budget.MaxWidth, budget.MaxHeight = width, height
+		budget.MaxPixels = int64(width) * int64(height)
+	}
+	return budget
+}
+
+func openTGA(ctx context.Context, path string, budget tgaBudget) (*tgaReader, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -541,9 +581,21 @@ func openTGA(path string) (*tgaReader, error) {
 		f.Close()
 		return nil, fmt.Errorf("invalid TGA dimensions or depth %dx%dx%d", width, height, depth)
 	}
+	// Bit 4 of the image descriptor selects a right-to-left pixel order. Only
+	// the vertical origin is honoured when reading rows, so a horizontally
+	// flipped image would be read mirrored. Reject it rather than silently
+	// mapping terrain material indexes to the wrong provinces.
+	if header[17]&0x10 != 0 {
+		f.Close()
+		return nil, fmt.Errorf("right-to-left TGA pixel order is not supported")
+	}
+	if err := checkTGABudget(width, height, budget); err != nil {
+		f.Close()
+		return nil, err
+	}
 	reader := &tgaReader{File: f, Width: width, Height: height, Depth: depth, TopOrigin: header[17]&0x20 != 0, DataOffset: int64(18 + int(header[0]))}
 	if header[2] == 10 {
-		pixels, err := decodeRLETGA(f, reader.DataOffset, width, height)
+		pixels, err := decodeRLETGA(ctx, f, reader.DataOffset, width, height)
 		if err != nil {
 			f.Close()
 			return nil, err
@@ -553,10 +605,30 @@ func openTGA(path string) (*tgaReader, error) {
 	return reader, nil
 }
 
+func checkTGABudget(width, height int, budget tgaBudget) error {
+	if budget.MaxWidth > 0 && width > budget.MaxWidth {
+		return fmt.Errorf("TGA width %d exceeds the %d pixel budget for this map", width, budget.MaxWidth)
+	}
+	if budget.MaxHeight > 0 && height > budget.MaxHeight {
+		return fmt.Errorf("TGA height %d exceeds the %d pixel budget for this map", height, budget.MaxHeight)
+	}
+	pixels := int64(width) * int64(height)
+	if budget.MaxPixels > 0 && pixels > budget.MaxPixels {
+		return fmt.Errorf("TGA %dx%d declares %d pixels, above the %d pixel budget", width, height, pixels, budget.MaxPixels)
+	}
+	// The decoded frame is four bytes per pixel; refuse anything that cannot be
+	// addressed as an int on this platform instead of wrapping to a small
+	// allocation and then writing past it.
+	if pixels > int64(math.MaxInt)/4 {
+		return fmt.Errorf("TGA %dx%d does not fit in addressable memory", width, height)
+	}
+	return nil
+}
+
 // decodeRLETGA expands a run-length encoded 32-bit true-color image into a
 // flat file-row-ordered buffer. Packets may span row boundaries, so the stream
 // is decoded as one continuous pixel sequence rather than row by row.
-func decodeRLETGA(f *os.File, dataOffset int64, width, height int) ([]byte, error) {
+func decodeRLETGA(ctx context.Context, f *os.File, dataOffset int64, width, height int) ([]byte, error) {
 	if _, err := f.Seek(dataOffset, io.SeekStart); err != nil {
 		return nil, err
 	}
@@ -564,7 +636,17 @@ func decodeRLETGA(f *os.File, dataOffset int64, width, height int) ([]byte, erro
 	pixels := make([]byte, total*4)
 	src := bufio.NewReaderSize(f, 1<<20)
 	pixel := make([]byte, 4)
+	// Decoding a map-sized frame is long enough that a cancelled MCP request
+	// must be able to stop it. Checking once per row-equivalent of pixels keeps
+	// the check off the per-packet hot path.
+	nextCancellationCheck := width
 	for written := 0; written < total; {
+		if written >= nextCancellationCheck {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			nextCancellationCheck = written + width
+		}
 		packet, err := src.ReadByte()
 		if err != nil {
 			return nil, fmt.Errorf("truncated RLE stream after %d of %d pixels: %w", written, total, err)

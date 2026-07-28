@@ -27,7 +27,7 @@ func TestCollectRebaseOverlayFilesPreservesAllRegularProjectFiles(t *testing.T) 
 		writeText(t, filepath.Join(root, filepath.FromSlash(rel)), value)
 	}
 
-	files, excluded, err := collectRebaseOverlayFiles(root)
+	files, excluded, err := collectRebaseOverlayFiles(root, rebaseOverlayPolicy{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestCollectRebaseOverlayFilesRejectsSymbolicLinks(t *testing.T) {
 		// a test link. The collector still rejects one when it is present.
 		t.Skipf("symbolic links are unavailable in this test environment: %v", err)
 	}
-	if _, _, err := collectRebaseOverlayFiles(root); err == nil || !strings.Contains(err.Error(), "symbolic links are not supported") {
+	if _, _, err := collectRebaseOverlayFiles(root, rebaseOverlayPolicy{}); err == nil || !strings.Contains(err.Error(), "symbolic links are not supported") {
 		t.Fatalf("full-tree inventory accepted symbolic link: %v", err)
 	}
 }
@@ -294,7 +294,7 @@ func TestVerifyRebaseOverlayRequiresExactPassThroughFiles(t *testing.T) {
 	root := t.TempDir()
 	writeText(t, filepath.Join(root, "README.md"), "changed\n")
 	passThrough := []SnapshotFile{{Path: "README.md", SHA256: hashBytes([]byte("original\n")), Size: int64(len("original\n")), Text: true}}
-	if _, err := verifyRebaseOverlay(root, nil, passThrough); err == nil || !strings.Contains(err.Error(), "pass-through") {
+	if _, err := verifyRebaseOverlay(root, nil, passThrough, rebaseOverlayPolicy{}); err == nil || !strings.Contains(err.Error(), "pass-through") {
 		t.Fatalf("pass-through verification accepted changed file: %v", err)
 	}
 }

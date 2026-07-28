@@ -431,8 +431,9 @@ func rebaseSemanticLayerFromText(rel, text string) rebaseSemanticLayer {
 			layer.parseErrors[pathKey] = "could not locate parsed object span"
 			return layer
 		}
+		id, stable := semanticNodeID(rel, node)
 		record := rebaseSemanticRecord{
-			ID: semanticNodeID(rel, node), Path: rel, Raw: string(runes[start:end]), Digest: semanticNodeDigest(node), Node: node,
+			ID: id, Path: rel, Raw: string(runes[start:end]), Digest: semanticNodeDigest(node), Node: node, Unstable: !stable,
 		}
 		key := strings.ToLower(record.ID)
 		layer.recordsByID[key] = append(layer.recordsByID[key], record)

@@ -24,13 +24,13 @@ type rebaseDirectoryState struct {
 	SHA256 string
 }
 
-func rebaseDirectoryStateAt(path string) (rebaseDirectoryState, error) {
+func rebaseDirectoryStateAt(path string, policy rebaseOverlayPolicy) (rebaseDirectoryState, error) {
 	if _, err := os.Lstat(path); os.IsNotExist(err) {
 		return rebaseDirectoryState{}, nil
 	} else if err != nil {
 		return rebaseDirectoryState{}, err
 	}
-	hash, err := rebaseDirectoryFingerprint(path)
+	hash, err := rebaseDirectoryFingerprint(path, policy)
 	if err != nil {
 		return rebaseDirectoryState{}, err
 	}
@@ -85,16 +85,16 @@ func rebaseValidatePromotionReceipt(transaction RebaseTransaction, projectPath, 
 	return nil
 }
 
-func rebasePromotionLayout(projectPath, backupPath, outputPath string, receipt *RebasePromotionReceipt) (string, error) {
-	project, err := rebaseDirectoryStateAt(projectPath)
+func rebasePromotionLayout(projectPath, backupPath, outputPath string, receipt *RebasePromotionReceipt, policy rebaseOverlayPolicy) (string, error) {
+	project, err := rebaseDirectoryStateAt(projectPath, policy)
 	if err != nil {
 		return "", fmt.Errorf("formal project state: %w", err)
 	}
-	backup, err := rebaseDirectoryStateAt(backupPath)
+	backup, err := rebaseDirectoryStateAt(backupPath, policy)
 	if err != nil {
 		return "", fmt.Errorf("promotion backup state: %w", err)
 	}
-	output, err := rebaseDirectoryStateAt(outputPath)
+	output, err := rebaseDirectoryStateAt(outputPath, policy)
 	if err != nil {
 		return "", fmt.Errorf("migration copy state: %w", err)
 	}
@@ -111,16 +111,16 @@ func rebasePromotionLayout(projectPath, backupPath, outputPath string, receipt *
 	}
 }
 
-func rebaseRollbackLayout(projectPath, backupPath, outputPath string, receipt *RebasePromotionReceipt) (string, error) {
-	project, err := rebaseDirectoryStateAt(projectPath)
+func rebaseRollbackLayout(projectPath, backupPath, outputPath string, receipt *RebasePromotionReceipt, policy rebaseOverlayPolicy) (string, error) {
+	project, err := rebaseDirectoryStateAt(projectPath, policy)
 	if err != nil {
 		return "", fmt.Errorf("formal project state: %w", err)
 	}
-	backup, err := rebaseDirectoryStateAt(backupPath)
+	backup, err := rebaseDirectoryStateAt(backupPath, policy)
 	if err != nil {
 		return "", fmt.Errorf("promotion backup state: %w", err)
 	}
-	output, err := rebaseDirectoryStateAt(outputPath)
+	output, err := rebaseDirectoryStateAt(outputPath, policy)
 	if err != nil {
 		return "", fmt.Errorf("migration copy state: %w", err)
 	}
@@ -154,8 +154,9 @@ func resumeRebasePromotion(ctx context.Context, cfg indexer.Config, root string,
 	if err := rebaseValidatePromotionReceipt(*transaction, projectPath, backupPath); err != nil {
 		return *transaction, err
 	}
+	policy := newRebaseOverlayPolicy(transaction.Profile)
 	for {
-		layout, err := rebasePromotionLayout(projectPath, backupPath, outputPath, transaction.Promotion)
+		layout, err := rebasePromotionLayout(projectPath, backupPath, outputPath, transaction.Promotion, policy)
 		if err != nil {
 			return *transaction, err
 		}
@@ -175,6 +176,14 @@ func resumeRebasePromotion(ctx context.Context, cfg indexer.Config, root string,
 		case rebasePromotionBackupMovedStage:
 			if err := os.Rename(outputPath, projectPath); err != nil {
 				return *transaction, fmt.Errorf("promote migration copy: %w", err)
+			}
+			// Preserved entries were never copied into the migration copy, so
+			// they are still sitting in the directory that used to be the
+			// project. Move them across before the promotion is recorded as
+			// complete; they are excluded from every fingerprint, so this does
+			// not change the layout the state machine reasons about.
+			if err := carryRebasePreservedPaths(backupPath, projectPath, policy); err != nil {
+				return *transaction, fmt.Errorf("carry preserved project state into the promoted project: %w", err)
 			}
 			transaction.Promotion.Stage = rebasePromotionCompleteStage
 			transaction.Promotion.PromotedAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -202,6 +211,41 @@ func resumeRebasePromotion(ctx context.Context, cfg indexer.Config, root string,
 	}
 }
 
+// carryRebasePreservedPaths moves the profile's preserve_paths entries from
+// the directory that used to hold the formal project into the one that holds
+// it now. Preserved state is deliberately never copied through a transaction:
+// a .git directory or a runtime cache changes while the migration runs, would
+// invalidate the transaction fingerprint for no reason, and can be very large.
+// Moving it keeps exactly one copy and never deletes anything: an entry that
+// is already present at the destination is left where it is, in the source
+// directory, rather than being overwritten.
+func carryRebasePreservedPaths(from, to string, policy rebaseOverlayPolicy) error {
+	if len(policy.Preserve) == 0 {
+		return nil
+	}
+	for _, name := range policy.Preserve {
+		source := filepath.Join(from, name)
+		if _, err := os.Lstat(source); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		destination := filepath.Join(to, name)
+		if _, err := os.Lstat(destination); err == nil {
+			// The migrated tree already supplies this entry. Leaving the old one
+			// behind in the previous directory is recoverable; replacing it is
+			// not.
+			continue
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		if err := os.Rename(source, destination); err != nil {
+			return fmt.Errorf("move preserved entry %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
 func rebaseRestorePromoteStart(projectPath, backupPath, outputPath string) error {
 	if err := os.Rename(projectPath, outputPath); err != nil {
 		return fmt.Errorf("move promoted project back to migration copy: %w", err)
@@ -225,8 +269,9 @@ func resumeRebaseRollback(ctx context.Context, root string, transaction *RebaseT
 	if err := rebaseValidatePromotionReceipt(*transaction, projectPath, backupPath); err != nil {
 		return *transaction, err
 	}
+	policy := newRebaseOverlayPolicy(transaction.Profile)
 	for {
-		layout, err := rebaseRollbackLayout(projectPath, backupPath, outputPath, transaction.Promotion)
+		layout, err := rebaseRollbackLayout(projectPath, backupPath, outputPath, transaction.Promotion, policy)
 		if err != nil {
 			return *transaction, err
 		}
@@ -246,6 +291,12 @@ func resumeRebaseRollback(ctx context.Context, root string, transaction *RebaseT
 		case rebaseRollbackPromotedMovedStage:
 			if err := os.Rename(backupPath, projectPath); err != nil {
 				return *transaction, fmt.Errorf("restore formal project: %w", err)
+			}
+			// Same rule in reverse: preserved state followed the promoted tree
+			// to the migration-copy path and belongs with whichever directory
+			// is the formal project now.
+			if err := carryRebasePreservedPaths(outputPath, projectPath, policy); err != nil {
+				return *transaction, fmt.Errorf("carry preserved project state back into the restored project: %w", err)
 			}
 			transaction.Promotion.Stage = rebaseRollbackCompleteStage
 			transaction.Promotion.RolledBackAt = time.Now().UTC().Format(time.RFC3339Nano)

@@ -109,19 +109,53 @@ func collectFiles(root string) ([]SnapshotFile, []string, error) {
 	return files, excluded, err
 }
 
-// collectRebaseOverlayFiles inventories the complete project tree that a
-// rebase build carries into its isolated output.  It is deliberately not used
-// for CK3 semantic planning: only collectFiles defines the load-stack scope.
+// rebaseOverlayPolicy names the top-level project entries that are external
+// state rather than Mod content. They are excluded from the overlay inventory,
+// the migration copy, and every transaction fingerprint, and they stay with the
+// project directory across a promotion instead of being copied.
+//
+// An empty policy keeps the historical behaviour of carrying the entire tree.
+type rebaseOverlayPolicy struct {
+	Preserve []string
+}
+
+func newRebaseOverlayPolicy(profile RebaseProfile) rebaseOverlayPolicy {
+	policy := rebaseOverlayPolicy{}
+	for _, value := range profile.PreservePaths {
+		name := strings.Trim(strings.TrimSpace(filepath.ToSlash(value)), "/")
+		if name == "" || strings.Contains(name, "/") {
+			continue
+		}
+		policy.Preserve = append(policy.Preserve, name)
+	}
+	sort.Strings(policy.Preserve)
+	return policy
+}
+
+func (policy rebaseOverlayPolicy) preserved(name string) bool {
+	for _, value := range policy.Preserve {
+		if strings.EqualFold(value, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// collectRebaseOverlayFiles inventories the project tree that a rebase build
+// carries into its isolated output.  It is deliberately not used for CK3
+// semantic planning: only collectFiles defines the load-stack scope.
 //
 // The inventory includes ordinary non-load-root content (for example
-// README.md, tools/, source/, .git/, backups/, and map-editor material) so an
-// atomic promotion cannot silently discard project-owned material. There are
-// deliberately no directory-name exclusions here: artifact and staging roots
-// are already required to live outside configured sources, and a matching
-// directory inside the formal project belongs to the user. It rejects links
+// README.md, tools/, source/, and map-editor material) so an atomic promotion
+// cannot silently discard project-owned material. There are no implicit
+// directory-name exclusions: artifact and staging roots are already required to
+// live outside configured sources, and a matching directory inside the formal
+// project belongs to the user. Only the profile's explicit preserve_paths are
+// skipped, and those are never discarded either - they stay with the project
+// directory instead of being copied through the transaction. It rejects links
 // and special files instead of copying an ambiguous filesystem object into the
 // replacement project.
-func collectRebaseOverlayFiles(root string) ([]SnapshotFile, []string, error) {
+func collectRebaseOverlayFiles(root string, policy rebaseOverlayPolicy) ([]SnapshotFile, []string, error) {
 	rootInfo, err := os.Lstat(root)
 	if err != nil {
 		return nil, nil, err
@@ -147,6 +181,13 @@ func collectRebaseOverlayFiles(root string) ([]SnapshotFile, []string, error) {
 		rel = filepath.ToSlash(rel)
 		if _, err := normalizeRel(rel); err != nil {
 			return err
+		}
+		if !strings.Contains(rel, "/") && policy.preserved(rel) {
+			excluded = append(excluded, rel)
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			return fmt.Errorf("symbolic links are not supported: %s", rel)

@@ -25,17 +25,17 @@ func TestPlanRebasePrunesShadowAndMergesDisjointJominiFields(t *testing.T) {
 	writeText(t, filepath.Join(base, "common", "shadow.txt"), "value = old\n")
 	writeText(t, filepath.Join(project, "common", "shadow.txt"), "value = old\n")
 	writeText(t, filepath.Join(target, "common", "shadow.txt"), "value = target\n")
-	writeText(t, filepath.Join(base, "common", "cultures.txt"), `culture_a = {
+	writeText(t, filepath.Join(base, "common", "culture", "cultures", "cultures.txt"), `culture_a = {
 	ethos = old
 	traditions = { tradition_old }
 }
 `)
-	writeText(t, filepath.Join(project, "common", "cultures.txt"), `culture_a = {
+	writeText(t, filepath.Join(project, "common", "culture", "cultures", "cultures.txt"), `culture_a = {
 	ethos = old
 	traditions = { tradition_old tradition_project }
 }
 `)
-	writeText(t, filepath.Join(target, "common", "cultures.txt"), `culture_a = {
+	writeText(t, filepath.Join(target, "common", "culture", "cultures", "cultures.txt"), `culture_a = {
 	ethos = target
 	traditions = { tradition_old }
 }
@@ -76,7 +76,7 @@ validation_sources = []
 	if custom.Classification != "project_added" || custom.Action != "keep_project" {
 		t.Fatalf("custom decision=%+v", custom)
 	}
-	culture := decisionForPath(t, transaction, "common/cultures.txt")
+	culture := decisionForPath(t, transaction, "common/culture/cultures/cultures.txt")
 	if culture.Action != "write_candidate" || culture.CandidatePath == "" || !culture.Safe {
 		t.Fatalf("culture decision=%+v", culture)
 	}

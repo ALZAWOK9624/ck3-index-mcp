@@ -253,6 +253,15 @@ func newRebaseReviewHandler(root, id, token string) http.Handler {
 			}
 			resolutionMu.Lock()
 			defer resolutionMu.Unlock()
+			// The in-process mutex only orders this server's own handlers. A
+			// concurrent `migrate build` in another process must also be excluded
+			// while review choices are being written.
+			transactionLock, err := acquireRebaseTransactionLock(root, id, "review-resolution")
+			if err != nil {
+				http.Error(writer, "the transaction is locked by another migrate operation", http.StatusConflict)
+				return
+			}
+			defer func() { _ = transactionLock.Release() }()
 			resolutions, err := decodeRebaseResolutionRequest(writer, request)
 			if err != nil {
 				status := http.StatusBadRequest
@@ -299,6 +308,12 @@ func newRebaseReviewHandler(root, id, token string) http.Handler {
 		}
 		resolutionMu.Lock()
 		defer resolutionMu.Unlock()
+		transactionLock, err := acquireRebaseTransactionLock(root, id, "review-manual-upload")
+		if err != nil {
+			http.Error(writer, "the transaction is locked by another migrate operation", http.StatusConflict)
+			return
+		}
+		defer func() { _ = transactionLock.Release() }()
 		result, err := storeRebaseManualUpload(writer, request, root, id)
 		if err != nil {
 			status := http.StatusBadRequest

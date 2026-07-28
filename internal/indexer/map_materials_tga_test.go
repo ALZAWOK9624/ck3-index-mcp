@@ -1,9 +1,12 @@
 package indexer
 
 import (
+	"context"
 	"encoding/binary"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -38,7 +41,7 @@ func rawPixels(count int) []byte {
 
 func readAllRows(t *testing.T, path string) [][]byte {
 	t.Helper()
-	reader, err := openTGA(path)
+	reader, err := openTGA(context.Background(), path, defaultTGABudget())
 	if err != nil {
 		t.Fatalf("openTGA(%s): %v", filepath.Base(path), err)
 	}
@@ -100,7 +103,7 @@ func TestOpenTGARejectsTruncatedRLEStream(t *testing.T) {
 	path := filepath.Join(dir, "truncated.tga")
 	// Claims a 12-pixel run but supplies only 2 bytes of the 4-byte pixel.
 	writeTGA(t, path, 10, 5, 4, false, []byte{0x80 | 11, 0x01, 0x02})
-	if _, err := openTGA(path); err == nil {
+	if _, err := openTGA(context.Background(), path, defaultTGABudget()); err == nil {
 		t.Fatal("expected an error for a truncated RLE stream, got nil")
 	}
 }
@@ -111,8 +114,57 @@ func TestOpenTGARejectsOverrunningRLEPacket(t *testing.T) {
 	// A 128-pixel run in a 2x2 image must not write past the frame.
 	body := append([]byte{0x80 | 127}, 0x01, 0x02, 0x03, 0x04)
 	writeTGA(t, path, 10, 2, 2, false, body)
-	if _, err := openTGA(path); err == nil {
+	if _, err := openTGA(context.Background(), path, defaultTGABudget()); err == nil {
 		t.Fatal("expected an error for an overrunning RLE packet, got nil")
+	}
+}
+
+// A 16-bit dimension field lets a corrupt header claim 65535x65535, which
+// would ask for a 17 GB frame buffer before any pixel has been validated. The
+// budget has to be applied to the header, not to the bytes actually present.
+func TestOpenTGARejectsHeaderExceedingPixelBudget(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "huge.tga")
+	writeTGA(t, path, 10, 65535, 65535, false, []byte{0x80 | 11, 0x01, 0x02, 0x03, 0x04})
+	_, err := openTGA(context.Background(), path, defaultTGABudget())
+	if err == nil {
+		t.Fatal("expected an error for a TGA above the pixel budget, got nil")
+	}
+	if !strings.Contains(err.Error(), "budget") {
+		t.Fatalf("error did not name the budget: %v", err)
+	}
+}
+
+func TestOpenTGARejectsRightToLeftOrigin(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mirrored.tga")
+	header := make([]byte, 18)
+	header[2] = 2
+	binary.LittleEndian.PutUint16(header[12:14], 2)
+	binary.LittleEndian.PutUint16(header[14:16], 2)
+	header[16] = 32
+	header[17] = 0x10 // right-to-left pixel order
+	if err := os.WriteFile(path, append(header, rawPixels(4)...), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openTGA(context.Background(), path, defaultTGABudget()); err == nil {
+		t.Fatal("expected an error for a right-to-left TGA, got nil")
+	}
+}
+
+func TestOpenTGAHonoursCancellationDuringRLEDecode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cancelled.tga")
+	const width, height = 64, 64
+	body := make([]byte, 0, height*5)
+	for row := 0; row < height; row++ {
+		body = append(body, 0x80|byte(width-1), 0x01, 0x02, 0x03, 0x04)
+	}
+	writeTGA(t, path, 10, width, height, false, body)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := openTGA(ctx, path, defaultTGABudget()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled RLE decode error = %v, want context.Canceled", err)
 	}
 }
 
@@ -128,7 +180,7 @@ func TestOpenTGAStillRejectsColorMapped(t *testing.T) {
 	if err := os.WriteFile(path, header, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := openTGA(path); err == nil {
+	if _, err := openTGA(context.Background(), path, defaultTGABudget()); err == nil {
 		t.Fatal("expected an error for a color-mapped TGA, got nil")
 	}
 }

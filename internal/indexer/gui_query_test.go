@@ -378,8 +378,32 @@ func TestSelectGUIPreviewDiagnosticsKeepsOnlyContributingSpans(t *testing.T) {
 		{Code: "gui_expansion_limit", Severity: "warning", Source: "gui/dependency.gui", Span: SourceSpan{Line: 1, EndLine: 1}},
 	}
 	selected := selectGUIPreviewDiagnostics(values, "panel", nodes, 8)
-	if len(selected) != 3 || selected[0].Code != "inside" || selected[1].Code != "named" || selected[2].Code != "gui_expansion_limit" {
+	// Ordered by severity rank, not by the severity string: alphabetically
+	// "info" sorts before "warning", which is the wrong priority.
+	if len(selected) != 3 || selected[0].Code != "inside" || selected[1].Code != "gui_expansion_limit" || selected[2].Code != "named" {
 		t.Fatalf("focused GUI diagnostics=%+v", selected)
+	}
+}
+
+// A focused query must report the findings that matter, not the ones that
+// happen to be scanned first. Truncating before sorting let a run of leading
+// informational diagnostics evict every error from the response.
+func TestSelectGUIDiagnosticsRanksBySeverityBeforeApplyingLimit(t *testing.T) {
+	var values []GUIDiagnostic
+	for index := 0; index < 8; index++ {
+		values = append(values, GUIDiagnostic{Code: "note", Severity: "info", Symbol: "panel", Source: "gui/panel.gui"})
+	}
+	values = append(values,
+		GUIDiagnostic{Code: "broken_reference", Severity: "error", Symbol: "panel", Source: "gui/panel.gui"},
+		GUIDiagnostic{Code: "suspicious", Severity: "warning", Symbol: "panel", Source: "gui/panel.gui"},
+	)
+	selected := selectGUIDiagnostics(values, "panel", "", 2)
+	if len(selected) != 2 || selected[0].Code != "broken_reference" || selected[1].Code != "suspicious" {
+		t.Fatalf("severity-ranked GUI diagnostics=%+v", selected)
+	}
+	previewSelected := selectGUIPreviewDiagnostics(values, "panel", nil, 2)
+	if len(previewSelected) != 2 || previewSelected[0].Code != "broken_reference" || previewSelected[1].Code != "suspicious" {
+		t.Fatalf("severity-ranked GUI preview diagnostics=%+v", previewSelected)
 	}
 }
 

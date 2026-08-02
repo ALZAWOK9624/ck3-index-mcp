@@ -52,7 +52,12 @@ func openSQLite(path string, readOnly bool) (*DB, error) {
 	// modernc applies _pragma to every connection opened by database/sql.
 	// A one-off PRAGMA Exec only configures whichever pooled connection ran it,
 	// causing intermittent SQLITE_BUSY failures on the remaining connections.
-	query.Set("_pragma", "busy_timeout=5000")
+	//
+	// Add, never Set: url.Values.Set replaces the whole key, so a second Set
+	// would silently discard every pragma but the last.
+	for _, pragma := range readConnectionPragmas {
+		query.Add("_pragma", pragma)
+	}
 	if readOnly {
 		query.Set("mode", "ro")
 	}
@@ -62,12 +67,42 @@ func openSQLite(path string, readOnly bool) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(8)
+	db.SetMaxOpenConns(maxReadConnections)
+	// Without a matching idle count database/sql keeps only two connections and
+	// closes the rest after each burst of tool calls. Reopening pays the connect
+	// cost again and, worse, starts over with an empty page cache, so the
+	// cache_size above would never accumulate anything.
+	db.SetMaxIdleConns(maxReadConnections)
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return &DB{sql: db, path: path}, nil
+}
+
+const maxReadConnections = 8
+
+// readConnectionPragmas configure the query path. Only busy_timeout used to be
+// set here, which left a multi-gigabyte index being read through SQLite's
+// defaults: a 2 MB page cache and on-disk temporary storage. The scan path had
+// carried equivalent tuning since it was written (see scanWriteConnection); the
+// read path simply never got it.
+//
+// cache_size is per connection, so the budget below is multiplied by
+// maxReadConnections in the worst case. 64 MiB each caps that at half a
+// gigabyte while still being thirty-two times the previous cache.
+//
+// temp_store matters more than the cache here. Nearly every hot query orders by
+// columns no index covers and therefore builds a temporary b-tree; on the
+// default setting each of those spills to disk.
+var readConnectionPragmas = []string{
+	"busy_timeout=5000",
+	"cache_size=-65536",
+	"temp_store=MEMORY",
+	// Memory-mapped reads avoid a pread and a page copy per access. The value is
+	// an upper bound, not an allocation: SQLite maps at most the file's length,
+	// and falls back to ordinary I/O where the mapping cannot be established.
+	"mmap_size=1073741824",
 }
 
 func (db *DB) Close() error { return db.sql.Close() }

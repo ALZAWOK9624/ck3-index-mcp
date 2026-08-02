@@ -1,0 +1,58 @@
+[
+  {
+    "name": "search/prefix",
+    "wire_bytes": 4361,
+    "content_bytes": 1936,
+    "structured_bytes": 1936,
+    "evidence_items": 8
+  },
+  {
+    "name": "search/prefix_limit20",
+    "wire_bytes": 9453,
+    "content_bytes": 4314,
+    "structured_bytes": 4314,
+    "evidence_items": 20
+  },
+  {
+    "name": "search/exact",
+    "wire_bytes": 4965,
+    "content_bytes": 2237,
+    "structured_bytes": 2237,
+    "evidence_items": 8
+  },
+  {
+    "name": "inspect/aggregate",
+    "wire_bytes": 14353,
+    "content_bytes": 6731,
+    "structured_bytes": 6731,
+    "evidence_items": 24
+  },
+  {
+    "name": "inspect/aggregate_limit20",
+    "wire_bytes": 15477,
+    "content_bytes": 7265,
+    "structured_bytes": 7265,
+    "evidence_items": 26
+  },
+  {
+    "name": "inspect/references",
+    "wire_bytes": 7235,
+    "content_bytes": 3337,
+    "structured_bytes": 3337,
+    "evidence_items": 11
+  },
+  {
+    "name": "inspect/definition",
+    "wire_bytes": 3253,
+    "content_bytes": 1457,
+    "structured_bytes": 1457,
+    "evidence_items": 4
+  },
+  {
+    "name": "dependencies/neighborhood",
+    "wire_bytes": 32681,
+    "content_bytes": 15197,
+    "structured_bytes": 15197,
+    "evidence_items": 80
+  }
+]

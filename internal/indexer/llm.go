@@ -635,11 +635,18 @@ func refEvidence(kind string, h RefHit) LLMEvidence {
 }
 
 func (db *DB) LLMFindRefs(ctx context.Context, id string, opts LLMOptions) (LLMResult, error) {
-	limit := opts.normalizedLimit()
 	refs, err := db.QueryRefs(ctx, id)
 	if err != nil {
 		return LLMResult{}, err
 	}
+	return llmFindRefsResult(id, refs, opts), nil
+}
+
+// llmFindRefsResult renders an already-fetched reference set. Keeping the
+// rendering separate from the query lets a caller that needs references for
+// more than one purpose fetch them once.
+func llmFindRefsResult(id string, refs RefQuery, opts LLMOptions) LLMResult {
+	limit := opts.normalizedLimit()
 	r := LLMResult{
 		Query:  id,
 		Intent: "find_refs",
@@ -671,7 +678,7 @@ func (db *DB) LLMFindRefs(ctx context.Context, id string, opts LLMOptions) (LLMR
 		r.Guidance = append(r.Guidance, "Reference totals are exact; evidence is capped. Narrow with a typed id or inspect matching files when more evidence is needed.")
 	}
 	r.NextQueries = []LLMNextQuery{{Tool: "query_object", ID: id, Reason: "confirm definition and override chain"}}
-	return r.withPublicFilter(opts), nil
+	return r.withPublicFilter(opts)
 }
 
 func (db *DB) LLMQueryLocalization(ctx context.Context, key string, opts LLMOptions) (LLMResult, error) {
@@ -704,8 +711,12 @@ func (db *DB) LLMQueryLocalization(ctx context.Context, key string, opts LLMOpti
 }
 
 func (db *DB) LLMQueryResource(ctx context.Context, id string, opts LLMOptions) (LLMResult, error) {
+	return db.llmQueryResourceWithRefs(ctx, id, opts, nil)
+}
+
+func (db *DB) llmQueryResourceWithRefs(ctx context.Context, id string, opts LLMOptions, known *RefQuery) (LLMResult, error) {
 	limit := opts.normalizedLimit()
-	res, err := db.QueryResource(ctx, id)
+	res, err := db.queryResourceWithRefs(ctx, id, known)
 	if err != nil {
 		return LLMResult{}, err
 	}
@@ -1300,14 +1311,19 @@ func (db *DB) LLMDiagnoseKey(ctx context.Context, id string, opts LLMOptions) (L
 	if err != nil {
 		return LLMResult{}, err
 	}
-	res, err := db.LLMQueryResource(ctx, id, opts)
+	// Both the resource view and the reference view need the same reference
+	// set. Fetching it once here and handing it to each of them removes an
+	// entire duplicate QueryRefs — four statements over the refs table — from
+	// the most frequently called operation in the tool surface.
+	refQuery, err := db.QueryRefs(ctx, id)
 	if err != nil {
 		return LLMResult{}, err
 	}
-	refs, err := db.LLMFindRefs(ctx, id, opts)
+	res, err := db.llmQueryResourceWithRefs(ctx, id, opts, &refQuery)
 	if err != nil {
 		return LLMResult{}, err
 	}
+	refs := llmFindRefsResult(id, refQuery, opts)
 	diags, err := db.diagnosticsFor(ctx, id, opts.normalizedLimit())
 	if err != nil {
 		return LLMResult{}, err

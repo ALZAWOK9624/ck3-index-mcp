@@ -449,6 +449,10 @@ func (db *DB) dependencyGraph(ctx context.Context, id string, depth, limit int) 
 	frontier := []string{id}
 	seenEdges := map[string]bool{}
 	seenNodes := map[string]bool{nodeKey("", id): true}
+	// One cache for the whole traversal. Neighbouring objects cluster into the
+	// same files, so this is the difference between parsing a file once and
+	// parsing it once per node that happens to live in it.
+	cache := newScriptFileCache()
 	var result graphResult
 	for level := 0; level < depth && len(frontier) > 0; level++ {
 		var next []string
@@ -472,7 +476,7 @@ func (db *DB) dependencyGraph(ctx context.Context, id string, depth, limit int) 
 					}
 				}
 			}
-			sem, err := db.semanticGraphEdges(ctx, cur)
+			sem, err := db.semanticGraphEdges(ctx, cur, cache)
 			if err != nil {
 				return graphResult{}, err
 			}
@@ -592,19 +596,19 @@ func edgeEvidence(e graphEdge) LLMEvidence {
 	}
 }
 
-func (db *DB) semanticGraphEdges(ctx context.Context, id string) ([]graphEdge, error) {
+func (db *DB) semanticGraphEdges(ctx context.Context, id string, cache *scriptFileCache) ([]graphEdge, error) {
 	obj, err := db.QueryObject(ctx, id)
 	if err != nil || len(obj.Definitions) == 0 {
 		return nil, err
 	}
 	var out []graphEdge
 	for _, d := range obj.Definitions {
-		edges, err := db.semanticEdgesForDefinition(ctx, d)
+		edges, err := db.semanticEdgesForDefinition(ctx, d, cache)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, edges...)
-		incoming, err := db.semanticIncomingEdges(ctx, d)
+		incoming, err := db.semanticIncomingEdges(ctx, d, cache)
 		if err != nil {
 			return nil, err
 		}
@@ -613,8 +617,8 @@ func (db *DB) semanticGraphEdges(ctx context.Context, id string) ([]graphEdge, e
 	return out, nil
 }
 
-func (db *DB) semanticEdgesForDefinition(ctx context.Context, d ObjectDef) ([]graphEdge, error) {
-	root, err := parseObjectDefinition(d)
+func (db *DB) semanticEdgesForDefinition(ctx context.Context, d ObjectDef, cache *scriptFileCache) ([]graphEdge, error) {
+	root, err := cache.definition(d)
 	if err != nil || root == nil {
 		return nil, err
 	}
@@ -637,15 +641,15 @@ func (db *DB) semanticEdgesForDefinition(ctx context.Context, d ObjectDef) ([]gr
 	return out, nil
 }
 
-func (db *DB) semanticIncomingEdges(ctx context.Context, d ObjectDef) ([]graphEdge, error) {
+func (db *DB) semanticIncomingEdges(ctx context.Context, d ObjectDef, cache *scriptFileCache) ([]graphEdge, error) {
 	var out []graphEdge
 	if d.Type == "men_at_arms_type" {
-		params, err := db.parametersForMAA(ctx, d)
+		params, err := db.parametersForMAA(ctx, d, cache)
 		if err != nil {
 			return nil, err
 		}
 		for _, p := range params {
-			trads, err := db.traditionsDefiningParameter(ctx, p)
+			trads, err := db.traditionsDefiningParameter(ctx, p, cache)
 			if err != nil {
 				return nil, err
 			}
@@ -669,8 +673,8 @@ func (db *DB) semanticIncomingEdges(ctx context.Context, d ObjectDef) ([]graphEd
 	return out, nil
 }
 
-func (db *DB) parametersForMAA(ctx context.Context, d ObjectDef) ([]string, error) {
-	root, err := parseObjectDefinition(d)
+func (db *DB) parametersForMAA(ctx context.Context, d ObjectDef, cache *scriptFileCache) ([]string, error) {
+	root, err := cache.definition(d)
 	if err != nil || root == nil {
 		return nil, err
 	}
@@ -688,7 +692,7 @@ func (db *DB) parametersForMAA(ctx context.Context, d ObjectDef) ([]string, erro
 	return params, nil
 }
 
-func (db *DB) traditionsDefiningParameter(ctx context.Context, param string) ([]ObjectDef, error) {
+func (db *DB) traditionsDefiningParameter(ctx context.Context, param string, cache *scriptFileCache) ([]ObjectDef, error) {
 	rows, err := db.sql.QueryContext(ctx, `SELECT o.object_type,o.name,o.source_name,o.source_rank,o.path,o.line,o.col
 		FROM object_fields of
 		JOIN objects o ON o.name=of.object_name AND o.object_type=of.object_type AND o.file_id=of.file_id
@@ -705,7 +709,7 @@ func (db *DB) traditionsDefiningParameter(ctx context.Context, param string) ([]
 		if err := rows.Scan(&d.Type, &d.Name, &d.Source, &d.Rank, &d.Path, &d.Line, &d.Column); err != nil {
 			return nil, err
 		}
-		root, err := parseObjectDefinition(d)
+		root, err := cache.definition(d)
 		if err != nil || root == nil {
 			continue
 		}
@@ -722,19 +726,74 @@ func (db *DB) traditionsDefiningParameter(ctx context.Context, param string) ([]
 	return out, rows.Err()
 }
 
+// scriptFileCache memoizes parsed script files for the span of a single graph
+// walk. A dependency neighbourhood routinely visits hundreds of objects that
+// live in a handful of files — every event in one file references the same
+// trait — and each visit used to re-read and fully re-parse that file. The
+// cache is per walk rather than process-wide on purpose: it needs no
+// invalidation rules, because the index generation cannot change underneath a
+// single call.
+type scriptFileCache struct {
+	// nodes is keyed by file path; a nil entry records a file that could not be
+	// read or parsed, so a broken path is not retried once per visit.
+	nodes map[string][]*script.Node
+	// definitions is keyed by path and object name, memoizing the tree walk that
+	// locates one definition inside an already-parsed file.
+	definitions map[string]*script.Node
+}
+
+func newScriptFileCache() *scriptFileCache {
+	return &scriptFileCache{
+		nodes:       map[string][]*script.Node{},
+		definitions: map[string]*script.Node{},
+	}
+}
+
+// definition returns the parsed block for one object definition. A nil result
+// with a nil error means the file parsed but holds no block by that name,
+// which callers already treat as "nothing to walk".
+func (c *scriptFileCache) definition(d ObjectDef) (*script.Node, error) {
+	if c == nil {
+		return parseObjectDefinition(d)
+	}
+	key := d.Path + "\x00" + d.Name
+	if cached, ok := c.definitions[key]; ok {
+		return cached, nil
+	}
+	nodes, ok := c.nodes[d.Path]
+	if !ok {
+		data, err := os.ReadFile(d.Path)
+		if err != nil {
+			// Remember the failure so the next visitor of this path does not
+			// repeat the syscall, and report it exactly as before.
+			c.nodes[d.Path] = nil
+			c.definitions[key] = nil
+			return nil, err
+		}
+		nodes = script.Parse(string(data)).Nodes
+		c.nodes[d.Path] = nodes
+	}
+	best := findDefinitionBlock(nodes, d.Name)
+	c.definitions[key] = best
+	return best, nil
+}
+
 func parseObjectDefinition(d ObjectDef) (*script.Node, error) {
 	data, err := os.ReadFile(d.Path)
 	if err != nil {
 		return nil, err
 	}
-	parsed := script.Parse(string(data))
+	return findDefinitionBlock(script.Parse(string(data)).Nodes, d.Name), nil
+}
+
+func findDefinitionBlock(nodes []*script.Node, name string) *script.Node {
 	var best *script.Node
-	walkScript(parsed.Nodes, func(n *script.Node) {
-		if best == nil && n.Kind == "block" && n.Key == d.Name {
+	walkScript(nodes, func(n *script.Node) {
+		if best == nil && n.Kind == "block" && n.Key == name {
 			best = n
 		}
 	})
-	return best, nil
+	return best
 }
 
 func walkScript(nodes []*script.Node, fn func(*script.Node)) {

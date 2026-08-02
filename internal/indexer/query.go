@@ -551,6 +551,15 @@ type ResourceHit struct {
 }
 
 func (db *DB) QueryResource(ctx context.Context, id string) (ResourceQuery, error) {
+	return db.queryResourceWithRefs(ctx, id, nil)
+}
+
+// queryResourceWithRefs reuses an already-fetched reference set instead of
+// asking for it again. QueryRefs is four statements over the refs table,
+// including two unbounded COUNTs and two five-hundred-row result sets sorted by
+// columns from a joined table; a caller that has already paid for that should
+// not pay twice. Passing nil restores the standalone behaviour.
+func (db *DB) queryResourceWithRefs(ctx context.Context, id string, known *RefQuery) (ResourceQuery, error) {
 	q := ResourceQuery{Query: id}
 	resID := normalizeResource(filepathSlash(id))
 	base := filepath.Base(resID)
@@ -589,6 +598,10 @@ func (db *DB) QueryResource(ctx context.Context, id string) (ResourceQuery, erro
 		if err := scanResourceRows(rows, &q); err != nil {
 			return q, err
 		}
+	}
+	if known != nil {
+		q.References = known.Incoming
+		return q, nil
 	}
 	refs, err := db.QueryRefs(ctx, id)
 	if err == nil {

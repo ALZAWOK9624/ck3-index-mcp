@@ -209,17 +209,25 @@ func TestMapTerrainEditCLIPreviewsThenPublishes(t *testing.T) {
 		`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`,
 		fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"map_terrain_edit","arguments":%s}}`, argumentJSON),
 	}, "\n") + "\n"
-	var mcpOutput bytes.Buffer
-	if err := mcpserver.Serve(context.Background(), cfg, dbPath, strings.NewReader(requests), &mcpOutput); err != nil {
+	inputReader, inputWriter := io.Pipe()
+	outputReader, outputWriter := io.Pipe()
+	serveDone := make(chan error, 1)
+	go func() {
+		err := mcpserver.Serve(context.Background(), cfg, dbPath, inputReader, outputWriter)
+		_ = outputWriter.CloseWithError(err)
+		serveDone <- err
+	}()
+	if _, err := io.WriteString(inputWriter, requests); err != nil {
 		t.Fatal(err)
 	}
+	// Keep stdin open until the artifact response arrives. EOF now correctly
+	// means the client exited and cancels unfinished work.
+	var mcpOutput bytes.Buffer
 	mcpHash := ""
-	decoder := json.NewDecoder(bytes.NewReader(mcpOutput.Bytes()))
-	for {
+	decoder := json.NewDecoder(io.TeeReader(outputReader, &mcpOutput))
+	for mcpHash == "" {
 		var response map[string]any
-		if err := decoder.Decode(&response); err == io.EOF {
-			break
-		} else if err != nil {
+		if err := decoder.Decode(&response); err != nil {
 			t.Fatal(err)
 		}
 		if response["id"] != float64(2) {
@@ -238,6 +246,12 @@ func TestMapTerrainEditCLIPreviewsThenPublishes(t *testing.T) {
 				break
 			}
 		}
+	}
+	if err := inputWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serveDone; err != nil {
+		t.Fatal(err)
 	}
 	if mcpHash == "" {
 		t.Fatalf("MCP result has no heightmap hash: %s", mcpOutput.String())

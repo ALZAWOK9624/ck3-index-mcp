@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // Turning split geometry into a usable mod change is the part a standalone
@@ -45,7 +46,11 @@ type MapSplitContext struct {
 	// step checks pixels against, and it has to come from the index rather than
 	// from the image being edited: a check that reads its expectation out of the
 	// thing it is checking cannot detect that the thing has changed.
-	SourceColor uint32
+	SourceColor      uint32
+	RetainX          int
+	RetainY          int
+	HasRetainPoint   bool
+	ExistingTitleIDs map[string]bool `json:"-"`
 }
 
 // MapSplitNewProvince is one province that did not exist before the split.
@@ -72,14 +77,15 @@ type MapSplitFileEdit struct {
 // MapSplitPlan is the reviewable output: what the split produces, what must be
 // edited, and what stops it from being applied.
 type MapSplitPlan struct {
-	ProvinceID     int                   `json:"province_id"`
-	RetainedPart   int                   `json:"retained_part_index"`
-	RetainedPixels int                   `json:"retained_pixel_count"`
-	SourceColor    uint32                `json:"source_color"`
-	NewProvinces   []MapSplitNewProvince `json:"new_provinces"`
-	Files          []MapSplitFileEdit    `json:"files"`
-	Blockers       []string              `json:"blockers,omitempty"`
-	Warnings       []string              `json:"warnings,omitempty"`
+	ProvinceID          int                   `json:"province_id"`
+	RetainedPart        int                   `json:"retained_part_index"`
+	RetainedPixels      int                   `json:"retained_pixel_count"`
+	SourceColor         uint32                `json:"source_color"`
+	NewProvinces        []MapSplitNewProvince `json:"new_provinces"`
+	Files               []MapSplitFileEdit    `json:"files"`
+	Blockers            []string              `json:"blockers,omitempty"`
+	Warnings            []string              `json:"warnings,omitempty"`
+	MissingDependencies []string              `json:"missing_dependencies,omitempty"`
 }
 
 // colorStride is odd and therefore coprime with 2^24, so repeatedly adding it
@@ -102,13 +108,39 @@ func PlanProvinceSplit(result MapSplitResult, context MapSplitContext, emit MapS
 		Warnings:    append([]string(nil), result.Warnings...),
 	}
 
-	// Retaining the largest part minimises how much of provinces.png changes and
-	// leaves the province's existing history attached to most of its land.
-	retained := 0
-	for i, part := range result.Parts {
-		if part.PixelCount > result.Parts[retained].PixelCount {
-			retained = i
+	retained := -1
+	if result.RetainSeed != nil {
+		for i, part := range result.Parts {
+			if part.Index == *result.RetainSeed {
+				retained = i
+				break
+			}
 		}
+		if retained < 0 {
+			return MapSplitPlan{}, fmt.Errorf("retain_seed %d does not identify a split part", *result.RetainSeed)
+		}
+	} else if context.HasRetainPoint {
+		for i, part := range result.Parts {
+			if mapSplitPartContains(part, context.RetainX, context.RetainY) {
+				retained = i
+				break
+			}
+		}
+		if retained < 0 {
+			plan.Warnings = append(plan.Warnings, "the indexed holding locator did not land inside any result part; the largest part retained the original identity")
+		}
+	}
+	if retained < 0 {
+		// With no explicit choice or holding locator, retaining the largest part
+		// minimises raster churn but is reported as a fallback, not silently
+		// treated as settlement semantics.
+		retained = 0
+		for i, part := range result.Parts {
+			if part.PixelCount > result.Parts[retained].PixelCount {
+				retained = i
+			}
+		}
+		plan.Warnings = append(plan.Warnings, "no retain_seed or indexed holding locator was available; the largest part retained the original identity")
 	}
 	plan.RetainedPart = retained
 	plan.RetainedPixels = result.Parts[retained].PixelCount
@@ -151,6 +183,11 @@ func PlanProvinceSplit(result MapSplitResult, context MapSplitContext, emit MapS
 	if baseName == "" {
 		baseName = fmt.Sprintf("province_%d", result.ProvinceID)
 	}
+	usedNames := map[string]bool{}
+	usedBaronies := map[string]bool{}
+	for id := range context.ExistingTitleIDs {
+		usedBaronies[strings.ToLower(strings.TrimSpace(id))] = true
+	}
 
 	for i, part := range result.Parts {
 		if i == retained {
@@ -178,6 +215,17 @@ func PlanProvinceSplit(result MapSplitResult, context MapSplitContext, emit MapS
 		if name == "" {
 			name = fmt.Sprintf("%s_%d", baseName, i+1)
 		}
+		if !validProvinceDefinitionName(name) {
+			plan.Blockers = append(plan.Blockers, fmt.Sprintf("part %d name contains a definition.csv delimiter or control character", part.Index))
+			name = fmt.Sprintf("province_%d", id)
+		}
+		nameKey := strings.ToLower(name)
+		if usedNames[nameKey] {
+			original := name
+			name = fmt.Sprintf("%s_%d", name, id)
+			plan.Warnings = append(plan.Warnings, fmt.Sprintf("duplicate province name %q was made unique as %q", original, name))
+		}
+		usedNames[strings.ToLower(name)] = true
 		province := MapSplitNewProvince{
 			PartIndex:  i,
 			ID:         id,
@@ -188,13 +236,31 @@ func PlanProvinceSplit(result MapSplitResult, context MapSplitContext, emit MapS
 			PixelCount: part.PixelCount,
 		}
 		if emit.LandedTitles {
-			province.Barony = "b_" + sanitizeTitleKey(name)
+			baseKey := sanitizeTitleKey(name)
+			barony := "b_" + baseKey
+			if baseKey == "split" || usedBaronies[strings.ToLower(barony)] {
+				barony = fmt.Sprintf("b_%s_%d", baseKey, id)
+			}
+			for suffix := 2; usedBaronies[strings.ToLower(barony)]; suffix++ {
+				barony = fmt.Sprintf("b_%s_%d_%d", baseKey, id, suffix)
+			}
+			usedBaronies[strings.ToLower(barony)] = true
+			province.Barony = barony
 		}
 		plan.NewProvinces = append(plan.NewProvinces, province)
 	}
 
 	if len(plan.NewProvinces) == 0 && len(plan.Blockers) == 0 {
 		plan.Blockers = append(plan.Blockers, "the split produced no new provinces, so there is nothing to apply")
+	}
+	if !emit.Definition {
+		plan.MissingDependencies = append(plan.MissingDependencies, "map_data/definition.csv rows for every new province")
+	}
+	if !emit.History {
+		plan.MissingDependencies = append(plan.MissingDependencies, "history/provinces entries for every new province")
+	}
+	if !emit.LandedTitles {
+		plan.MissingDependencies = append(plan.MissingDependencies, "landed-title ownership or another explicit province consumer for every new province")
 	}
 
 	if emit.Definition && len(plan.NewProvinces) > 0 {
@@ -213,6 +279,12 @@ func PlanProvinceSplit(result MapSplitResult, context MapSplitContext, emit MapS
 		if culture == "" || religion == "" {
 			plan.Warnings = append(plan.Warnings,
 				"the source province has no indexed culture or religion, so history entries are emitted with placeholders that must be filled in")
+		}
+		if culture == "" {
+			plan.MissingDependencies = append(plan.MissingDependencies, "source culture needed to replace CULTURE_TO_FILL")
+		}
+		if religion == "" {
+			plan.MissingDependencies = append(plan.MissingDependencies, "source faith needed to replace RELIGION_TO_FILL")
 		}
 		if holding == "" {
 			holding = "none"
@@ -233,6 +305,7 @@ func PlanProvinceSplit(result MapSplitResult, context MapSplitContext, emit MapS
 		if strings.TrimSpace(context.SourceCounty) == "" {
 			plan.Blockers = append(plan.Blockers,
 				"the county that owns this province is unknown, so new baronies cannot be attached to the right de jure title")
+			plan.MissingDependencies = append(plan.MissingDependencies, "owning county for the new baronies")
 		} else {
 			var baronies strings.Builder
 			fmt.Fprintf(&baronies, "# Add inside %s:\n", context.SourceCounty)
@@ -249,6 +322,28 @@ func PlanProvinceSplit(result MapSplitResult, context MapSplitContext, emit MapS
 
 	sort.SliceStable(plan.Files, func(i, j int) bool { return plan.Files[i].Path < plan.Files[j].Path })
 	return plan, nil
+}
+
+func mapSplitPartContains(part MapSplitPart, x, y int) bool {
+	for _, run := range part.Runs {
+		if int(run.Y) == y && x >= int(run.X0) && x <= int(run.X1) {
+			return true
+		}
+	}
+	return false
+}
+
+func validProvinceDefinitionName(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || strings.ContainsAny(name, ";\r\n") {
+		return false
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // nextFreeColor scans forward from cursor for an unused RGB, skipping pure

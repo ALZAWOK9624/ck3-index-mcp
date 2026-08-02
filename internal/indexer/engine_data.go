@@ -9,17 +9,23 @@ import (
 	"sync"
 )
 
-var engineScopeRegistry = struct {
-	sync.RWMutex
+type EngineRuleSet struct {
 	rules         map[string]map[string][]string
 	ruleOutputs   map[string]map[string][]string
 	targetOutputs map[string][]string
 	modifiers     map[string]ModifierInfo
-}{
-	rules:         map[string]map[string][]string{},
-	ruleOutputs:   map[string]map[string][]string{},
-	targetOutputs: map[string][]string{},
-	modifiers:     map[string]ModifierInfo{},
+}
+
+type PublishedEngineRules struct {
+	Rules       *EngineRuleSet
+	Generation  int64
+	Revision    string
+	Fingerprint string
+}
+
+var engineScopeRegistry struct {
+	sync.RWMutex
+	published *PublishedEngineRules
 }
 
 type engineScopeLogSpec struct {
@@ -49,19 +55,70 @@ func ConfigureEngineRules(logs string) error {
 }
 
 func ConfigureEngineRulesFromBundle(bundle *EngineBundle) {
+	publishEngineRules(bundle, IndexState{})
+}
+
+func engineRuleSetFromBundle(bundle *EngineBundle) *EngineRuleSet {
+	if bundle == nil || bundle.Fingerprint == noEngineDataFingerprint {
+		return nil
+	}
+	return &EngineRuleSet{
+		rules:         bundle.ScopeRules,
+		ruleOutputs:   bundle.RuleOutputs,
+		targetOutputs: bundle.Targets,
+		modifiers:     bundle.Modifiers,
+	}
+}
+
+func publishEngineRules(bundle *EngineBundle, state IndexState) {
 	engineScopeRegistry.Lock()
 	defer engineScopeRegistry.Unlock()
-	if bundle == nil || bundle.Fingerprint == noEngineDataFingerprint {
-		engineScopeRegistry.rules = nil
-		engineScopeRegistry.ruleOutputs = nil
-		engineScopeRegistry.targetOutputs = nil
-		engineScopeRegistry.modifiers = nil
+	rules := engineRuleSetFromBundle(bundle)
+	if rules == nil {
+		engineScopeRegistry.published = nil
 		return
 	}
-	engineScopeRegistry.rules = bundle.ScopeRules
-	engineScopeRegistry.ruleOutputs = bundle.RuleOutputs
-	engineScopeRegistry.targetOutputs = bundle.Targets
-	engineScopeRegistry.modifiers = bundle.Modifiers
+	engineScopeRegistry.published = &PublishedEngineRules{
+		Rules: rules, Generation: state.Generation, Revision: state.Revision, Fingerprint: bundle.Fingerprint,
+	}
+}
+
+func currentEngineRuleSet() *EngineRuleSet {
+	engineScopeRegistry.RLock()
+	defer engineScopeRegistry.RUnlock()
+	if engineScopeRegistry.published == nil {
+		return nil
+	}
+	return engineScopeRegistry.published.Rules
+}
+
+func publishEngineBundleMatchingDB(ctx context.Context, db *DB, bundle *EngineBundle) error {
+	state, err := db.IndexState(ctx)
+	if err != nil {
+		return err
+	}
+	fingerprint, err := db.metaValue(ctx, "engine_data_fingerprint")
+	if err != nil {
+		return err
+	}
+	if bundle == nil || !state.Ready() || fingerprint != bundle.Fingerprint {
+		publishEngineRules(nil, IndexState{})
+		return nil
+	}
+	publishEngineRules(bundle, state)
+	return nil
+}
+
+// RestorePublishedEngineRules reloads only the rule bundle proved to belong to
+// the currently published database generation. A stale or mismatched cache
+// deliberately falls back to the generated snapshot.
+func RestorePublishedEngineRules(ctx context.Context, db *DB, engineLogs string) error {
+	bundle, err := LoadEngineBundle(ctx, engineLogs)
+	if err != nil {
+		publishEngineRules(nil, IndexState{})
+		return err
+	}
+	return publishEngineBundleMatchingDB(ctx, db, bundle)
 }
 
 func engineRuleName(head string) string {
@@ -82,19 +139,28 @@ func inputScopeLine(line string) (string, bool) {
 }
 
 func engineOnActionKnown(key string) bool {
-	engineScopeRegistry.RLock()
-	defer engineScopeRegistry.RUnlock()
-	_, ok := engineScopeRegistry.rules[strings.ToLower(key)]["on_action"]
+	return engineOnActionKnownWithRules(currentEngineRuleSet(), key)
+}
+
+func engineOnActionKnownWithRules(rules *EngineRuleSet, key string) bool {
+	if rules == nil {
+		return false
+	}
+	_, ok := rules.rules[strings.ToLower(key)]["on_action"]
 	return ok
 }
 
 func engineScopeConfirms(key, kind string, need EngineScope) bool {
-	if !engineRulesConfigured() {
+	return engineScopeConfirmsWithRules(currentEngineRuleSet(), key, kind, need)
+}
+
+func engineScopeConfirmsWithRules(rules *EngineRuleSet, key, kind string, need EngineScope) bool {
+	if !engineRulesConfiguredWithRules(rules) {
 		// Without an engine-log bundle, the generated CK3 1.19 snapshot is the
 		// only available source and retains its documented validation behavior.
 		return true
 	}
-	live, found := engineRuleScope(key, kind)
+	live, found := engineRuleScopeWithRules(rules, key, kind)
 	return found && isConcreteScope(live) && live.Intersects(need)
 }
 
@@ -108,9 +174,11 @@ func outputScopeLine(line string) (string, bool) {
 }
 
 func engineRulesConfigured() bool {
-	engineScopeRegistry.RLock()
-	defer engineScopeRegistry.RUnlock()
-	return engineScopeRegistry.rules != nil
+	return engineRulesConfiguredWithRules(currentEngineRuleSet())
+}
+
+func engineRulesConfiguredWithRules(rules *EngineRuleSet) bool {
+	return rules != nil
 }
 
 // engineRuleScope converts the current engine log's documented input scopes
@@ -118,12 +186,14 @@ func engineRulesConfigured() bool {
 // configured for this key and kind; callers can then use the generated 1.19
 // snapshot for offline operation.
 func engineRuleScope(key, kind string) (EngineScope, bool) {
-	engineScopeRegistry.RLock()
-	defer engineScopeRegistry.RUnlock()
-	if engineScopeRegistry.rules == nil {
+	return engineRuleScopeWithRules(currentEngineRuleSet(), key, kind)
+}
+
+func engineRuleScopeWithRules(rules *EngineRuleSet, key, kind string) (EngineScope, bool) {
+	if rules == nil {
 		return EngineScope{}, false
 	}
-	scopes := engineScopeRegistry.rules[strings.ToLower(key)][kind]
+	scopes := rules.rules[strings.ToLower(key)][kind]
 	return engineScopesToMask(scopes)
 }
 
@@ -131,34 +201,40 @@ func engineRuleScope(key, kind string) (EngineScope, bool) {
 // event_targets.log. It deliberately leaves targets without an explicit
 // output as unknown rather than inventing a scope transition.
 func engineTargetOutputScope(key string) (EngineScope, bool) {
-	engineScopeRegistry.RLock()
-	defer engineScopeRegistry.RUnlock()
-	if engineScopeRegistry.targetOutputs == nil {
+	return engineTargetOutputScopeWithRules(currentEngineRuleSet(), key)
+}
+
+func engineTargetOutputScopeWithRules(rules *EngineRuleSet, key string) (EngineScope, bool) {
+	if rules == nil {
 		return EngineScope{}, false
 	}
-	return engineScopesToMask(engineScopeRegistry.targetOutputs[strings.ToLower(key)])
+	return engineScopesToMask(rules.targetOutputs[strings.ToLower(key)])
 }
 
 // engineRuleOutputScope returns the documented child/target scope for a live
 // trigger or effect. Iterator entries in the 1.19 logs use Supported Targets
 // for this field, while event targets use Output Scopes.
 func engineRuleOutputScope(key, kind string) (EngineScope, bool) {
-	engineScopeRegistry.RLock()
-	defer engineScopeRegistry.RUnlock()
-	if engineScopeRegistry.ruleOutputs == nil {
+	return engineRuleOutputScopeWithRules(currentEngineRuleSet(), key, kind)
+}
+
+func engineRuleOutputScopeWithRules(rules *EngineRuleSet, key, kind string) (EngineScope, bool) {
+	if rules == nil {
 		return EngineScope{}, false
 	}
-	scopes := engineScopeRegistry.ruleOutputs[strings.ToLower(key)][kind]
+	scopes := rules.ruleOutputs[strings.ToLower(key)][kind]
 	return engineScopesToMask(scopes)
 }
 
 func engineModifier(key string) (ModifierInfo, bool) {
-	engineScopeRegistry.RLock()
-	defer engineScopeRegistry.RUnlock()
-	if engineScopeRegistry.modifiers == nil {
+	return engineModifierWithRules(currentEngineRuleSet(), key)
+}
+
+func engineModifierWithRules(rules *EngineRuleSet, key string) (ModifierInfo, bool) {
+	if rules == nil {
 		return ModifierInfo{}, false
 	}
-	info, ok := engineScopeRegistry.modifiers[key]
+	info, ok := rules.modifiers[key]
 	return info, ok
 }
 
@@ -396,7 +472,6 @@ func rebuildSearchFTS(ctx context.Context, tx *sql.Tx) error {
 		`INSERT INTO search_fts(kind,name,text,source,path,file_id) SELECT 'object',o.name,o.object_type||' '||o.name||' '||f.rel_path,o.source_name,f.rel_path,f.id FROM objects o JOIN files f ON f.id=o.file_id WHERE f.overridden=0`,
 		`INSERT INTO search_fts(kind,name,text,source,path,file_id) SELECT 'resource',r.resource_path,r.kind||' '||r.resource_path,r.source_name,f.rel_path,f.id FROM resources r JOIN files f ON f.id=r.file_id WHERE f.overridden=0`,
 		`INSERT INTO search_fts(kind,name,text,source,path,file_id) SELECT 'script_key',o.field,o.field||' '||o.object_name||' '||o.raw,o.source_name,f.rel_path,f.id FROM object_fields o JOIN files f ON f.id=o.file_id WHERE f.overridden=0`,
-		`INSERT INTO search_fts(kind,name,text,source,path,file_id) SELECT 'script_text',f.rel_path,f.search_text,f.source_name,f.rel_path,f.id FROM files f WHERE f.overridden=0 AND f.kind='script'`,
 		`INSERT INTO search_fts(kind,name,text,source,path,file_id) SELECT 'localization',l.key,l.key||' '||l.value,l.source_name,f.rel_path,f.id FROM localization l JOIN files f ON f.id=l.file_id WHERE f.overridden=0 AND (lower(l.language) LIKE '%english%' OR lower(l.language) LIKE '%simp%')`,
 		`INSERT INTO search_fts(kind,name,text,source,path,file_id) SELECT 'datatype',name,signature||' '||COALESCE(description,'')||' '||COALESCE(return_type,''),'engine_logs',source_path,0 FROM engine_datatypes`,
 	}
@@ -404,6 +479,27 @@ func rebuildSearchFTS(ctx context.Context, tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, s); err != nil {
 			return fmt.Errorf("FTS5 rebuild failed: %w", err)
 		}
+	}
+	if err := rebuildScriptTextFTS(ctx, tx); err != nil {
+		return err
+	}
+	return nil
+}
+
+type contextExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func rebuildScriptTextFTS(ctx context.Context, execer contextExecer) error {
+	if _, err := execer.ExecContext(ctx, `DROP TABLE IF EXISTS script_text_fts`); err != nil {
+		return fmt.Errorf("script-text FTS5 unavailable: %w", err)
+	}
+	if _, err := execer.ExecContext(ctx, `CREATE VIRTUAL TABLE script_text_fts USING fts5(search_text, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2')`); err != nil {
+		return fmt.Errorf("script-text FTS5 unavailable: %w", err)
+	}
+	if _, err := execer.ExecContext(ctx, `INSERT INTO script_text_fts(rowid,search_text)
+		SELECT id,search_text FROM files WHERE overridden=0 AND kind='script'`); err != nil {
+		return fmt.Errorf("script-text FTS5 rebuild failed: %w", err)
 	}
 	return nil
 }

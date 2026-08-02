@@ -2,6 +2,7 @@ package indexer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -83,7 +84,7 @@ func TestScriptTextSearchFindsNestedValueAndRanksAfterObjects(t *testing.T) {
 	if err := db.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM files WHERE overridden=0 AND kind='script'`).Scan(&activeScripts); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM search_fts WHERE kind='script_text'`).Scan(&scriptDocuments); err != nil {
+	if err := db.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM script_text_fts`).Scan(&scriptDocuments); err != nil {
 		t.Fatal(err)
 	}
 	if scriptDocuments != activeScripts {
@@ -280,15 +281,13 @@ func TestScriptTextSearchRejectsStaleAndMismatchedRows(t *testing.T) {
 		writeScriptSearchFixture(t, game, rel, `fixture = { value = zz_stale_source_term changed = yes }`)
 		db := openScriptSearchDB(t, dir)
 		defer db.Close()
-		result, err := db.LLMSearch(ctx, SearchOptions{
+		_, err := db.LLMSearch(ctx, SearchOptions{
 			Query: "zz_stale_source_term", Kind: "script_text",
 			LLMOptions: LLMOptions{Mode: "public", PrivateSources: map[string]bool{"game": false}, Limit: 8},
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(result.Evidence) != 0 {
-			t.Fatalf("changed source produced stale script snippet evidence: %+v", result.Evidence)
+		var changed *SourceChangedError
+		if !errors.As(err, &changed) {
+			t.Fatalf("changed source error = %v, want SourceChangedError", err)
 		}
 	})
 
@@ -297,14 +296,26 @@ func TestScriptTextSearchRejectsStaleAndMismatchedRows(t *testing.T) {
 		dir := t.TempDir()
 		project := filepath.Join(dir, "project")
 		rel := "common/decisions/mismatched_source.txt"
+		otherRel := "common/decisions/mismatched_other.txt"
 		writeScriptSearchFixture(t, project, rel, `fixture = { value = zz_mismatched_fts_term }`)
+		writeScriptSearchFixture(t, project, otherRel, `fixture = { value = unrelated_term }`)
 		cfg := scriptSearchConfig(dir, Source{Name: "project", Path: project, Rank: 1, Role: SourceRoleProject, Private: true})
 		if _, err := Scan(ctx, cfg); err != nil {
 			t.Fatal(err)
 		}
 		db := openScriptSearchDB(t, dir)
 		defer db.Close()
-		if _, err := db.sql.ExecContext(ctx, `UPDATE search_fts SET source='forged-public',path='common/decisions/forged.txt' WHERE kind='script_text' AND path=?`, rel); err != nil {
+		var matchedID, otherID int64
+		if err := db.sql.QueryRowContext(ctx, `SELECT id FROM files WHERE rel_path=? AND overridden=0`, rel).Scan(&matchedID); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.sql.QueryRowContext(ctx, `SELECT id FROM files WHERE rel_path=? AND overridden=0`, otherRel).Scan(&otherID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.sql.ExecContext(ctx, `DELETE FROM script_text_fts WHERE rowid IN (?,?)`, matchedID, otherID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.sql.ExecContext(ctx, `INSERT INTO script_text_fts(rowid,search_text) VALUES(?,'zz_mismatched_fts_term')`, otherID); err != nil {
 			t.Fatal(err)
 		}
 		result, err := db.LLMSearch(ctx, SearchOptions{
@@ -318,6 +329,36 @@ func TestScriptTextSearchRejectsStaleAndMismatchedRows(t *testing.T) {
 			t.Fatalf("mismatched FTS identity produced script source evidence: %+v", result.Evidence)
 		}
 	})
+}
+
+func TestScriptTextDeepPageBoundsVerifiedSourceReads(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	project := filepath.Join(dir, "project")
+	for index := 0; index < maxScriptTextVerificationCandidates+1; index++ {
+		rel := filepath.ToSlash(filepath.Join("common", "decisions", fmt.Sprintf("bounded_%02d.txt", index)))
+		writeScriptSearchFixture(t, project, rel, `fixture = { value = zz_bounded_verification }`)
+	}
+	cfg := scriptSearchConfig(dir, Source{Name: "project", Path: project, Rank: 1, Role: SourceRoleProject, Private: true})
+	if _, err := Scan(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	// The 33rd candidate sorts last. If the search reopens more than its fixed
+	// verification budget this stale file produces SourceChangedError.
+	lastRel := filepath.ToSlash(filepath.Join("common", "decisions", fmt.Sprintf("bounded_%02d.txt", maxScriptTextVerificationCandidates)))
+	writeScriptSearchFixture(t, project, lastRel, `fixture = { value = zz_bounded_verification changed = yes }`)
+	db := openScriptSearchDB(t, dir)
+	defer db.Close()
+	result, err := db.LLMSearch(ctx, SearchOptions{
+		Query: "zz_bounded_verification", Kind: "script_text", Page: 2,
+		LLMOptions: LLMOptions{AllowProject: true, Limit: 20},
+	})
+	if err != nil {
+		t.Fatalf("bounded deep-page search touched candidate 33: %v", err)
+	}
+	if !result.Truncated || len(result.Evidence) != maxScriptTextVerificationCandidates-20 {
+		t.Fatalf("bounded deep-page result = truncated:%v evidence:%d, want true/%d", result.Truncated, len(result.Evidence), maxScriptTextVerificationCandidates-20)
+	}
 }
 
 func TestPublicBroadSearchFiltersPrivateRowsBeforeCapacity(t *testing.T) {
@@ -381,7 +422,7 @@ func openScriptSearchDB(t *testing.T, dir string) *DB {
 func scriptTextFTSCount(t *testing.T, db *DB, term string) int {
 	t.Helper()
 	var count int
-	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM search_fts WHERE kind='script_text' AND search_fts MATCH ?`, `"`+term+`"`).Scan(&count); err != nil {
+	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM script_text_fts WHERE script_text_fts MATCH ?`, `"`+term+`"`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	return count

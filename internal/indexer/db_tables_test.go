@@ -23,6 +23,7 @@ func TestSemanticIndexTableCatalogMatchesCreatedSchema(t *testing.T) {
 		WHERE type = 'table'
 		  AND name NOT LIKE 'sqlite_%'
 		  AND name NOT LIKE 'search_fts_%'
+		  AND name NOT LIKE 'script_text_fts_%'
 		ORDER BY name`)
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +56,7 @@ func TestSemanticIndexTableCatalogHasNoDuplicatesAndDrivesPublication(t *testing
 		}
 		seen[table] = true
 	}
-	if !reflect.DeepEqual(publishedIndexTables, semanticIndexTableCatalog[:]) {
-		t.Fatalf("publication table catalog diverged from reset catalog")
+	if !reflect.DeepEqual(publishedIndexTables, semanticIndexTableCatalog[:len(semanticIndexTableCatalog)-1]) {
+		t.Fatalf("publication table catalog must omit only the rebuilt contentless script FTS table")
 	}
 }

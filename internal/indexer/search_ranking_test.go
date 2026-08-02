@@ -82,6 +82,23 @@ func TestSearchExactMatchSurvivesAWidePrefixRange(t *testing.T) {
 	}
 }
 
+func TestSearchReservesPrefixCapacityForProjectLayer(t *testing.T) {
+	db := writeSearchRankingFixture(t)
+	result, err := db.LLMSearch(context.Background(), SearchOptions{
+		Query: "rank_probe_quota_", Kind: "object",
+		LLMOptions: LLMOptions{AllowProject: true, Limit: 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, evidence := range result.Evidence {
+		if evidence.Kind == "object" && evidence.Source == "project" && evidence.Name == "rank_probe_quota_zz_project" {
+			return
+		}
+	}
+	t.Fatalf("wide upstream prefix displaced the reserved project candidate: %s", evidenceNames(result))
+}
+
 func evidenceNames(result LLMResult) string {
 	names := make([]string, 0, len(result.Evidence))
 	for _, evidence := range result.Evidence {
@@ -119,11 +136,16 @@ func writeSearchRankingFixture(t *testing.T) *DB {
 	for index := 0; index < 200; index++ {
 		traits.WriteString("rank_probe_wide_" + string(rune('a'+index%26)) + strconv.Itoa(index) + " = { category = personality }\n")
 	}
+	for index := 0; index < 40; index++ {
+		traits.WriteString("rank_probe_quota_a" + strconv.Itoa(index) + " = { category = personality }\n")
+	}
 	// One name present in both layers. The game copy lives in a different file
 	// so it stays active rather than being hidden by file-level override.
 	traits.WriteString("rank_probe_shared = { category = personality martial = 1 }\n")
 	write(game, "common/traits/00_rank_probe.txt", traits.String())
-	write(project, "common/traits/10_rank_probe_project.txt", "rank_probe_shared = { category = personality martial = 9 }\n")
+	write(project, "common/traits/10_rank_probe_project.txt", `rank_probe_shared = { category = personality martial = 9 }
+rank_probe_quota_zz_project = { category = personality }
+`)
 
 	cfg := Config{
 		ConfigPath: filepath.Join(dir, "ck3-index.toml"),

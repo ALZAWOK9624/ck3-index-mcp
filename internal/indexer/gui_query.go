@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -68,6 +67,7 @@ type GUIFileModel struct {
 }
 
 type activeGUIFile struct {
+	id         int64
 	path       string
 	relPath    string
 	sourceName string
@@ -128,7 +128,7 @@ func (db *DB) QueryGUI(ctx context.Context, options GUIQueryOptions) (GUIQueryRe
 		if !found {
 			return result, nil
 		}
-		data, err := os.ReadFile(file.path)
+		data, _, err := db.ReadVerifiedIndexedFile(ctx, file.id)
 		if err != nil {
 			return result, fmt.Errorf("read indexed GUI file %s: %w", relPath, err)
 		}
@@ -314,7 +314,7 @@ func (db *DB) QueryGUI(ctx context.Context, options GUIQueryOptions) (GUIQueryRe
 				preview.Bytes = 0
 			}
 			if previewFormat == "html" || previewFormat == "both" {
-				if err := embedGUIPreviewTextures(ctx, &preview); err != nil {
+				if err := db.embedVerifiedGUIPreviewTextures(ctx, &preview); err != nil {
 					return result, err
 				}
 				htmlPreview, err := RenderGUIHTMLPreviewWithOptions(preview, GUIHTMLRenderOptions{Mode: htmlMode})
@@ -453,7 +453,7 @@ func (result GUIQueryResult) TypeSource() string {
 }
 
 func (db *DB) activeGUIFile(ctx context.Context, relPath string, allowProject bool) (activeGUIFile, bool, error) {
-	query := `SELECT path,rel_path,source_name,source_rank,sha256 FROM files
+	query := `SELECT id,path,rel_path,source_name,source_rank,sha256 FROM files
 		WHERE overridden=0 AND lower(rel_path)=lower(?) AND lower(rel_path) LIKE 'gui/%.gui'`
 	args := []any{relPath}
 	if !allowProject {
@@ -461,7 +461,7 @@ func (db *DB) activeGUIFile(ctx context.Context, relPath string, allowProject bo
 	}
 	query += ` ORDER BY source_rank ASC LIMIT 1`
 	var file activeGUIFile
-	err := db.sql.QueryRowContext(ctx, query, args...).Scan(&file.path, &file.relPath, &file.sourceName, &file.sourceRank, &file.sha256)
+	err := db.sql.QueryRowContext(ctx, query, args...).Scan(&file.id, &file.path, &file.relPath, &file.sourceName, &file.sourceRank, &file.sha256)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return activeGUIFile{}, false, nil
@@ -472,7 +472,7 @@ func (db *DB) activeGUIFile(ctx context.Context, relPath string, allowProject bo
 }
 
 func (db *DB) activeGUIFiles(ctx context.Context, prefix string, allowProject bool) ([]activeGUIFile, error) {
-	query := `SELECT path,rel_path,source_name,source_rank,sha256 FROM files
+	query := `SELECT id,path,rel_path,source_name,source_rank,sha256 FROM files
 		WHERE overridden=0 AND lower(rel_path) LIKE 'gui/%.gui'`
 	var args []any
 	if prefix != "" {
@@ -491,7 +491,7 @@ func (db *DB) activeGUIFiles(ctx context.Context, prefix string, allowProject bo
 	var files []activeGUIFile
 	for rows.Next() {
 		var file activeGUIFile
-		if err := rows.Scan(&file.path, &file.relPath, &file.sourceName, &file.sourceRank, &file.sha256); err != nil {
+		if err := rows.Scan(&file.id, &file.path, &file.relPath, &file.sourceName, &file.sourceRank, &file.sha256); err != nil {
 			return nil, err
 		}
 		files = append(files, file)
@@ -507,6 +507,17 @@ const guiResolutionCacheLimit = 8
 // that changes any active GUI input naturally selects a new cache entry.
 func (db *DB) resolveActiveGUIFiles(ctx context.Context, files []activeGUIFile, scopePrefix, operation, symbol string, allowProject bool) (GUIResolution, bool, error) {
 	key := guiResolutionCacheKey(files, scopePrefix, operation, symbol, allowProject)
+	verified := make([][]byte, len(files))
+	for index, file := range files {
+		if err := ctx.Err(); err != nil {
+			return GUIResolution{}, false, err
+		}
+		data, _, err := db.ReadVerifiedIndexedFile(ctx, file.id)
+		if err != nil {
+			return GUIResolution{}, false, fmt.Errorf("read indexed GUI file %s: %w", file.relPath, err)
+		}
+		verified[index] = data
+	}
 	db.guiResolutionMu.Lock()
 	if cached, ok := db.guiResolutionCache[key]; ok {
 		db.guiResolutionMu.Unlock()
@@ -515,14 +526,8 @@ func (db *DB) resolveActiveGUIFiles(ctx context.Context, files []activeGUIFile, 
 	db.guiResolutionMu.Unlock()
 
 	inputs := make([]GUIModelInput, 0, len(files))
-	for _, file := range files {
-		if err := ctx.Err(); err != nil {
-			return GUIResolution{}, false, err
-		}
-		data, err := os.ReadFile(file.path)
-		if err != nil {
-			return GUIResolution{}, false, fmt.Errorf("read indexed GUI file %s: %w", file.relPath, err)
-		}
+	for index, file := range files {
+		data := verified[index]
 		inputs = append(inputs, GUIModelInput{Path: file.relPath, Model: BuildGUIModel(string(data))})
 	}
 	resolution := ResolveGUIModelSymbol(inputs, operation, symbol, scopePrefix)
@@ -592,7 +597,7 @@ func (db *DB) summarizeActiveGUIFiles(ctx context.Context, files []activeGUIFile
 		if err := ctx.Err(); err != nil {
 			return GUIResolutionSummary{}, err
 		}
-		data, err := os.ReadFile(file.path)
+		data, _, err := db.ReadVerifiedIndexedFile(ctx, file.id)
 		if err != nil {
 			return GUIResolutionSummary{}, fmt.Errorf("read indexed GUI file %s: %w", file.relPath, err)
 		}

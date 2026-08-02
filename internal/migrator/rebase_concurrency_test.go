@@ -2,10 +2,12 @@ package migrator
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"ck3-index/internal/indexer"
 )
@@ -38,6 +40,80 @@ func TestRebaseLifecycleRefusesToRunWhileAnotherOperationHoldsTheLock(t *testing
 	}
 	if _, err := BuildRebase(ctx, fixture.cfg, transaction.ID, RebaseOptions{}); err != nil {
 		t.Fatalf("build after the lock was released: %v", err)
+	}
+}
+
+func TestRebaseLockReleaseRequiresMatchingNonce(t *testing.T) {
+	root := t.TempDir()
+	id, err := newRebaseTransactionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := rebaseTransactionDir(root, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ensureRebaseDirectory(dir); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := acquireRebaseTransactionLock(root, id, "plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := readRebaseLockRecord(lock.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Nonce = "replacement-owner"
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lock.path, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := lock.Release(); err == nil || !strings.Contains(err.Error(), "no longer owned") {
+		t.Fatalf("release accepted a replacement lock: %v", err)
+	}
+	if current, err := readRebaseLockRecord(lock.path); err != nil || current.Nonce != "replacement-owner" {
+		t.Fatalf("replacement lock was removed: record=%+v err=%v", current, err)
+	}
+}
+
+func TestRebaseLockReclaimsTheObservedStaleNonce(t *testing.T) {
+	root := t.TempDir()
+	id, err := newRebaseTransactionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := rebaseTransactionDir(root, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ensureRebaseDirectory(dir); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, rebaseLockName)
+	old := time.Now().Add(-rebaseLockStaleAfter - time.Minute).UTC().Format(time.RFC3339Nano)
+	record := rebaseLockRecord{PID: -1, Host: rebaseLockHost(), Nonce: "abandoned-owner", Operation: "build", AcquiredAt: old, HeartbeatAt: old}
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := acquireRebaseTransactionLock(root, id, "build")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+	current, err := readRebaseLockRecord(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Nonce == "" || current.Nonce == record.Nonce || current.Nonce != lock.nonce {
+		t.Fatalf("stale nonce was not replaced safely: %+v", current)
 	}
 }
 

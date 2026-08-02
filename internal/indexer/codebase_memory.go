@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
 	"ck3-index/internal/script"
@@ -452,7 +451,7 @@ func (db *DB) dependencyGraph(ctx context.Context, id string, depth, limit int) 
 	// One cache for the whole traversal. Neighbouring objects cluster into the
 	// same files, so this is the difference between parsing a file once and
 	// parsing it once per node that happens to live in it.
-	cache := newScriptFileCache()
+	cache := newScriptFileCache(ctx, db)
 	var result graphResult
 	for level := 0; level < depth && len(frontier) > 0; level++ {
 		var next []string
@@ -693,7 +692,7 @@ func (db *DB) parametersForMAA(ctx context.Context, d ObjectDef, cache *scriptFi
 }
 
 func (db *DB) traditionsDefiningParameter(ctx context.Context, param string, cache *scriptFileCache) ([]ObjectDef, error) {
-	rows, err := db.sql.QueryContext(ctx, `SELECT o.object_type,o.name,o.source_name,o.source_rank,o.path,o.line,o.col
+	rows, err := db.sql.QueryContext(ctx, `SELECT f.id,f.file_size,f.sha256,o.object_type,o.name,o.source_name,o.source_rank,o.path,f.rel_path,o.line,o.col
 		FROM object_fields of
 		JOIN objects o ON o.name=of.object_name AND o.object_type=of.object_type AND o.file_id=of.file_id
 		JOIN files f ON f.id=o.file_id
@@ -706,7 +705,7 @@ func (db *DB) traditionsDefiningParameter(ctx context.Context, param string, cac
 	var out []ObjectDef
 	for rows.Next() {
 		var d ObjectDef
-		if err := rows.Scan(&d.Type, &d.Name, &d.Source, &d.Rank, &d.Path, &d.Line, &d.Column); err != nil {
+		if err := rows.Scan(&d.FileID, &d.FileSize, &d.FileSHA256, &d.Type, &d.Name, &d.Source, &d.Rank, &d.Path, &d.LogicalPath, &d.Line, &d.Column); err != nil {
 			return nil, err
 		}
 		root, err := cache.definition(d)
@@ -734,17 +733,21 @@ func (db *DB) traditionsDefiningParameter(ctx context.Context, param string, cac
 // invalidation rules, because the index generation cannot change underneath a
 // single call.
 type scriptFileCache struct {
+	ctx context.Context
+	db  *DB
 	// nodes is keyed by file path; a nil entry records a file that could not be
 	// read or parsed, so a broken path is not retried once per visit.
-	nodes map[string][]*script.Node
+	nodes map[int64][]*script.Node
 	// definitions is keyed by path and object name, memoizing the tree walk that
 	// locates one definition inside an already-parsed file.
 	definitions map[string]*script.Node
 }
 
-func newScriptFileCache() *scriptFileCache {
+func newScriptFileCache(ctx context.Context, db *DB) *scriptFileCache {
 	return &scriptFileCache{
-		nodes:       map[string][]*script.Node{},
+		ctx:         ctx,
+		db:          db,
+		nodes:       map[int64][]*script.Node{},
 		definitions: map[string]*script.Node{},
 	}
 }
@@ -753,37 +756,32 @@ func newScriptFileCache() *scriptFileCache {
 // with a nil error means the file parsed but holds no block by that name,
 // which callers already treat as "nothing to walk".
 func (c *scriptFileCache) definition(d ObjectDef) (*script.Node, error) {
-	if c == nil {
-		return parseObjectDefinition(d)
+	if c == nil || c.db == nil || d.FileID <= 0 {
+		return nil, fmt.Errorf("object definition %q lacks verified indexed file identity", d.Name)
 	}
-	key := d.Path + "\x00" + d.Name
+	key := fmt.Sprint(d.FileID) + "\x00" + d.Name
 	if cached, ok := c.definitions[key]; ok {
 		return cached, nil
 	}
-	nodes, ok := c.nodes[d.Path]
+	nodes, ok := c.nodes[d.FileID]
 	if !ok {
-		data, err := os.ReadFile(d.Path)
+		data, snapshot, err := c.db.ReadVerifiedIndexedFile(c.ctx, d.FileID)
 		if err != nil {
 			// Remember the failure so the next visitor of this path does not
 			// repeat the syscall, and report it exactly as before.
-			c.nodes[d.Path] = nil
+			c.nodes[d.FileID] = nil
 			c.definitions[key] = nil
 			return nil, err
 		}
-		nodes = script.Parse(string(data)).Nodes
-		c.nodes[d.Path] = nodes
+		if snapshot.Path != d.Path || snapshot.RelPath != d.LogicalPath || snapshot.Size != d.FileSize || !strings.EqualFold(snapshot.SHA256, d.FileSHA256) {
+			return nil, &SourceChangedError{Path: d.LogicalPath, Reason: "object definition metadata does not match its indexed file", ExpectedSize: d.FileSize, ActualSize: snapshot.Size, ExpectedSHA256: d.FileSHA256, ActualSHA256: snapshot.SHA256, IndexedGeneration: snapshot.Generation, IndexedRevision: snapshot.Revision}
+		}
+		nodes = script.ParseBytes(data).Nodes
+		c.nodes[d.FileID] = nodes
 	}
 	best := findDefinitionBlock(nodes, d.Name)
 	c.definitions[key] = best
 	return best, nil
-}
-
-func parseObjectDefinition(d ObjectDef) (*script.Node, error) {
-	data, err := os.ReadFile(d.Path)
-	if err != nil {
-		return nil, err
-	}
-	return findDefinitionBlock(script.Parse(string(data)).Nodes, d.Name), nil
 }
 
 func findDefinitionBlock(nodes []*script.Node, name string) *script.Node {

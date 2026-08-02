@@ -45,6 +45,27 @@ func terrainMCPArgs(confirm bool) map[string]any {
 	}
 }
 
+func planSplitForMCP(t *testing.T, db *indexer.DB, cfg indexer.Config) (string, string) {
+	t.Helper()
+	result := callToolForTest(t, db, cfg, "map_split_province", map[string]any{
+		"province_id":        1,
+		"seeds":              []any{map[string]any{"x": 0, "y": 0}, map[string]any{"x": 0, "y": 1}},
+		"emit_definition":    true,
+		"emit_history":       true,
+		"emit_landed_titles": true,
+	})
+	if result["isError"] == true {
+		t.Fatalf("split planning failed: %+v", result)
+	}
+	structured := result["structuredContent"].(map[string]any)
+	planID, _ := structured["plan_id"].(string)
+	planHash, _ := structured["plan_hash"].(string)
+	if planID == "" || planHash == "" {
+		t.Fatalf("split plan identity missing: %+v", structured)
+	}
+	return planID, planHash
+}
+
 // fingerprintTree hashes every file under root so a test can prove nothing
 // under it moved, without knowing which files the fixture happens to contain.
 func fingerprintTree(t *testing.T, root string) string {
@@ -100,9 +121,9 @@ func TestMCPTerrainEditWithoutConfirmationReturnsPreviewAndWritesNothing(t *test
 
 func TestMCPMapApplySplitStillRequiresExplicitConfirmation(t *testing.T) {
 	db, cfg, _ := mapEditFixture(t)
+	planID, planHash := planSplitForMCP(t, db, cfg)
 	result := callToolForTest(t, db, cfg, "map_apply_split", map[string]any{
-		"province_id": 1,
-		"seeds":       []any{map[string]any{"x": 0, "y": 0}, map[string]any{"x": 0, "y": 1}},
+		"plan_id": planID, "plan_hash": planHash,
 	})
 	if result["isError"] != true {
 		t.Fatalf("map_apply_split wrote without confirmation: %+v", result)
@@ -124,11 +145,8 @@ func TestMCPMapEditToolsLeaveEveryConfiguredSourceUntouched(t *testing.T) {
 	if terrain["isError"] == true {
 		t.Fatalf("terrain edit failed: %+v", terrain)
 	}
-	split := callToolForTest(t, db, cfg, "map_apply_split", map[string]any{
-		"province_id": 1,
-		"seeds":       []any{map[string]any{"x": 0, "y": 0}, map[string]any{"x": 0, "y": 1}},
-		"confirm":     true,
-	})
+	planID, planHash := planSplitForMCP(t, db, cfg)
+	split := callToolForTest(t, db, cfg, "map_apply_split", map[string]any{"plan_id": planID, "plan_hash": planHash, "confirm": true})
 	if split["isError"] == true {
 		t.Fatalf("apply split failed: %+v", split)
 	}
@@ -144,7 +162,7 @@ func TestMCPMapEditToolsLeaveEveryConfiguredSourceUntouched(t *testing.T) {
 		if structured["applied"] != false {
 			t.Fatalf("result does not report applied=false: %+v", structured)
 		}
-		dir, _ := structured["artifact_dir"].(string)
+		dir := ""
 		if index == 0 {
 			id, _ := structured["artifact_id"].(string)
 			if id == "" {
@@ -154,12 +172,98 @@ func TestMCPMapEditToolsLeaveEveryConfiguredSourceUntouched(t *testing.T) {
 			if structured["requires_ck3_repack"] != true {
 				t.Fatalf("terrain result did not require CK3 repacking: %+v", structured)
 			}
-		} else if dir == "" {
-			t.Fatalf("split result carries no artifact directory: %+v", structured)
+		} else {
+			id, _ := structured["artifact_id"].(string)
+			if id == "" {
+				t.Fatalf("split result carries no artifact id: %+v", structured)
+			}
+			dir = filepath.Join(cfg.ArtifactRoot, "map-edits", "split-results", id)
 		}
 		if entries, err := os.ReadDir(filepath.Join(dir, "map_data")); err != nil || len(entries) == 0 {
 			t.Fatalf("artifact directory %s holds no map_data output: %v", dir, err)
 		}
+	}
+}
+
+func TestMCPMapArtifactRequestKeysRecoverCommittedPublications(t *testing.T) {
+	db, cfg, _ := mapEditFixture(t)
+
+	terrainArgs := terrainMCPArgs(true)
+	terrainArgs["request_key"] = "review-terrain-1"
+	firstTerrain := callToolForTest(t, db, cfg, "map_terrain_edit", terrainArgs)
+	secondTerrain := callToolForTest(t, db, cfg, "map_terrain_edit", terrainArgs)
+	if firstTerrain["isError"] == true || secondTerrain["isError"] == true {
+		t.Fatalf("idempotent terrain publication failed: first=%+v second=%+v", firstTerrain, secondTerrain)
+	}
+	firstTerrainValue := firstTerrain["structuredContent"].(map[string]any)
+	secondTerrainValue := secondTerrain["structuredContent"].(map[string]any)
+	if firstTerrainValue["artifact_id"] != secondTerrainValue["artifact_id"] || secondTerrainValue["replayed"] != true {
+		t.Fatalf("terrain retry did not recover one artifact: first=%+v second=%+v", firstTerrainValue, secondTerrainValue)
+	}
+
+	planArgs := map[string]any{
+		"province_id":        1,
+		"seeds":              []any{map[string]any{"x": 0, "y": 0}, map[string]any{"x": 0, "y": 1}},
+		"emit_definition":    true,
+		"emit_history":       true,
+		"emit_landed_titles": true,
+		"request_key":        "review-plan-1",
+	}
+	firstPlan := callToolForTest(t, db, cfg, "map_split_province", planArgs)
+	secondPlan := callToolForTest(t, db, cfg, "map_split_province", planArgs)
+	if firstPlan["isError"] == true || secondPlan["isError"] == true {
+		t.Fatalf("idempotent split planning failed: first=%+v second=%+v", firstPlan, secondPlan)
+	}
+	firstPlanValue := firstPlan["structuredContent"].(map[string]any)
+	secondPlanValue := secondPlan["structuredContent"].(map[string]any)
+	if firstPlanValue["plan_id"] != secondPlanValue["plan_id"] {
+		t.Fatalf("split plan retry created a second id: first=%+v second=%+v", firstPlanValue, secondPlanValue)
+	}
+	secondPlanState := secondPlanValue["plan_state"].(map[string]any)
+	if secondPlanState["replayed"] != true {
+		t.Fatalf("split plan retry was not reported as replayed: %+v", secondPlanState)
+	}
+
+	applyArgs := map[string]any{
+		"plan_id": firstPlanValue["plan_id"], "plan_hash": firstPlanValue["plan_hash"],
+		"confirm": true, "request_key": "review-apply-1",
+	}
+	firstApply := callToolForTest(t, db, cfg, "map_apply_split", applyArgs)
+	secondApply := callToolForTest(t, db, cfg, "map_apply_split", applyArgs)
+	if firstApply["isError"] == true || secondApply["isError"] == true {
+		t.Fatalf("idempotent split apply failed: first=%+v second=%+v", firstApply, secondApply)
+	}
+	firstApplyValue := firstApply["structuredContent"].(map[string]any)
+	secondApplyValue := secondApply["structuredContent"].(map[string]any)
+	if firstApplyValue["artifact_id"] != secondApplyValue["artifact_id"] {
+		t.Fatalf("split apply retry created a second artifact: first=%+v second=%+v", firstApplyValue, secondApplyValue)
+	}
+	secondApplyState := secondApplyValue["artifact_state"].(map[string]any)
+	if secondApplyState["replayed"] != true {
+		t.Fatalf("split apply retry was not reported as replayed: %+v", secondApplyState)
+	}
+
+	listed := callToolForTest(t, db, cfg, "map_artifact", map[string]any{"operation": "list", "limit": 10})
+	if listed["isError"] == true {
+		t.Fatalf("artifact list failed: %+v", listed)
+	}
+	listedValue := listed["structuredContent"].(map[string]any)
+	if count, _ := listedValue["count"].(float64); count < 3 {
+		t.Fatalf("artifact list missed committed publications: %+v", listedValue)
+	}
+	inspected := callToolForTest(t, db, cfg, "map_artifact", map[string]any{
+		"operation": "inspect", "artifact_id": firstApplyValue["artifact_id"],
+	})
+	if inspected["isError"] == true || inspected["structuredContent"].(map[string]any)["status"] != "committed" {
+		t.Fatalf("artifact inspect did not verify the split result: %+v", inspected)
+	}
+
+	conflictArgs := terrainMCPArgs(true)
+	conflictArgs["request_key"] = "review-terrain-1"
+	conflictArgs["region"] = map[string]any{"x": 0, "y": 0, "width": 1, "height": 1}
+	conflict := callToolForTest(t, db, cfg, "map_terrain_edit", conflictArgs)
+	if conflict["isError"] != true {
+		t.Fatalf("request_key reuse with different input was accepted: %+v", conflict)
 	}
 }
 
@@ -170,6 +274,36 @@ func TestMCPMapEditToolsRejectPublicVisibility(t *testing.T) {
 	result := callToolForTest(t, db, cfg, "map_terrain_edit", args)
 	if result["isError"] != true {
 		t.Fatalf("public visibility was accepted for a source-derived raster: %+v", result)
+	}
+}
+
+func TestMCPMapApplySplitRejectsDefinitionDriftAfterPlanning(t *testing.T) {
+	db, cfg, _ := mapEditFixture(t)
+	planID, planHash := planSplitForMCP(t, db, cfg)
+	definitionPath, _, err := indexer.ActiveMapAsset(cfg, "map_data/definition.csv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(definitionPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("# drift after plan\n"); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	result := callToolForTest(t, db, cfg, "map_apply_split", map[string]any{
+		"plan_id": planID, "plan_hash": planHash, "confirm": true,
+	})
+	if result["isError"] != true {
+		t.Fatalf("stale split plan was applied: %+v", result)
+	}
+	structured := result["structuredContent"].(map[string]any)
+	if structured["code"] != ErrorSourceChanged {
+		t.Fatalf("definition drift error=%+v", structured)
 	}
 }
 

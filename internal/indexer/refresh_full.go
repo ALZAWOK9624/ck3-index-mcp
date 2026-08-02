@@ -166,7 +166,7 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 	// there to supply. Without a base the stage starts empty and a clean scan is
 	// both correct and marginally cheaper.
 	stageConfig.ForceClean = !seeded
-	stats, err := scanWithMode(ctx, stageConfig, !seeded)
+	stats, err := scanWithModePublishing(ctx, stageConfig, !seeded, false)
 	if err != nil {
 		err = sanitizeStagedFullScanFailure(err, scanRedactionPaths(normalized, dbPath, stagePath))
 		recordStagedFullScanFailure(normalized, err)
@@ -181,6 +181,18 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 		err = sanitizeStagedFullScanFailure(err, scanRedactionPaths(normalized, dbPath, stagePath))
 		recordStagedFullScanFailure(normalized, err)
 		return ScanStats{}, err
+	}
+	live, err := OpenReadOnly(dbPath)
+	if err != nil {
+		return ScanStats{}, err
+	}
+	rulesErr := publishEngineBundleMatchingDB(ctx, live, engineBundle)
+	closeErr := live.Close()
+	if rulesErr != nil {
+		return ScanStats{}, rulesErr
+	}
+	if closeErr != nil {
+		return ScanStats{}, closeErr
 	}
 	if stats.TimingsMillis == nil {
 		stats.TimingsMillis = map[string]int64{}
@@ -358,6 +370,9 @@ func publishStagedFullScan(ctx context.Context, cfg Config, stagePath string, ba
 		if _, err := conn.ExecContext(ctx, `INSERT INTO `+qualifiedSQLiteIdentifier("main", table)+` (`+columns+`) SELECT `+columns+` FROM `+qualifiedSQLiteIdentifier(stagedFullScanSchema, table)); err != nil {
 			return fmt.Errorf("copy staged table %s: %w", table, err)
 		}
+	}
+	if err := rebuildScriptTextFTS(ctx, conn); err != nil {
+		return err
 	}
 
 	nextGeneration := current.Generation + 1

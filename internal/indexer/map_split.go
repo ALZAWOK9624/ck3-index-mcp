@@ -44,6 +44,10 @@ type MapSplitSeed struct {
 type MapSplitRequest struct {
 	ProvinceID int            `json:"province_id"`
 	Seeds      []MapSplitSeed `json:"seeds"`
+	// RetainSeed explicitly chooses which seed's part keeps the original id,
+	// colour, history, and title. When absent the planner prefers the indexed
+	// holding locator and only then falls back to the largest part.
+	RetainSeed *int `json:"retain_seed,omitempty"`
 	// TerrainWeight scales how strongly terrain deflects the boundary. 0 grows
 	// purely by distance, which yields Voronoi-like edges that ignore the
 	// landscape; higher values bend boundaries toward ridges. Values above
@@ -77,6 +81,7 @@ type MapSplitResult struct {
 	OrphanPieces int      `json:"orphan_piece_count"`
 	OrphanPixels int      `json:"orphan_pixel_count"`
 	Warnings     []string `json:"warnings,omitempty"`
+	RetainSeed   *int     `json:"retain_seed,omitempty"`
 }
 
 // MapSplitTerrain supplies per-pixel traversal resistance in [0,1], where 1 is
@@ -117,6 +122,9 @@ func SplitProvinceGeometry(runs []MapRun, request MapSplitRequest, terrain MapSp
 	if len(runs) == 0 {
 		return MapSplitResult{}, splitInputErrorf("province %d has no indexed geometry to split", request.ProvinceID)
 	}
+	if request.RetainSeed != nil && (*request.RetainSeed < 0 || *request.RetainSeed >= len(request.Seeds)) {
+		return MapSplitResult{}, splitInputErrorf("retain_seed %d is outside the seed index range 0..%d", *request.RetainSeed, len(request.Seeds)-1)
+	}
 	if terrain == nil {
 		terrain = uniformTerrain{}
 	}
@@ -149,6 +157,10 @@ func SplitProvinceGeometry(runs []MapRun, request MapSplitRequest, terrain MapSp
 	queue := &splitQueue{}
 	heap.Init(queue)
 	result := MapSplitResult{ProvinceID: request.ProvinceID, SourcePixel: total}
+	if request.RetainSeed != nil {
+		value := *request.RetainSeed
+		result.RetainSeed = &value
+	}
 	for seedIndex, seed := range request.Seeds {
 		if seed.X < minX || seed.X > maxX || seed.Y < minY || seed.Y > maxY {
 			return MapSplitResult{}, splitInputErrorf("seed %d (%d,%d) lies outside province %d", seedIndex, seed.X, seed.Y, request.ProvinceID)

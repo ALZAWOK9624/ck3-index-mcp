@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"image"
@@ -112,6 +113,7 @@ type MapTerrainEditResult struct {
 	Guidance          []string                   `json:"guidance,omitempty"`
 	PreviewPNG        []byte                     `json:"-"`
 	Warnings          []string                   `json:"warnings,omitempty"`
+	Replayed          bool                       `json:"replayed,omitempty"`
 }
 
 // ActiveMapAsset resolves one source-root-relative map asset through the same
@@ -171,8 +173,16 @@ func writeHeightmapOutput(dir string, img image.Image) (MapTerrainEditOutput, er
 	return writeMapRaster(dir, mapHeightmapRel, "heightmap", img)
 }
 
+func writeHeightmapOutputContext(ctx context.Context, dir string, img image.Image) (MapTerrainEditOutput, error) {
+	return writeMapRasterContext(ctx, dir, mapHeightmapRel, "heightmap", img)
+}
+
 func writeRiverOverlayOutput(dir string, img *image.Paletted) (MapTerrainEditOutput, error) {
 	return writeMapRaster(dir, mapRiversRel, "rivers", img)
+}
+
+func writeRiverOverlayOutputContext(ctx context.Context, dir string, img *image.Paletted) (MapTerrainEditOutput, error) {
+	return writeMapRasterContext(ctx, dir, mapRiversRel, "rivers", img)
 }
 
 // WriteMapTerrainPreview saves the optional CLI thumbnail without allowing it
@@ -231,7 +241,26 @@ func WriteMapTerrainPreview(path string, data []byte, cfg Config) error {
 // can be copied into a Mod wholesale, and refuses to replace a file already
 // there: overwriting would destroy the previous run's evidence with no diff.
 func writeMapRaster(dir, rel, kind string, img image.Image) (MapTerrainEditOutput, error) {
+	return writeMapRasterContext(context.Background(), dir, rel, kind, img)
+}
+
+type contextCheckingWriter struct {
+	ctx    context.Context
+	writer io.Writer
+}
+
+func (writer contextCheckingWriter) Write(data []byte) (int, error) {
+	if err := writer.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return writer.writer.Write(data)
+}
+
+func writeMapRasterContext(ctx context.Context, dir, rel, kind string, img image.Image) (MapTerrainEditOutput, error) {
 	output := MapTerrainEditOutput{Kind: kind, Rel: rel}
+	if err := ctx.Err(); err != nil {
+		return output, err
+	}
 	path := filepath.Join(dir, filepath.FromSlash(rel))
 	if _, err := os.Lstat(path); err == nil {
 		return output, terrainInputErrorf("refusing to overwrite %s; nominate an empty output directory", path)
@@ -248,25 +277,39 @@ func writeMapRaster(dir, rel, kind string, img image.Image) (MapTerrainEditOutpu
 	if err != nil {
 		return output, err
 	}
+	complete := false
+	defer func() {
+		if !complete {
+			_ = os.Remove(path)
+		}
+	}()
 	// CK3 reads both rasters by exact value -- grey level for the heightmap,
 	// palette index for rivers -- so the encoder must not quantise or dither.
 	encoder := png.Encoder{CompressionLevel: png.DefaultCompression}
-	if err := encoder.Encode(file, img); err != nil {
+	if err := encoder.Encode(contextCheckingWriter{ctx: ctx, writer: file}, img); err != nil {
+		file.Close()
+		return output, err
+	}
+	if err := file.Sync(); err != nil {
 		file.Close()
 		return output, err
 	}
 	if err := file.Close(); err != nil {
 		return output, err
 	}
+	if err := ctx.Err(); err != nil {
+		return output, err
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return output, err
 	}
-	hash, err := sha256File(path)
+	hash, err := sha256FileContext(ctx, path)
 	if err != nil {
 		return output, err
 	}
 	output.Path, output.Bytes, output.SHA256 = path, info.Size(), hash
+	complete = true
 	return output, nil
 }
 

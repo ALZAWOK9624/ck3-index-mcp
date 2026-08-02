@@ -49,8 +49,11 @@ var semanticIndexTableCatalog = [...]string{
 	"engine_datatypes",
 	"engine_scope_rules",
 	"search_fts",
+	"script_text_fts",
 }
 
-// publishedIndexTables intentionally aliases the immutable package catalog.
-// Tests compare this catalog against the schema itself.
-var publishedIndexTables = semanticIndexTableCatalog[:]
+// script_text_fts is a contentless derived cache keyed by files.id. It cannot
+// be copied row-for-row because contentless FTS columns deliberately return no
+// stored source text; staged publication rebuilds it from the copied files
+// table instead.
+var publishedIndexTables = semanticIndexTableCatalog[:len(semanticIndexTableCatalog)-1]

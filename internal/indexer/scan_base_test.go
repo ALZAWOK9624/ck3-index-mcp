@@ -3,6 +3,7 @@ package indexer
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -260,6 +261,31 @@ func TestSeededRefreshMatchesFullScan(t *testing.T) {
 	// A hidden upstream file keeps its files row but must retain no derived
 	// rows, exactly as a clean rebuild would leave it.
 	assertNoProjectionRow(t, got["objects"], "history/characters/seed_upstream_only.txt")
+
+	base, err := OpenReadOnly(filepath.Join(fixture.dir, "cache", "base.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseState, err := base.IndexState(ctx)
+	if err != nil {
+		base.Close()
+		t.Fatal(err)
+	}
+	base.Close()
+	seeded, err := OpenReadOnly(filepath.Join(fixture.dir, "cache", "seeded.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer seeded.Close()
+	if got, _ := seeded.metaValue(ctx, "base_origin_generation"); got != fmt.Sprint(baseState.Generation) {
+		t.Fatalf("base origin generation=%q want=%d", got, baseState.Generation)
+	}
+	if got, _ := seeded.metaValue(ctx, "base_origin_revision"); got != baseState.Revision {
+		t.Fatalf("base origin revision=%q want=%q", got, baseState.Revision)
+	}
+	if got, _ := seeded.metaValue(ctx, "base_origin_fingerprint"); got == "" {
+		t.Fatal("base origin fingerprint was not retained")
+	}
 }
 
 func assertProjectionContains(t *testing.T, rows []string, needles ...string) {
@@ -352,6 +378,19 @@ func TestSeededRefreshRejectsBaseCarryingProjectRows(t *testing.T) {
 	if _, err := Scan(ctx, pollutedBase); err != nil {
 		t.Fatalf("build polluted base: %v", err)
 	}
+	// Role, not rank, identifies project contamination. Deliberately corrupt
+	// the cached numeric rank so the old rank-only check would miss these rows.
+	polluted, err := Open(filepath.Join(fixture.dir, "cache", "polluted-base.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := polluted.sql.ExecContext(ctx, `UPDATE files SET source_rank=99 WHERE source_name='project'`); err != nil {
+		polluted.Close()
+		t.Fatal(err)
+	}
+	if err := polluted.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	seeded := fixture.config(t, fixture.project, "cache/seeded.sqlite")
 	seeded.BaseDatabase = filepath.Join(fixture.dir, "cache", "polluted-base.sqlite")
@@ -362,8 +401,41 @@ func TestSeededRefreshRejectsBaseCarryingProjectRows(t *testing.T) {
 	if stats.BaseSeed == nil || stats.BaseSeed.Used {
 		t.Fatalf("a base containing project rows was accepted: %+v", stats.BaseSeed)
 	}
-	if !strings.Contains(stats.BaseSeed.Reason, "project rank") {
+	if !strings.Contains(stats.BaseSeed.Reason, "project role") {
 		t.Fatalf("rejection reason did not name the cause: %q", stats.BaseSeed.Reason)
+	}
+}
+
+func TestOnlineBackupDatabaseIncludesUncheckpointedWAL(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "source.sqlite")
+	destinationPath := filepath.Join(dir, "snapshot.sqlite")
+	source, err := Open(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	if _, err := source.sql.ExecContext(ctx, `PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE wal_probe(value TEXT); INSERT INTO wal_probe(value) VALUES('latest')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(sourcePath + "-wal"); err != nil {
+		t.Fatalf("fixture did not retain a WAL sidecar: %v", err)
+	}
+	if err := onlineBackupDatabase(ctx, sourcePath, destinationPath); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := OpenReadOnly(destinationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snapshot.Close()
+	var value string
+	if err := snapshot.sql.QueryRowContext(ctx, `SELECT value FROM wal_probe`).Scan(&value); err != nil {
+		t.Fatal(err)
+	}
+	if value != "latest" {
+		t.Fatalf("snapshot value=%q want latest", value)
 	}
 }
 

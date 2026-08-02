@@ -2,6 +2,9 @@ package indexer
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,10 +29,10 @@ func TestQueryGUIReusesIndexedFilesAndPrivacyBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	gamePath := writeGUIQueryFixture(t, root, "game/base.gui", `types Demo {
+	gamePath := writeGUIQueryFixture(t, root, "game/gui/base.gui", `types Demo {
 	type base_panel = container { block "content" { text_single = { text = "base" } } }
 }`)
-	projectPath := writeGUIQueryFixture(t, root, "project/child.gui", `types Demo {
+	projectPath := writeGUIQueryFixture(t, root, "project/gui/child.gui", `types Demo {
 	type child_panel = base_panel { blockoverride "content" { icon = { texture = "gfx/interface/child.dds" } } }
 }`)
 	for _, row := range []struct {
@@ -43,6 +46,7 @@ func TestQueryGUIReusesIndexedFilesAndPrivacyBoundary(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	publishVerifiedGUIFixture(t, ctx, db)
 
 	private, err := db.QueryGUI(ctx, GUIQueryOptions{Operation: "type", Symbol: "child_panel", AllowProject: true})
 	if err != nil {
@@ -81,7 +85,7 @@ func TestQueryGUISummaryStreamsRawModels(t *testing.T) {
 	if err := db.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
-	path := writeGUIQueryFixture(t, root, "game/summary.gui", `template SharedLabel {
+	path := writeGUIQueryFixture(t, root, "game/gui/summary.gui", `template SharedLabel {
 	text_single = { align = right }
 }
 types Demo {
@@ -118,6 +122,7 @@ widget = {
 	if _, err := db.sql.ExecContext(ctx, `INSERT INTO files(source_name,source_rank,path,rel_path,kind,mtime,sha256,overridden) VALUES('game',3,?,?, 'script',0,'test',0)`, path, "gui/summary.gui"); err != nil {
 		t.Fatal(err)
 	}
+	publishVerifiedGUIFixture(t, ctx, db)
 	result, err := db.QueryGUI(ctx, GUIQueryOptions{Operation: "summary", AllowProject: true})
 	if err != nil {
 		t.Fatal(err)
@@ -211,12 +216,12 @@ func TestQueryGUIPathPrefixScopesSymbolButResolvesCrossFileTypes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sharedPath := writeGUIQueryFixture(t, root, "game/shared.gui", `types Shared {
+	sharedPath := writeGUIQueryFixture(t, root, "game/gui/shared.gui", `types Shared {
 	type shared_badge = widget {
 		icon = { name = "layer" texture = "gfx/interface/shared.dds" size = { 32 32 } }
 	}
 }`)
-	consumerPath := writeGUIQueryFixture(t, root, "game/consumer.gui", `types Consumer {
+	consumerPath := writeGUIQueryFixture(t, root, "game/gui/consumer.gui", `types Consumer {
 	type scoped_panel = widget {
 		size = { 120 80 }
 		shared_badge = { name = "badge" size = { 32 32 } }
@@ -232,6 +237,7 @@ func TestQueryGUIPathPrefixScopesSymbolButResolvesCrossFileTypes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	publishVerifiedGUIFixture(t, ctx, db)
 
 	result, err := db.QueryGUI(ctx, GUIQueryOptions{
 		Operation: "type", Symbol: "scoped_panel", PathPrefix: "gui/consumer.gui", AllowProject: true, Limit: 50,
@@ -274,10 +280,11 @@ func TestQueryGUIResolutionCacheUsesIndexedHashes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	path := writeGUIQueryFixture(t, root, "project/cache.gui", `types Demo { type old_panel = widget { size = { 10 10 } } }`)
+	path := writeGUIQueryFixture(t, root, "project/gui/cache.gui", `types Demo { type old_panel = widget { size = { 10 10 } } }`)
 	if _, err := db.sql.ExecContext(ctx, `INSERT INTO files(source_name,source_rank,path,rel_path,kind,mtime,sha256,overridden) VALUES(?,?,?,?, 'script',0,'old-hash',0)`, "project", 1, path, "gui/cache.gui"); err != nil {
 		t.Fatal(err)
 	}
+	publishVerifiedGUIFixture(t, ctx, db)
 	first, err := db.QueryGUI(ctx, GUIQueryOptions{Operation: "type", Symbol: "old_panel", AllowProject: true})
 	if err != nil || !first.Found || first.CacheHit {
 		t.Fatalf("initial GUI resolution failed: result=%+v err=%v", first, err)
@@ -287,12 +294,11 @@ func TestQueryGUIResolutionCacheUsesIndexedHashes(t *testing.T) {
 		t.Fatal(err)
 	}
 	warm, err := db.QueryGUI(ctx, GUIQueryOptions{Operation: "type", Symbol: "old_panel", AllowProject: true})
-	if err != nil || !warm.Found || !warm.CacheHit {
-		t.Fatalf("warm GUI resolution did not reuse indexed-hash cache: result=%+v err=%v", warm, err)
+	var changed *SourceChangedError
+	if !errors.As(err, &changed) {
+		t.Fatalf("warm GUI resolution read changed live bytes: result=%+v err=%v", warm, err)
 	}
-	if _, err := db.sql.ExecContext(ctx, `UPDATE files SET sha256='new-hash' WHERE rel_path='gui/cache.gui'`); err != nil {
-		t.Fatal(err)
-	}
+	publishVerifiedGUIFixture(t, ctx, db)
 	invalidated, err := db.QueryGUI(ctx, GUIQueryOptions{Operation: "type", Symbol: "new_panel", AllowProject: true})
 	if err != nil || !invalidated.Found || invalidated.CacheHit {
 		t.Fatalf("changed indexed hash did not invalidate GUI resolution cache: result=%+v err=%v", invalidated, err)
@@ -419,7 +425,7 @@ func TestQueryGUIRendersPreviewFromIndexedResolvedType(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	path := writeGUIQueryFixture(t, root, "project/preview.gui", `types Demo {
+	path := writeGUIQueryFixture(t, root, "project/gui/preview.gui", `types Demo {
 	type preview_panel = widget {
 		size = { 320 180 }
 		icon = { size = { 32 32 } parentanchor = center widgetanchor = center texture = "gfx/interface/preview.dds" }
@@ -429,7 +435,7 @@ func TestQueryGUIRendersPreviewFromIndexedResolvedType(t *testing.T) {
 	if _, err := db.sql.ExecContext(ctx, `INSERT INTO files(source_name,source_rank,path,rel_path,kind,mtime,sha256,overridden) VALUES(?,?,?,?, 'script',0,'test',0)`, "project", 1, path, "gui/preview.gui"); err != nil {
 		t.Fatal(err)
 	}
-	resourcePath := writeGUIQueryFixture(t, root, "project/preview.dds", "fixture")
+	resourcePath := writeGUIQueryFixture(t, root, "project/gfx/interface/preview.dds", "fixture")
 	inserted, err := db.sql.ExecContext(ctx, `INSERT INTO files(source_name,source_rank,path,rel_path,kind,mtime,sha256,overridden) VALUES(?,?,?,?, 'resource',0,'test',0)`, "project", 1, resourcePath, "gfx/interface/preview.dds")
 	if err != nil {
 		t.Fatal(err)
@@ -441,6 +447,7 @@ func TestQueryGUIRendersPreviewFromIndexedResolvedType(t *testing.T) {
 	if _, err := db.sql.ExecContext(ctx, `INSERT INTO resources(resource_path,kind,file_id,source_name,source_rank,path) VALUES(?,?,?,?,?,?)`, "gfx/interface/preview.dds", "dds", resourceFileID, "project", 1, resourcePath); err != nil {
 		t.Fatal(err)
 	}
+	publishVerifiedGUIFixture(t, ctx, db)
 
 	result, err := db.QueryGUI(ctx, GUIQueryOptions{Operation: "preview", Symbol: "preview_panel", AllowProject: true, Width: 800, Height: 450, Format: "both", HTMLMode: GUIHTMLModeInspector})
 	if err != nil {
@@ -483,7 +490,7 @@ func TestQueryGUIRendersExistingPreviewForNamedRootElement(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	path := writeGUIQueryFixture(t, root, "project/root.gui", `widget = {
+	path := writeGUIQueryFixture(t, root, "project/gui/root.gui", `widget = {
 	name = "named_root"
 	size = { 400 200 }
 	text_single = { name = "nested_label" text = "Root preview" }
@@ -491,6 +498,7 @@ func TestQueryGUIRendersExistingPreviewForNamedRootElement(t *testing.T) {
 	if _, err := db.sql.ExecContext(ctx, `INSERT INTO files(source_name,source_rank,path,rel_path,kind,mtime,sha256,overridden) VALUES(?,?,?,?, 'script',0,'test',0)`, "project", 1, path, "gui/root.gui"); err != nil {
 		t.Fatal(err)
 	}
+	publishVerifiedGUIFixture(t, ctx, db)
 
 	result, err := db.QueryGUI(ctx, GUIQueryOptions{Operation: "preview", Symbol: "named_root", AllowProject: true, Width: 800, Height: 450})
 	if err != nil {
@@ -516,6 +524,45 @@ func writeGUIQueryFixture(t *testing.T, root, rel string, content string) string
 	return path
 }
 
+func publishVerifiedGUIFixture(tb testing.TB, ctx context.Context, db *DB) {
+	tb.Helper()
+	rows, err := db.sql.QueryContext(ctx, `SELECT id,path FROM files WHERE kind IN ('script','resource')`)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	type indexedPath struct {
+		id   int64
+		path string
+	}
+	var files []indexedPath
+	for rows.Next() {
+		var file indexedPath
+		if err := rows.Scan(&file.id, &file.path); err != nil {
+			rows.Close()
+			tb.Fatal(err)
+		}
+		files = append(files, file)
+	}
+	if err := rows.Close(); err != nil {
+		tb.Fatal(err)
+	}
+	for _, file := range files {
+		data, err := os.ReadFile(file.path)
+		if err != nil {
+			tb.Fatal(err)
+		}
+		digest := sha256.Sum256(data)
+		if _, err := db.sql.ExecContext(ctx, `UPDATE files SET file_size=?,sha256=? WHERE id=?`, len(data), hex.EncodeToString(digest[:]), file.id); err != nil {
+			tb.Fatal(err)
+		}
+	}
+	if _, err := db.sql.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES
+		('scan_generation','1'),('scan_revision','gui-fixture'),('scan_status','ready')
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`); err != nil {
+		tb.Fatal(err)
+	}
+}
+
 func BenchmarkQueryGUIWarmResolutionCache(b *testing.B) {
 	ctx := context.Background()
 	root := b.TempDir()
@@ -527,13 +574,17 @@ func BenchmarkQueryGUIWarmResolutionCache(b *testing.B) {
 	if err := db.EnsureSchema(ctx); err != nil {
 		b.Fatal(err)
 	}
-	path := filepath.Join(root, "panel.gui")
+	path := filepath.Join(root, "gui", "panel.gui")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		b.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte(`types Demo { type benchmark_panel = widget { size = { 1280 720 } text_single = { text = "benchmark" } } }`), 0600); err != nil {
 		b.Fatal(err)
 	}
 	if _, err := db.sql.ExecContext(ctx, `INSERT INTO files(source_name,source_rank,path,rel_path,kind,mtime,sha256,overridden) VALUES(?,?,?,?, 'script',0,'benchmark-hash',0)`, "project", 1, path, "gui/panel.gui"); err != nil {
 		b.Fatal(err)
 	}
+	publishVerifiedGUIFixture(b, ctx, db)
 	options := GUIQueryOptions{Operation: "type", Symbol: "benchmark_panel", AllowProject: true}
 	if result, err := db.QueryGUI(ctx, options); err != nil || !result.Found || result.CacheHit {
 		b.Fatalf("failed to prime GUI cache: result=%+v err=%v", result, err)

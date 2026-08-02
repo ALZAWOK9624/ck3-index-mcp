@@ -381,7 +381,7 @@ func (l *Lexer) ident(line, col int) Token {
 
 func isASCIIIdentDelimiter(b byte) bool {
 	switch b {
-	case ' ', '\t', '\n', '\r', '\v', '\f', '{', '}', '#', '=', '<', '>':
+	case ' ', '\t', '\n', '\r', '\v', '\f', '{', '}', '#', '=', '<', '>', '!', '?':
 		return true
 	default:
 		return false

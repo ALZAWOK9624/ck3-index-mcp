@@ -58,6 +58,27 @@ type guiTextureEmbedTarget struct {
 // into deterministic data: PNGs. It never accepts a client path and keeps the
 // indexed filesystem path in unexported fields only.
 func embedGUIPreviewTextures(ctx context.Context, preview *GUIPreviewResult) error {
+	return embedGUIPreviewTexturesWithLoader(ctx, preview, func(ref *GUITextureRef, targetW, targetH, frameW, frameH int, slice bool) guiEmbeddedTexture {
+		return loadGUIEmbeddedTexture(ref.filePath, ref.Kind, targetW, targetH, frameW, frameH, slice)
+	})
+}
+
+func (db *DB) embedVerifiedGUIPreviewTextures(ctx context.Context, preview *GUIPreviewResult) error {
+	return embedGUIPreviewTexturesWithLoader(ctx, preview, func(ref *GUITextureRef, targetW, targetH, frameW, frameH int, slice bool) guiEmbeddedTexture {
+		if ref.fileID <= 0 || ref.fileSize <= 0 || ref.fileSize > guiTextureMaxSourceBytes {
+			return guiEmbeddedTexture{err: fmt.Errorf("indexed texture source size %d is outside the bounded range", ref.fileSize)}
+		}
+		data, _, err := db.ReadVerifiedIndexedFile(ctx, ref.fileID)
+		if err != nil {
+			return guiEmbeddedTexture{err: err}
+		}
+		return loadGUIEmbeddedTextureData(data, ref.Kind, targetW, targetH, frameW, frameH, slice)
+	})
+}
+
+type guiTextureLoader func(ref *GUITextureRef, targetW, targetH, frameW, frameH int, slice bool) guiEmbeddedTexture
+
+func embedGUIPreviewTexturesWithLoader(ctx context.Context, preview *GUIPreviewResult, loader guiTextureLoader) error {
 	if preview == nil {
 		return nil
 	}
@@ -77,7 +98,7 @@ func embedGUIPreviewTextures(ctx context.Context, preview *GUIPreviewResult) err
 			result, ok := cache[key]
 			if !ok {
 				target := targets[key]
-				result = loadGUIEmbeddedTexture(ref.filePath, ref.Kind, target.width, target.height, key.frameW, key.frameH, key.slice)
+				result = loader(ref, target.width, target.height, key.frameW, key.frameH, key.slice)
 				embeddedBytes := guiEmbeddedTextureBytes(result)
 				if result.err == nil && (embeddedBytes > guiTextureMaxDataURI || embeddedBytes > remaining) {
 					result = guiEmbeddedTexture{err: errors.New("decoded texture exceeds HTML embedding budget")}
@@ -88,6 +109,10 @@ func embedGUIPreviewTextures(ctx context.Context, preview *GUIPreviewResult) err
 				cache[key] = result
 			}
 			if result.err != nil {
+				var changed *SourceChangedError
+				if errors.As(result.err, &changed) {
+					return result.err
+				}
 				preview.Textures.Unsupported++
 				unsupported = true
 				continue
@@ -185,6 +210,10 @@ func loadGUIEmbeddedTexture(filePath, kind string, targetW, targetH, requestedFr
 	if err != nil {
 		return guiEmbeddedTexture{err: err}
 	}
+	return loadGUIEmbeddedTextureData(data, kind, targetW, targetH, requestedFrameW, requestedFrameH, sliceFrames...)
+}
+
+func loadGUIEmbeddedTextureData(data []byte, kind string, targetW, targetH, requestedFrameW, requestedFrameH int, sliceFrames ...bool) guiEmbeddedTexture {
 	decoded, format, err := decodeGUITexture(data, kind)
 	if err != nil {
 		return guiEmbeddedTexture{err: err}

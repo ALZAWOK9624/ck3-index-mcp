@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"context"
 	"fmt"
 	"image"
 	"image/color"
@@ -293,8 +294,18 @@ func (f *terrainField) set(x, y int, value float64) bool {
 }
 
 func (f *terrainField) materialize(source *terrainHeightRaster) *terrainHeightRaster {
+	out, _ := f.materializeContext(context.Background(), source)
+	return out
+}
+
+func (f *terrainField) materializeContext(ctx context.Context, source *terrainHeightRaster) (*terrainHeightRaster, error) {
 	out := source.clone()
 	for y := f.rect.Min.Y; y < f.rect.Max.Y; y++ {
+		if y&31 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		for x := f.rect.Min.X; x < f.rect.Max.X; x++ {
 			i := f.index(x, y)
 			if f.dirty[i] {
@@ -302,7 +313,7 @@ func (f *terrainField) materialize(source *terrainHeightRaster) *terrainHeightRa
 			}
 		}
 	}
-	return out
+	return out, ctx.Err()
 }
 
 type terrainDomainMask struct {
@@ -410,6 +421,13 @@ type preparedMapTerrainEdit struct {
 }
 
 func prepareMapTerrainEdit(cfg Config, spec MapTerrainEditSpec) (*preparedMapTerrainEdit, error) {
+	return prepareMapTerrainEditContext(context.Background(), cfg, spec)
+}
+
+func prepareMapTerrainEditContext(ctx context.Context, cfg Config, spec MapTerrainEditSpec) (*preparedMapTerrainEdit, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	spec = normalizeMapTerrainEditSpec(spec)
 	spec.Operation = strings.TrimSpace(spec.Operation)
 	switch spec.Operation {
@@ -431,6 +449,9 @@ func prepareMapTerrainEdit(cfg Config, spec MapTerrainEditSpec) (*preparedMapTer
 	}
 	input, err := resolveMapTerrainEditInput(cfg, spec.BaseArtifactID)
 	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	before, err := loadTerrainHeightRaster(input.HeightmapPath)
@@ -476,17 +497,23 @@ func prepareMapTerrainEdit(cfg Config, spec MapTerrainEditSpec) (*preparedMapTer
 		}
 		seen := map[string]bool{}
 		for index, layer := range spec.Layers {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			if err := validateMapTerrainLayer(index, layer, before.bounds(), seen); err != nil {
 				return nil, err
 			}
-			stats, err := applyMapTerrainLayer(field, mask, layer)
+			stats, err := applyMapTerrainLayerContext(ctx, field, mask, layer)
 			if err != nil {
 				return nil, err
 			}
 			result.Layers = append(result.Layers, stats)
 		}
 		if spec.Erosion != nil && spec.Erosion.Droplets > 0 {
-			drops, err := erodeNormalizedTerrain(field, mask, *spec.Erosion)
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			drops, err := erodeNormalizedTerrainContext(ctx, field, mask, *spec.Erosion)
 			if err != nil {
 				return nil, terrainInputErrorf("%s", err)
 			}
@@ -504,9 +531,12 @@ func prepareMapTerrainEdit(cfg Config, spec MapTerrainEditSpec) (*preparedMapTer
 		if err != nil {
 			return nil, err
 		}
-		stats, err := carveNormalizedLargeRivers(field, domains, settings)
+		stats, err := carveNormalizedLargeRiversContext(ctx, field, domains, settings)
 		if err != nil {
 			return nil, terrainInputErrorf("%s", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 		result.LargeRivers = &stats
 		result.Warnings = append(result.Warnings, stats.Warnings...)
@@ -527,18 +557,36 @@ func prepareMapTerrainEdit(cfg Config, spec MapTerrainEditSpec) (*preparedMapTer
 		if spec.SmallRivers != nil {
 			settings = *spec.SmallRivers
 		}
-		overlay, stats, err := generateNormalizedSmallRivers(field, baseRivers, domains, settings)
+		overlay, stats, err := generateNormalizedSmallRiversContext(ctx, field, baseRivers, domains, settings)
 		if err != nil {
 			return nil, terrainInputErrorf("%s", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 		prepared.rivers = overlay
 		result.SmallRivers = &stats
 		result.Warnings = append(result.Warnings, stats.Warnings...)
 		result.HydrologyStatus = HydrologySynchronized
 	}
-	prepared.after = field.materialize(before)
-	result.ModifiedBounds = dirtyBounds(field)
-	beforePreview, afterPreview, diffPreview := terrainPreviewImages(before, prepared.after, region)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	prepared.after, err = field.materializeContext(ctx, before)
+	if err != nil {
+		return nil, err
+	}
+	result.ModifiedBounds, err = dirtyBoundsContext(ctx, field)
+	if err != nil {
+		return nil, err
+	}
+	beforePreview, afterPreview, diffPreview, err := terrainPreviewImagesContext(ctx, before, prepared.after, region)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	prepared.result = result
 	prepared.result.PreviewPNG = afterPreview
 	prepared.resultPreview = terrainPreviewSet{before: beforePreview, after: afterPreview, diff: diffPreview}
@@ -703,6 +751,13 @@ func normalizedTerrainDomain(layer MapTerrainLayer) string {
 }
 
 func applyMapTerrainLayer(field *terrainField, domains *terrainDomainMask, layer MapTerrainLayer) (MapTerrainLayerStats, error) {
+	return applyMapTerrainLayerContext(context.Background(), field, domains, layer)
+}
+
+func applyMapTerrainLayerContext(ctx context.Context, field *terrainField, domains *terrainDomainMask, layer MapTerrainLayer) (MapTerrainLayerStats, error) {
+	if err := ctx.Err(); err != nil {
+		return MapTerrainLayerStats{}, err
+	}
 	mask := rasterizeTerrainLayerMask(layer, field.rect)
 	stats := MapTerrainLayerStats{ID: layer.ID, Kind: layer.Kind}
 	if mask.rect.Empty() {
@@ -798,6 +853,11 @@ func applyMapTerrainLayer(field *terrainField, domains *terrainDomainMask, layer
 	sampled := 0
 	modified := image.Rectangle{}
 	for y := mask.rect.Min.Y; y < mask.rect.Max.Y; y++ {
+		if y&31 == 0 {
+			if err := ctx.Err(); err != nil {
+				return stats, err
+			}
+		}
 		for x := mask.rect.Min.X; x < mask.rect.Max.X; x++ {
 			i := mask.index(x, y)
 			coverage := float64(mask.coverage[i])
@@ -845,7 +905,7 @@ func applyMapTerrainLayer(field *terrainField, domains *terrainDomainMask, layer
 		region := regionFromRect(modified)
 		stats.ModifiedBounds = &region
 	}
-	return stats, nil
+	return stats, ctx.Err()
 }
 
 func terrainLayerValue(layer MapTerrainLayer, before, profile, coverage, noise, envelope, across, side, along float64, x, y int, bounds image.Rectangle) float64 {
@@ -1398,8 +1458,18 @@ func includePoint(rect image.Rectangle, x, y int) image.Rectangle {
 }
 
 func dirtyBounds(field *terrainField) *MapTerrainRegion {
+	region, _ := dirtyBoundsContext(context.Background(), field)
+	return region
+}
+
+func dirtyBoundsContext(ctx context.Context, field *terrainField) (*MapTerrainRegion, error) {
 	rect := image.Rectangle{}
 	for y := field.rect.Min.Y; y < field.rect.Max.Y; y++ {
+		if y&31 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		for x := field.rect.Min.X; x < field.rect.Max.X; x++ {
 			if field.dirty[field.index(x, y)] {
 				rect = includePoint(rect, x, y)
@@ -1407,10 +1477,10 @@ func dirtyBounds(field *terrainField) *MapTerrainRegion {
 		}
 	}
 	if rect.Empty() {
-		return nil
+		return nil, ctx.Err()
 	}
 	region := regionFromRect(rect)
-	return &region
+	return &region, ctx.Err()
 }
 
 func regionFromRect(rect image.Rectangle) MapTerrainRegion {
@@ -1427,6 +1497,13 @@ func regionFromRect(rect image.Rectangle) MapTerrainRegion {
 // ocean. Deltas are real, but growing one is an authoring decision made by
 // editing provinces.png -- not something an erosion pass may do by side effect.
 func erodeNormalizedTerrain(field *terrainField, domains *terrainDomainMask, settings MapErosionSettings) (int, error) {
+	return erodeNormalizedTerrainContext(context.Background(), field, domains, settings)
+}
+
+func erodeNormalizedTerrainContext(ctx context.Context, field *terrainField, domains *terrainDomainMask, settings MapErosionSettings) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	if settings.Droplets < 0 || settings.Droplets > 5_000_000 {
 		return 0, fmt.Errorf("droplets must be within 0..5000000")
 	}
@@ -1471,6 +1548,11 @@ func erodeNormalizedTerrain(field *terrainField, domains *terrainDomainMask, set
 	waterCell := make([]bool, len(field.values))
 	if domains != nil {
 		for y := field.rect.Min.Y; y < field.rect.Max.Y; y++ {
+			if y&31 == 0 {
+				if err := ctx.Err(); err != nil {
+					return 0, err
+				}
+			}
 			for x := field.rect.Min.X; x < field.rect.Max.X; x++ {
 				switch domains.classAt(x, y) {
 				case TerrainDomainOcean, TerrainDomainLake:
@@ -1486,6 +1568,11 @@ func erodeNormalizedTerrain(field *terrainField, domains *terrainDomainMask, set
 	radius := max(settings.Radius, 1)
 	random := splitMix64(uint64(settings.Seed) + 0x9E3779B97F4A7C15)
 	for drop := 0; drop < settings.Droplets; drop++ {
+		if drop&255 == 0 {
+			if err := ctx.Err(); err != nil {
+				return 0, err
+			}
+		}
 		px := float64(random()%uint64(w-2)) + 1
 		py := float64(random()%uint64(h-2)) + 1
 		// Rain falls on land. Spawning in the sea would spend the budget
@@ -1544,6 +1631,11 @@ func erodeNormalizedTerrain(field *terrainField, domains *terrainDomainMask, set
 	// can reach a water cell from the land beside it, so the guarantee is made
 	// here at write-back rather than trusted to every call site above.
 	for y := field.rect.Min.Y; y < field.rect.Max.Y; y++ {
+		if y&31 == 0 {
+			if err := ctx.Err(); err != nil {
+				return 0, err
+			}
+		}
 		for x := field.rect.Min.X; x < field.rect.Max.X; x++ {
 			i := field.index(x, y)
 			if waterCell[i] {
@@ -1559,7 +1651,7 @@ func erodeNormalizedTerrain(field *terrainField, domains *terrainDomainMask, set
 			field.set(x, y, math.Max(height[i]/255, floor))
 		}
 	}
-	return settings.Droplets, nil
+	return settings.Droplets, ctx.Err()
 }
 
 // carveNormalizedLargeRivers cuts major-river valleys into land, and only into
@@ -1568,7 +1660,14 @@ func erodeNormalizedTerrain(field *terrainField, domains *terrainDomainMask, set
 // they sit. The carve also only ever lowers ground: raising a pixel is not
 // something carving a valley can plausibly mean.
 func carveNormalizedLargeRivers(field *terrainField, domains *terrainDomainMask, settings MapTerrainLargeRiverSettings) (MapTerrainLargeRiverStats, error) {
+	return carveNormalizedLargeRiversContext(context.Background(), field, domains, settings)
+}
+
+func carveNormalizedLargeRiversContext(ctx context.Context, field *terrainField, domains *terrainDomainMask, settings MapTerrainLargeRiverSettings) (MapTerrainLargeRiverStats, error) {
 	stats := MapTerrainLargeRiverStats{}
+	if err := ctx.Err(); err != nil {
+		return stats, err
+	}
 	if settings.MinDrainage < 1 {
 		return stats, fmt.Errorf("min_drainage must be at least 1")
 	}
@@ -1588,10 +1687,21 @@ func carveNormalizedLargeRivers(field *terrainField, domains *terrainDomainMask,
 	for i, value := range field.values {
 		height[i] = float64(value)
 	}
-	filled, sinks := fillDepressions(height, w, h, settings.SeaLevel)
+	filled, sinks, err := fillDepressionsContext(ctx, height, w, h, settings.SeaLevel)
+	if err != nil {
+		return stats, err
+	}
 	stats.SinksFilled = sinks
-	drainage := accumulateDrainage(filled, w, h)
-	for _, d := range drainage {
+	drainage, err := accumulateDrainageContext(ctx, filled, w, h)
+	if err != nil {
+		return stats, err
+	}
+	for i, d := range drainage {
+		if i&4095 == 0 {
+			if err := ctx.Err(); err != nil {
+				return stats, err
+			}
+		}
 		stats.MaxDrainage = max(stats.MaxDrainage, d)
 	}
 	if stats.MaxDrainage < settings.MinDrainage {
@@ -1607,6 +1717,11 @@ func carveNormalizedLargeRivers(field *terrainField, domains *terrainDomainMask,
 	// would expect it to mean.
 	channelDrainage := make([]int, 0, 1024)
 	for i, drainageCells := range drainage {
+		if i&4095 == 0 {
+			if err := ctx.Err(); err != nil {
+				return stats, err
+			}
+		}
 		if drainageCells < settings.MinDrainage || height[i] <= settings.SeaLevel || filled[i]-height[i] > pondedDepth/255 {
 			continue
 		}
@@ -1624,6 +1739,11 @@ func carveNormalizedLargeRivers(field *terrainField, domains *terrainDomainMask,
 	cut := make([]float64, len(height))
 	depthSum := 0.0
 	for i, drainageCells := range drainage {
+		if i&4095 == 0 {
+			if err := ctx.Err(); err != nil {
+				return stats, err
+			}
+		}
 		if drainageCells < settings.MinDrainage || height[i] <= settings.SeaLevel || filled[i]-height[i] > pondedDepth/255 {
 			continue
 		}
@@ -1641,9 +1761,17 @@ func carveNormalizedLargeRivers(field *terrainField, domains *terrainDomainMask,
 	}
 	stats.MeanDepth = depthSum / float64(stats.ChannelCells)
 	if settings.ValleyWidth > 0 {
-		cut = spreadValley(cut, w, h, settings.ValleyWidth)
+		cut, err = spreadValleyContext(ctx, cut, w, h, settings.ValleyWidth)
+		if err != nil {
+			return stats, err
+		}
 	}
 	for y := field.rect.Min.Y; y < field.rect.Max.Y; y++ {
+		if y&31 == 0 {
+			if err := ctx.Err(); err != nil {
+				return stats, err
+			}
+		}
 		for x := field.rect.Min.X; x < field.rect.Max.X; x++ {
 			i := field.index(x, y)
 			if cut[i] <= 0 {
@@ -1671,7 +1799,7 @@ func carveNormalizedLargeRivers(field *terrainField, domains *terrainDomainMask,
 			field.set(x, y, carved)
 		}
 	}
-	return stats, nil
+	return stats, ctx.Err()
 }
 
 func loadCanonicalRiverOverlay(path string, bounds image.Rectangle) (*image.Paletted, error) {
@@ -1711,7 +1839,14 @@ func canonicalRiverPaletteMatches(palette color.Palette) bool {
 }
 
 func generateNormalizedSmallRivers(field *terrainField, overlay *image.Paletted, domains *terrainDomainMask, settings MapTerrainSmallRiverSettings) (*image.Paletted, MapTerrainSmallRiverStats, error) {
+	return generateNormalizedSmallRiversContext(context.Background(), field, overlay, domains, settings)
+}
+
+func generateNormalizedSmallRiversContext(ctx context.Context, field *terrainField, overlay *image.Paletted, domains *terrainDomainMask, settings MapTerrainSmallRiverSettings) (*image.Paletted, MapTerrainSmallRiverStats, error) {
 	stats := MapTerrainSmallRiverStats{}
+	if err := ctx.Err(); err != nil {
+		return nil, stats, err
+	}
 	if settings.MinDrainage < 1 {
 		return nil, stats, fmt.Errorf("min_drainage must be at least 1")
 	}
@@ -1740,12 +1875,23 @@ func generateNormalizedSmallRivers(field *terrainField, overlay *image.Paletted,
 		height[i] = float64(value)
 	}
 	for y := field.rect.Min.Y; y < field.rect.Max.Y; y++ {
+		if y&31 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, stats, err
+			}
+		}
 		for x := field.rect.Min.X; x < field.rect.Max.X; x++ {
 			land[field.index(x, y)] = domains.classAt(x, y) == TerrainDomainLand
 		}
 	}
-	filled, _ := fillDepressions(height, w, h, settings.SeaLevel)
-	drainage := accumulateDrainage(filled, w, h)
+	filled, _, err := fillDepressionsContext(ctx, height, w, h, settings.SeaLevel)
+	if err != nil {
+		return nil, stats, err
+	}
+	drainage, err := accumulateDrainageContext(ctx, filled, w, h)
+	if err != nil {
+		return nil, stats, err
+	}
 	legacy := MapSmallRiverSettings{
 		MinDrainage: settings.MinDrainage, MaxDrainage: settings.MaxDrainage,
 		SeaLevel: int(math.Round(settings.SeaLevel * 255)),
@@ -1754,6 +1900,11 @@ func generateNormalizedSmallRivers(field *terrainField, overlay *image.Paletted,
 	arrivals := make([]int, len(height))
 	var painted []int
 	for i, d := range drainage {
+		if i&4095 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, stats, err
+			}
+		}
 		if d < settings.MinDrainage || (settings.MaxDrainage > 0 && d > settings.MaxDrainage) ||
 			!land[i] || height[i] <= settings.SeaLevel || filled[i]-height[i] > pondedDepth/255 {
 			continue
@@ -1802,6 +1953,11 @@ func generateNormalizedSmallRivers(field *terrainField, overlay *image.Paletted,
 	// Replace only the requested window. Outside Pix bytes and palette indices
 	// are inherited exactly from the parent overlay.
 	for y := field.rect.Min.Y; y < field.rect.Max.Y; y++ {
+		if y&31 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, stats, err
+			}
+		}
 		for x := field.rect.Min.X; x < field.rect.Max.X; x++ {
 			index := uint8(riverLand)
 			if domains.classAt(x, y) != TerrainDomainLand {
@@ -1815,10 +1971,20 @@ func generateNormalizedSmallRivers(field *terrainField, overlay *image.Paletted,
 		return overlay, stats, nil
 	}
 	maxDrainage := 1
-	for _, i := range painted {
+	for paintedIndex, i := range painted {
+		if paintedIndex&4095 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, stats, err
+			}
+		}
 		maxDrainage = max(maxDrainage, drainage[i])
 	}
-	for _, i := range painted {
+	for paintedIndex, i := range painted {
+		if paintedIndex&4095 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, stats, err
+			}
+		}
 		x, y := field.rect.Min.X+i%w, field.rect.Min.Y+i/w
 		share := math.Sqrt(float64(drainage[i])) / math.Sqrt(float64(maxDrainage))
 		index := riverBodyMin + int(math.Round(share*float64(maxWidth-riverBodyMin)))
@@ -1859,7 +2025,7 @@ func generateNormalizedSmallRivers(field *terrainField, overlay *image.Paletted,
 			stats.Confluences++
 		}
 	}
-	return overlay, stats, nil
+	return overlay, stats, ctx.Err()
 }
 
 func blockUnconnectedBoundaryStreams(painted []int, inStream []bool, rect image.Rectangle, base *image.Paletted) ([]int, int) {
@@ -1929,15 +2095,22 @@ func blockUnconnectedBoundaryStreams(painted []int, inStream []bool, rect image.
 }
 
 func (p *preparedMapTerrainEdit) write(outputDir string) (MapTerrainEditResult, error) {
+	return p.writeContext(context.Background(), outputDir)
+}
+
+func (p *preparedMapTerrainEdit) writeContext(ctx context.Context, outputDir string) (MapTerrainEditResult, error) {
 	result := p.result
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
 	if p.rivers != nil {
-		output, err := writeRiverOverlayOutput(outputDir, p.rivers)
+		output, err := writeRiverOverlayOutputContext(ctx, outputDir, p.rivers)
 		if err != nil {
 			return result, err
 		}
 		result.Outputs = append(result.Outputs, output)
 	}
-	height, err := writeHeightmapOutput(outputDir, p.after.image)
+	height, err := writeHeightmapOutputContext(ctx, outputDir, p.after.image)
 	if err != nil {
 		return result, err
 	}
@@ -1951,15 +2124,18 @@ func (p *preparedMapTerrainEdit) write(outputDir string) (MapTerrainEditResult, 
 		{"previews/hillshade_after.png", "hillshade_after", p.resultPreview.after},
 		{"previews/height_diff.png", "height_diff", p.resultPreview.diff},
 	} {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
 		imageValue, err := decodePNGBytes(preview.data)
 		if err != nil {
 			return result, err
 		}
-		output, err := writeMapRaster(outputDir, preview.rel, preview.kind, imageValue)
+		output, err := writeMapRasterContext(ctx, outputDir, preview.rel, preview.kind, imageValue)
 		if err != nil {
 			return result, err
 		}
 		result.Outputs = append(result.Outputs, output)
 	}
-	return result, nil
+	return result, ctx.Err()
 }

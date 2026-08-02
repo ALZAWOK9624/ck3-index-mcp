@@ -19,11 +19,11 @@ import (
 
 func TestToolRegistryContract(t *testing.T) {
 	definitions := registry()
-	if len(definitions) != 33 {
-		t.Fatalf("standard registry count = %d, want 33", len(definitions))
+	if len(definitions) != 34 {
+		t.Fatalf("standard registry count = %d, want 34", len(definitions))
 	}
-	if got := len(mcpTools()); got != 33 {
-		t.Fatalf("tools/list count = %d, want 33", got)
+	if got := len(mcpTools()); got != 34 {
+		t.Fatalf("tools/list count = %d, want 34", got)
 	}
 
 	seen := make(map[string]struct{}, len(definitions))
@@ -47,7 +47,7 @@ func TestToolRegistryContract(t *testing.T) {
 		if got := definition.OutputSchema["type"]; got != "object" {
 			t.Fatalf("tool %q output schema type = %v, want object", definition.Name, got)
 		}
-		if definition.Name == "ck3_refresh" || definition.Name == "ck3_package" || definition.Name == "map_migration_snapshot" || definition.Name == "map_province_migration" || definition.Name == "map_apply_split" || definition.Name == "map_terrain_edit" {
+		if definition.Name == "ck3_refresh" || definition.Name == "ck3_package" || definition.Name == "map_migration_snapshot" || definition.Name == "map_province_migration" || definition.Name == "map_split_province" || definition.Name == "map_apply_split" || definition.Name == "map_terrain_edit" {
 			if definition.Annotations.ReadOnlyHint || definition.Annotations.DestructiveHint || definition.Annotations.OpenWorldHint {
 				t.Fatalf("tool %q annotations must be non-read-only, non-destructive, and closed-world", definition.Name)
 			}
@@ -366,6 +366,7 @@ func TestCanonicalSchemasMatchTypedArguments(t *testing.T) {
 		"map_split_province":      reflect.TypeOf(mapSplitProvinceArgs{}),
 		"map_apply_split":         reflect.TypeOf(mapApplySplitArgs{}),
 		"map_terrain_edit":        reflect.TypeOf(mapTerrainEditArgs{}),
+		"map_artifact":            reflect.TypeOf(mapArtifactArgs{}),
 		"map_physical_context":    reflect.TypeOf(mapPhysicalContextArgs{}),
 		"map_neighbors":           reflect.TypeOf(mapNeighborsArgs{}),
 		"map_spatial_relation":    reflect.TypeOf(mapSpatialRelationArgs{}),
@@ -598,6 +599,7 @@ func TestEveryCallableToolHasSuccessAndMalformedArgumentCases(t *testing.T) {
 		"path":    "common/traits/contract_traits.txt",
 		"content": "contract_trait = { desc = contract_trait_desc }",
 	}}
+	planID, planHash := planSplitForMCP(t, db, cfg)
 	successArguments := map[string]map[string]any{
 		"ck3_search":           {"query": "c_c114", "limit": 2},
 		"ck3_inspect":          {"id": "c_c114", "limit": 2},
@@ -622,7 +624,7 @@ func TestEveryCallableToolHasSuccessAndMalformedArgumentCases(t *testing.T) {
 		"map_province_migration": {"snapshot_id": snapshot.SnapshotID, "target": "target", "output_name": "contract_fork"},
 		"map_province_info":      {"id": "1", "year": 6253, "limit": 2},
 		"map_split_province":     {"province_id": 1, "seeds": []any{map[string]any{"x": 0, "y": 0}, map[string]any{"x": 0, "y": 1}}},
-		"map_apply_split":        {"province_id": 1, "seeds": []any{map[string]any{"x": 0, "y": 0}, map[string]any{"x": 0, "y": 1}}, "confirm": true},
+		"map_apply_split":        {"plan_id": planID, "plan_hash": planHash, "confirm": true},
 		"map_terrain_edit": {
 			"operation": "compose", "confirm": true,
 			"layers": []any{map[string]any{
@@ -631,6 +633,7 @@ func TestEveryCallableToolHasSuccessAndMalformedArgumentCases(t *testing.T) {
 				"width_px": 3, "strength": 0.1,
 			}},
 		},
+		"map_artifact":            {"operation": "list", "limit": 2},
 		"map_physical_context":    {"target_type": "region", "target": "region:test_region", "operation": "oceanography", "include_adjacent_water": true, "limit": 2},
 		"map_neighbors":           {"id": "1", "radius": 1, "year": 6253, "limit": 2},
 		"map_spatial_relation":    {"from": "1", "to": "2", "year": 6253, "limit": 2},
@@ -643,8 +646,8 @@ func TestEveryCallableToolHasSuccessAndMalformedArgumentCases(t *testing.T) {
 		"map_route":               {"from": "1", "to": "2", "mode": "land", "year": 6253, "limit": 2},
 		"map_render":              {"target": "k_k11", "year": 6253, "width": 400, "layers": []map[string]any{{"type": "borders", "level": "county"}}},
 	}
-	if len(successArguments) != 33 {
-		t.Fatalf("success case count = %d, want 33 canonical names", len(successArguments))
+	if len(successArguments) != 34 {
+		t.Fatalf("success case count = %d, want 34 canonical names", len(successArguments))
 	}
 	for name, args := range successArguments {
 		name, args := name, args

@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"context"
 	"fmt"
 	"image"
 	"image/color"
@@ -25,6 +26,7 @@ type MapSplitImageChange struct {
 	RecoloredCount int                     `json:"recolored_pixel_count"`
 	PerProvince    map[int]int             `json:"recolored_per_province"`
 	Mismatches     []string                `json:"mismatches,omitempty"`
+	MismatchCount  int                     `json:"mismatch_count,omitempty"`
 	Retained       MapSplitPart            `json:"-"`
 	NewProvinces   []MapSplitProvinceColor `json:"new_provinces"`
 }
@@ -46,6 +48,10 @@ type MapSplitProvinceColor struct {
 // it the index is stale — and recolouring anyway would corrupt whatever
 // province now occupies those pixels.
 func ApplyProvinceSplitToImage(sourcePath, outputPath string, result MapSplitResult, plan MapSplitPlan) (MapSplitImageChange, error) {
+	return ApplyProvinceSplitToImageContext(context.Background(), sourcePath, outputPath, result, plan)
+}
+
+func ApplyProvinceSplitToImageContext(ctx context.Context, sourcePath, outputPath string, result MapSplitResult, plan MapSplitPlan) (MapSplitImageChange, error) {
 	change := MapSplitImageChange{
 		SourcePath: sourcePath, OutputPath: outputPath, PerProvince: map[int]int{},
 	}
@@ -57,6 +63,16 @@ func ApplyProvinceSplitToImage(sourcePath, outputPath string, result MapSplitRes
 	}
 	if len(plan.Blockers) > 0 {
 		return change, fmt.Errorf("refusing to recolour: the plan has %d unresolved blocker(s)", len(plan.Blockers))
+	}
+	if err := ctx.Err(); err != nil {
+		return change, err
+	}
+	const mismatchSampleLimit = 32
+	appendMismatch := func(message string) {
+		change.MismatchCount++
+		if len(change.Mismatches) < mismatchSampleLimit {
+			change.Mismatches = append(change.Mismatches, message)
+		}
 	}
 
 	file, err := os.Open(sourcePath)
@@ -73,6 +89,11 @@ func ApplyProvinceSplitToImage(sourcePath, outputPath string, result MapSplitRes
 
 	canvas := image.NewRGBA(bounds)
 	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		if y&63 == 0 {
+			if err := ctx.Err(); err != nil {
+				return change, err
+			}
+		}
 		for x := bounds.Min.X; x < bounds.Max.X; x++ {
 			canvas.Set(x, y, decoded.At(x, y))
 		}
@@ -91,32 +112,31 @@ func ApplyProvinceSplitToImage(sourcePath, outputPath string, result MapSplitRes
 	}
 	sourceKnown := plan.SourceColor != 0
 	if !sourceKnown {
-		change.Mismatches = append(change.Mismatches,
-			"the plan carries no indexed province colour, so pixels cannot be verified before being overwritten")
+		appendMismatch("the plan carries no indexed province colour, so pixels cannot be verified before being overwritten")
 	}
 	for _, province := range plan.NewProvinces {
 		part := partByIndex(result, province.PartIndex)
 		if part == nil {
-			change.Mismatches = append(change.Mismatches,
-				fmt.Sprintf("plan references part %d, which the split result does not contain", province.PartIndex))
+			appendMismatch(fmt.Sprintf("plan references part %d, which the split result does not contain", province.PartIndex))
 			continue
 		}
 		target := color.RGBA{R: uint8(province.R), G: uint8(province.G), B: uint8(province.B), A: 255}
 		recolored := 0
 		for _, run := range part.Runs {
+			if err := ctx.Err(); err != nil {
+				return change, err
+			}
 			y := int(run.Y)
 			for x := int(run.X0); x <= int(run.X1); x++ {
 				if !(image.Point{x, y}).In(bounds) {
-					change.Mismatches = append(change.Mismatches,
-						fmt.Sprintf("part %d covers pixel (%d,%d) outside the image", province.PartIndex, x, y))
+					appendMismatch(fmt.Sprintf("part %d covers pixel (%d,%d) outside the image", province.PartIndex, x, y))
 					continue
 				}
 				if sourceKnown {
 					current := canvas.RGBAAt(x, y)
 					if current.R != sourceColor.R || current.G != sourceColor.G || current.B != sourceColor.B {
-						change.Mismatches = append(change.Mismatches,
-							fmt.Sprintf("pixel (%d,%d) is %02x%02x%02x, not the indexed province colour %02x%02x%02x; the index is stale",
-								x, y, current.R, current.G, current.B, sourceColor.R, sourceColor.G, sourceColor.B))
+						appendMismatch(fmt.Sprintf("pixel (%d,%d) is %02x%02x%02x, not the indexed province colour %02x%02x%02x; the index is stale",
+							x, y, current.R, current.G, current.B, sourceColor.R, sourceColor.G, sourceColor.B))
 						continue
 					}
 				}
@@ -131,26 +151,45 @@ func ApplyProvinceSplitToImage(sourcePath, outputPath string, result MapSplitRes
 		})
 	}
 
-	if len(change.Mismatches) > 0 {
+	if change.MismatchCount > 0 {
 		return change, fmt.Errorf("refusing to write: %d pixel(s) did not match the indexed geometry, so the index is stale relative to %s",
-			len(change.Mismatches), filepath.Base(sourcePath))
+			change.MismatchCount, filepath.Base(sourcePath))
 	}
 
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		return change, err
 	}
-	out, err := os.Create(outputPath)
+	out, err := os.CreateTemp(filepath.Dir(outputPath), ".provinces-split-*.png")
 	if err != nil {
 		return change, err
 	}
+	tempPath := out.Name()
+	defer os.Remove(tempPath)
 	// CK3 reads provinces.png by exact RGB, so the encoder must not quantise or
 	// dither; the default PNG encoder is lossless, but be explicit about it.
 	encoder := png.Encoder{CompressionLevel: png.DefaultCompression}
-	if err := encoder.Encode(out, canvas); err != nil {
+	if err := encoder.Encode(contextCheckingWriter{ctx: ctx, writer: out}, canvas); err != nil {
+		out.Close()
+		return change, err
+	}
+	if err := out.Sync(); err != nil {
 		out.Close()
 		return change, err
 	}
 	if err := out.Close(); err != nil {
+		return change, err
+	}
+	if err := ctx.Err(); err != nil {
+		return change, err
+	}
+	if _, err := os.Lstat(outputPath); err == nil {
+		return change, fmt.Errorf("refusing to replace existing split output %s", filepath.Base(outputPath))
+	} else if !os.IsNotExist(err) {
+		return change, err
+	}
+	// Atomic rename is the publication boundary. No cancellation check follows:
+	// once this succeeds the caller must receive a committed response.
+	if err := os.Rename(tempPath, outputPath); err != nil {
 		return change, err
 	}
 	return change, nil

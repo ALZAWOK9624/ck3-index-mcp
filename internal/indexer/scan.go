@@ -116,7 +116,7 @@ type fileRecord struct {
 	OverrideRule     string
 }
 
-const indexRuleVersion = "2026-08-02-v0.5.0-script-text-2"
+const indexRuleVersion = "2026-08-02-v0.5.0-script-text-contentless-3"
 
 // Keep ordinary full scans well below SQLite's variable limit when they take
 // the scoped resolver/validator path. Larger edits remain correct by falling
@@ -145,6 +145,10 @@ func Scan(ctx context.Context, cfg Config) (ScanStats, error) {
 }
 
 func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanStats, resultErr error) {
+	return scanWithModePublishing(ctx, cfg, forceClean, true)
+}
+
+func scanWithModePublishing(ctx context.Context, cfg Config, forceClean, publishRules bool) (stats ScanStats, resultErr error) {
 	start := time.Now()
 	if err := validateSources(cfg.Sources); err != nil {
 		return ScanStats{}, err
@@ -162,7 +166,7 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanS
 		return ScanStats{}, err
 	}
 	engineLoadMillis := time.Since(engineLoadStart).Milliseconds()
-	ConfigureEngineRulesFromBundle(engineBundle)
+	engineRules := engineRuleSetFromBundle(engineBundle)
 	dbPath, err := ConfiguredDatabasePath(cfg)
 	if err != nil {
 		return ScanStats{}, err
@@ -179,6 +183,11 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanS
 		}
 		db.clearScanFailure(context.Background())
 	}()
+	defer func() {
+		if resultErr == nil && publishRules {
+			resultErr = publishEngineBundleMatchingDB(context.Background(), db, engineBundle)
+		}
+	}()
 	// This database is a rebuildable cache. Scans do large write batches, so
 	// avoid growing a huge WAL file that can make commit/checkpoint look hung.
 	fmt.Fprintln(os.Stderr, "[scan] preparing sqlite cache")
@@ -191,7 +200,7 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanS
 	// ensureSchema recreates a missing FTS table. Remember its pre-schema
 	// presence so a repaired-but-empty table cannot be mistaken for a complete
 	// published semantic index later in this scan.
-	ftsPresentBeforeSchema := !forceClean && db.tableExists(ctx, "search_fts")
+	ftsPresentBeforeSchema := !forceClean && db.tableExists(ctx, "search_fts") && db.tableExists(ctx, "script_text_fts")
 	if forceClean {
 		if err := db.reset(ctx); err != nil {
 			return ScanStats{}, err
@@ -367,12 +376,13 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanS
 				return nil
 			}
 			jobs = append(jobs, fileJob{
-				src:        src,
-				path:       path,
-				rel:        rel,
-				kind:       kind,
-				prev:       existing[path],
-				forceParse: (engineDataDirty || cachedRuleVersion != indexRuleVersion) && kind == "script",
+				src:         src,
+				path:        path,
+				rel:         rel,
+				kind:        kind,
+				prev:        existing[path],
+				forceParse:  (engineDataDirty || cachedRuleVersion != indexRuleVersion) && kind == "script",
+				engineRules: engineRules,
 			})
 			return nil
 		}); err != nil {
@@ -782,7 +792,7 @@ parsedFilesComplete:
 			return ScanStats{}, err
 		}
 	}
-	fullFTSRebuild := engineDataDirty || cachedRuleVersion != indexRuleVersion || !ftsPresentBeforeSchema || !ftsCurrent || !db.tableExists(ctx, "search_fts")
+	fullFTSRebuild := engineDataDirty || cachedRuleVersion != indexRuleVersion || !ftsPresentBeforeSchema || !ftsCurrent || !db.tableExists(ctx, "search_fts") || !db.tableExists(ctx, "script_text_fts")
 	ftsStart := time.Now()
 	if fullFTSRebuild {
 		fmt.Fprintln(os.Stderr, "[scan] rebuilding semantic FTS")
@@ -1643,6 +1653,7 @@ type fileJob struct {
 	overrideByRank   int
 	overrideRule     string
 	forceParse       bool
+	engineRules      *EngineRuleSet
 }
 
 // guiBuiltinTypes are CK3 GUI type-building-block names that appear in
@@ -1965,11 +1976,11 @@ func parseOneFile(j fileJob) fileResult {
 		lintStart := time.Now()
 		if !isGUI {
 			result.ctxDiags = checkScriptContext(parsed.Nodes, j.rel)
-			result.ctxDiags = append(result.ctxDiags, checkRuntimeContracts(parsed.Nodes, j.rel)...)
+			result.ctxDiags = append(result.ctxDiags, checkRuntimeContractsWithRules(parsed.Nodes, j.rel, j.engineRules)...)
 		}
 		result.ctxDiags = append(result.ctxDiags, checkScriptLint(parsed.Nodes, j.rel, j.src.Role)...)
 		if !isGUI {
-			result.ctxDiags = append(result.ctxDiags, checkScopeTracker(parsed.Nodes, j.rel)...)
+			result.ctxDiags = append(result.ctxDiags, checkScopeTrackerWithRules(parsed.Nodes, j.rel, j.engineRules)...)
 			result.savedScopes = collectSavedScopes(parsed.Nodes)
 			result.variables = collectVariables(parsed.Nodes)
 		}

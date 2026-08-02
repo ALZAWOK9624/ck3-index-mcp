@@ -60,7 +60,7 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 		return ScanStats{}, err
 	}
 	engineLoadMillis := time.Since(engineLoadStart).Milliseconds()
-	ConfigureEngineRulesFromBundle(engineBundle)
+	engineRules := engineRuleSetFromBundle(engineBundle)
 	if len(relPaths) == 0 {
 		return ScanStats{}, fmt.Errorf("scan --files requires at least one source-root relative path")
 	}
@@ -88,6 +88,11 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 			return
 		}
 		db.clearScanFailure(context.Background())
+	}()
+	defer func() {
+		if resultErr == nil {
+			resultErr = publishEngineBundleMatchingDB(context.Background(), db, engineBundle)
+		}
 	}()
 	if err := db.ensureSchema(ctx); err != nil {
 		return ScanStats{}, err
@@ -180,7 +185,7 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 		if prev.ID != 0 {
 			oldFileIDs[prev.ID] = true
 		}
-		jobs = append(jobs, fileJob{src: src, path: full, rel: rel, kind: kind, prev: prev})
+		jobs = append(jobs, fileJob{src: src, path: full, rel: rel, kind: kind, prev: prev, engineRules: engineRules})
 		pathOutcomes[rel] = RefreshPathOutcome{Path: rel, Status: "refreshed"}
 	}
 	sort.Strings(stats.MissingFiles)

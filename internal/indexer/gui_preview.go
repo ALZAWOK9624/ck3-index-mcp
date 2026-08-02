@@ -275,6 +275,8 @@ type GUITextureRef struct {
 	FrameRows     int    `json:"frame_rows,omitempty"`
 	FrameImages   int    `json:"frame_images,omitempty"`
 	Format        string `json:"format,omitempty"`
+	fileID        int64
+	fileSize      int64
 	filePath      string
 	dataURI       string
 	frameDataURIs []string

@@ -81,6 +81,9 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 	if err != nil {
 		return encodeToolError(err, runtime), nil
 	}
+	if output.Committed {
+		markMCPCommitted(ctx)
+	}
 	if err := ctx.Err(); err != nil && !output.Committed {
 		return encodeToolError(err, runtime), nil
 	}

@@ -109,6 +109,9 @@ func (db *DB) QueryObjectTypes(ctx context.Context) ([]ObjectTypeSummary, error)
 }
 
 type ObjectDef struct {
+	FileID      int64  `json:"-"`
+	FileSize    int64  `json:"-"`
+	FileSHA256  string `json:"-"`
 	Type        string `json:"type"`
 	Name        string `json:"name"`
 	Value       string `json:"value,omitempty"`
@@ -126,13 +129,13 @@ type ObjectDef struct {
 func (db *DB) QueryObject(ctx context.Context, id string) (ObjectQuery, error) {
 	q := ObjectQuery{Query: id}
 	typ, name, typed := splitTypedID(id)
-	sqlText := `SELECT o.object_type,o.name,o.value,o.source_name,o.source_rank,o.path,f.rel_path,o.line,o.col,o.end_line,o.end_col
+	sqlText := `SELECT f.id,f.file_size,f.sha256,o.object_type,o.name,o.value,o.source_name,o.source_rank,o.path,f.rel_path,o.line,o.col,o.end_line,o.end_col
 		FROM objects o JOIN files f ON f.id=o.file_id
 		WHERE o.name=? AND f.overridden=0
 		ORDER BY o.object_type,o.name,o.source_rank`
 	args := []any{id}
 	if typed {
-		sqlText = `SELECT o.object_type,o.name,o.value,o.source_name,o.source_rank,o.path,f.rel_path,o.line,o.col,o.end_line,o.end_col
+		sqlText = `SELECT f.id,f.file_size,f.sha256,o.object_type,o.name,o.value,o.source_name,o.source_rank,o.path,f.rel_path,o.line,o.col,o.end_line,o.end_col
 			FROM objects o JOIN files f ON f.id=o.file_id
 			WHERE o.object_type=? AND o.name=? AND f.overridden=0
 			ORDER BY o.object_type,o.name,o.source_rank`
@@ -145,7 +148,7 @@ func (db *DB) QueryObject(ctx context.Context, id string) (ObjectQuery, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var d ObjectDef
-		if err := rows.Scan(&d.Type, &d.Name, &d.Value, &d.Source, &d.Rank, &d.Path, &d.LogicalPath, &d.Line, &d.Column, &d.EndLine, &d.EndColumn); err != nil {
+		if err := rows.Scan(&d.FileID, &d.FileSize, &d.FileSHA256, &d.Type, &d.Name, &d.Value, &d.Source, &d.Rank, &d.Path, &d.LogicalPath, &d.Line, &d.Column, &d.EndLine, &d.EndColumn); err != nil {
 			return q, err
 		}
 		q.Definitions = append(q.Definitions, d)

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -31,8 +32,26 @@ func TestServeMCPProtocolContract(t *testing.T) {
 		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"ck3_inspect","arguments":{}}}`,
 		`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"not_a_tool","arguments":{}}}`,
 	}, "\n") + "\n"
-	var out bytes.Buffer
-	if err := Serve(context.Background(), emptyMCPConfig(dbPath), dbPath, strings.NewReader(requests), &out); err != nil {
+	var out synchronizedBuffer
+	serverCtx, cancelServer := context.WithCancel(context.Background())
+	defer cancelServer()
+	reader, writer := io.Pipe()
+	defer writer.Close()
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(serverCtx, emptyMCPConfig(dbPath), dbPath, reader, &out)
+	}()
+	if _, err := io.WriteString(writer, requests); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for strings.Count(out.String(), "\n") < 5 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
 	responses := decodeResponseLines(t, out.String())
@@ -58,8 +77,8 @@ func TestServeMCPProtocolContract(t *testing.T) {
 		t.Fatalf("ping did not return an empty object: %+v", ping)
 	}
 	listed := responseByID(t, responses, "3")["result"].(map[string]any)["tools"].([]any)
-	if len(listed) != 33 {
-		t.Fatalf("standard tools/list count = %d, want 33", len(listed))
+	if len(listed) != 34 {
+		t.Fatalf("standard tools/list count = %d, want 34", len(listed))
 	}
 	first := listed[0].(map[string]any)
 	for _, field := range []string{"title", "description", "inputSchema", "outputSchema", "annotations"} {
@@ -83,9 +102,28 @@ func TestServeMCPProtocolContract(t *testing.T) {
 }
 
 func TestHealthReportIncludesBinaryVersion(t *testing.T) {
-	report := mcpHealthReport(indexer.HealthReport{})
+	report := mcpHealthReport(indexer.HealthReport{
+		SQLiteReadConnections: 8,
+		SQLiteCachePerConnMB:  64,
+		SQLiteCacheBudgetMB:   512,
+		SQLiteMMapLimitMB:     1024,
+		ActiveTasks:           3,
+		ActiveHeavyTasks:      1,
+		ActiveRasterTasks:     1,
+		EstimatedTaskMemoryMB: 968,
+	})
 	if report["binary_version"] != buildinfo.Version {
 		t.Fatalf("health binary_version = %v, want %q", report["binary_version"], buildinfo.Version)
+	}
+	for key, want := range map[string]int{
+		"sqlite_read_connections": 8, "sqlite_cache_per_connection_mb": 64,
+		"sqlite_cache_budget_mb": 512, "sqlite_mmap_limit_mb": 1024,
+		"active_tasks": 3, "active_heavy_tasks": 1, "active_raster_tasks": 1,
+		"estimated_task_memory_mb": 968,
+	} {
+		if got := report[key]; got != want {
+			t.Fatalf("health %s = %v, want %d", key, got, want)
+		}
 	}
 }
 
@@ -246,6 +284,95 @@ func TestServeMCPCancellationNotificationReachesActiveToolWithoutBlockingReader(
 	}
 }
 
+func TestServeMCPReturnsCommittedResultAfterCancellation(t *testing.T) {
+	dbPath := createProtocolTestDB(t)
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"contract-test","version":"1"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`,
+		`{"jsonrpc":"2.0","id":"artifact","method":"tools/call","params":{"name":"map_terrain_edit","arguments":{}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"artifact"}}`,
+	}, "\n") + "\n"
+	caller := func(ctx context.Context, _ *indexer.DB, _ indexer.Config, _ json.RawMessage) (any, error) {
+		markMCPCommitted(ctx)
+		<-ctx.Done()
+		return map[string]any{"artifact_id": "committed-before-cancel"}, nil
+	}
+	var out bytes.Buffer
+	if err := serveWithToolCaller(context.Background(), emptyMCPConfig(dbPath), dbPath, strings.NewReader(input), &out, caller); err != nil {
+		t.Fatal(err)
+	}
+	responses := decodeResponseLines(t, out.String())
+	if len(responses) != 2 {
+		t.Fatalf("response count=%d want initialize plus committed artifact: %s", len(responses), out.String())
+	}
+	result, ok := responses[1]["result"].(map[string]any)
+	if !ok || result["artifact_id"] != "committed-before-cancel" {
+		t.Fatalf("committed result was suppressed: %+v", responses[1])
+	}
+}
+
+func TestServeMCPEOFCancelsUncommittedTasks(t *testing.T) {
+	dbPath := createProtocolTestDB(t)
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"contract-test","version":"1"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`,
+		`{"jsonrpc":"2.0","id":"unfinished","method":"tools/call","params":{"name":"ck3_health","arguments":{}}}`,
+	}, "\n") + "\n"
+	cancelObserved := make(chan struct{}, 1)
+	caller := func(ctx context.Context, _ *indexer.DB, _ indexer.Config, _ json.RawMessage) (any, error) {
+		<-ctx.Done()
+		cancelObserved <- struct{}{}
+		return map[string]any{"unexpected": true}, nil
+	}
+	var out bytes.Buffer
+	if err := serveWithToolCaller(context.Background(), emptyMCPConfig(dbPath), dbPath, strings.NewReader(input), &out, caller); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-cancelObserved:
+	default:
+		t.Fatal("EOF did not cancel the active task")
+	}
+	responses := decodeResponseLines(t, out.String())
+	if len(responses) != 1 {
+		t.Fatalf("uncommitted EOF task produced a response: %s", out.String())
+	}
+}
+
+func TestMapRasterToolsUseTheSingleRasterTaskClass(t *testing.T) {
+	for _, name := range []string{"map_render", "map_terrain_edit", "map_split_province", "map_apply_split"} {
+		raw := json.RawMessage(fmt.Sprintf(`{"name":%q,"arguments":{}}`, name))
+		if got := classifyMCPTask(raw); got != mcpTaskRaster {
+			t.Fatalf("%s class=%q want raster", name, got)
+		}
+	}
+	limiter := mcpTaskLimiter{}
+	if !limiter.acquire(mcpTaskRaster) || limiter.acquire(mcpTaskRaster) {
+		t.Fatal("raster limiter did not enforce a single active task")
+	}
+}
+
+func TestTrackedTaskLimiterReportsAndReleasesMemoryEstimate(t *testing.T) {
+	before := currentMCPTaskUsage()
+	limiter := mcpTaskLimiter{trackProcess: true}
+	if !limiter.acquire(mcpTaskHeavy) || !limiter.acquire(mcpTaskRaster) || !limiter.acquire(mcpTaskRead) {
+		t.Fatal("tracked limiter rejected an in-budget task mix")
+	}
+	during := currentMCPTaskUsage()
+	if during.Active-before.Active != 3 || during.Heavy-before.Heavy != 1 || during.Raster-before.Raster != 1 {
+		t.Fatalf("tracked task usage delta = %+v before=%+v", during, before)
+	}
+	wantMemoryDelta := estimatedReadTaskMemoryMB + estimatedHeavyTaskMemoryMB + estimatedRasterTaskMemoryMB
+	if during.EstimatedMemoryMB-before.EstimatedMemoryMB != wantMemoryDelta {
+		t.Fatalf("estimated task memory delta = %d, want %d", during.EstimatedMemoryMB-before.EstimatedMemoryMB, wantMemoryDelta)
+	}
+	limiter.close()
+	after := currentMCPTaskUsage()
+	if after != before {
+		t.Fatalf("tracked limiter leaked process usage: before=%+v after=%+v", before, after)
+	}
+}
+
 type synchronizedBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -290,9 +417,21 @@ func TestFastResponsesAreNotBlockedByEarlierSlowTool(t *testing.T) {
 	}
 	var out synchronizedBuffer
 	done := make(chan error, 1)
+	serverCtx, cancelServer := context.WithCancel(context.Background())
+	defer cancelServer()
+	reader, writer := io.Pipe()
+	defer writer.Close()
 	go func() {
-		done <- serveWithToolCaller(context.Background(), emptyMCPConfig(dbPath), dbPath, strings.NewReader(input), &out, caller)
+		done <- serveWithToolCaller(serverCtx, emptyMCPConfig(dbPath), dbPath, reader, &out, caller)
 	}()
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := io.WriteString(writer, input)
+		writeDone <- err
+	}()
+	if err := <-writeDone; err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case <-slowStarted:
 	case <-time.After(2 * time.Second):
@@ -318,6 +457,16 @@ func TestFastResponsesAreNotBlockedByEarlierSlowTool(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	close(releaseSlow)
+	deadline = time.Now().Add(2 * time.Second)
+	for !strings.Contains(out.String(), `"id":"slow"`) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !strings.Contains(out.String(), `"id":"slow"`) {
+		t.Fatalf("slow response was not written after release: %s", out.String())
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case err := <-done:
 		if err != nil {
@@ -345,7 +494,8 @@ func TestToolConcurrencyIsBounded(t *testing.T) {
 		wantBusy   int
 	}{
 		{name: "global", tool: "ck3_search", requests: maxMCPTasks + 3, wantActive: maxMCPTasks, wantBusy: 3},
-		{name: "heavy", tool: "map_render", requests: maxMCPHeavyTasks + 2, wantActive: maxMCPHeavyTasks, wantBusy: 2},
+		{name: "heavy", tool: "map_build_metric", requests: maxMCPHeavyTasks + 2, wantActive: maxMCPHeavyTasks, wantBusy: 2},
+		{name: "raster", tool: "map_render", requests: maxMCPRasterTasks + 2, wantActive: maxMCPRasterTasks, wantBusy: 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

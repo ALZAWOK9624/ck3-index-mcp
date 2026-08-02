@@ -17,6 +17,7 @@ const (
 	ErrorObjectNotFound             = "OBJECT_NOT_FOUND"
 	ErrorObjectAmbiguous            = "OBJECT_AMBIGUOUS"
 	ErrorSourceNotFound             = "SOURCE_NOT_FOUND"
+	ErrorSourceChanged              = "SOURCE_CHANGED"
 	ErrorPathOutsideProject         = "PATH_OUTSIDE_PROJECT"
 	ErrorIndexNotReady              = "INDEX_NOT_READY"
 	ErrorIndexFinalizing            = "INDEX_FINALIZING"
@@ -98,7 +99,20 @@ func toolErrorFrom(err error) *ToolError {
 		return typed
 	}
 	var fullRequired *indexer.FullScanRequiredError
+	var sourceChanged *indexer.SourceChangedError
 	var responseTooLarge *responseTooLargeError
+	if errors.As(err, &sourceChanged) {
+		return newToolError(ErrorSourceChanged, "index_state", "an indexed source file changed before its live bytes could be verified", true,
+			map[string]any{
+				"path": sourceChanged.Path, "reason": sourceChanged.Reason,
+				"indexed_generation": sourceChanged.IndexedGeneration, "indexed_revision": sourceChanged.IndexedRevision,
+				"expected_size": sourceChanged.ExpectedSize, "actual_size": sourceChanged.ActualSize,
+			},
+			map[string]any{
+				"required_action": map[string]any{"tool": "ck3_refresh", "operation": "files", "paths": []string{sourceChanged.Path}},
+				"guidance":        "Refresh the changed relative path, then retry the semantic read.",
+			})
+	}
 	if errors.As(err, &fullRequired) {
 		return newToolError(ErrorFullScanRequired, "index_state", "the requested incremental refresh cannot be completed safely", false,
 			map[string]any{"reason": fullRequired.Reason, "paths": fullRequired.Paths},

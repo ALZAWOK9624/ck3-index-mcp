@@ -44,25 +44,19 @@ func searchFTSCacheMatches(ctx context.Context, tx *sql.Tx) (bool, error) {
 		return false, nil
 	}
 
-	// script_text has exactly one row for every active script file. Count the
-	// rows and their distinct exact file matches in one pass over the FTS table:
-	// equal totals alone cannot detect a missing row replaced by a duplicate or
-	// a forged row with a stale file id, source, or path.
+	// The dedicated contentless full-text index has exactly one rowid for every
+	// active script. The source text remains only in files.search_text.
 	var activeScripts, scriptTextRows, matchedScripts int64
 	if err := tx.QueryRowContext(ctx, `
 		SELECT
 			(SELECT COUNT(*) FROM files WHERE overridden=0 AND kind='script'),
 			COUNT(*),
 			COUNT(DISTINCT f.id)
-		FROM search_fts AS s
+		FROM script_text_fts AS s
 		LEFT JOIN files AS f
-			ON f.id=CAST(s.file_id AS INTEGER)
-			AND CAST(s.file_id AS TEXT)=CAST(f.id AS TEXT)
+			ON f.id=s.rowid
 			AND f.overridden=0
-			AND f.kind='script'
-			AND f.source_name=s.source
-			AND f.rel_path=s.path
-		WHERE s.kind='script_text'`).Scan(&activeScripts, &scriptTextRows, &matchedScripts); err != nil {
+			AND f.kind='script'`).Scan(&activeScripts, &scriptTextRows, &matchedScripts); err != nil {
 		return false, err
 	}
 	return activeScripts == scriptTextRows && activeScripts == matchedScripts, nil
@@ -114,9 +108,6 @@ func refreshSearchFTSForFiles(ctx context.Context, tx *sql.Tx, oldFileIDs, newFi
 			`INSERT INTO search_fts(kind,name,text,source,path,file_id)
 				SELECT 'script_key',o.field,o.field||' '||o.object_name||' '||o.raw,o.source_name,f.rel_path,f.id
 				FROM object_fields o JOIN files f ON f.id=o.file_id WHERE f.overridden=0 AND f.id IN (` + clause + `)`,
-			`INSERT INTO search_fts(kind,name,text,source,path,file_id)
-				SELECT 'script_text',f.rel_path,f.search_text,f.source_name,f.rel_path,f.id
-				FROM files f WHERE f.overridden=0 AND f.kind='script' AND f.id IN (` + clause + `)`,
 			`INSERT INTO search_fts(kind,name,text,source,path,file_id)
 				SELECT 'localization',l.key,l.key||' '||l.value,l.source_name,f.rel_path,f.id
 				FROM localization l JOIN files f ON f.id=l.file_id

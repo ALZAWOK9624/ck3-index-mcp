@@ -1,6 +1,10 @@
 package indexer
 
-import "testing"
+import (
+	"context"
+	"path/filepath"
+	"testing"
+)
 
 func TestWALHealthThreshold(t *testing.T) {
 	for _, test := range []struct {
@@ -15,5 +19,23 @@ func TestWALHealthThreshold(t *testing.T) {
 		if got := walHealthDegraded(test.db, test.wal); got != test.want {
 			t.Fatalf("walHealthDegraded(%v,%v)=%v want=%v", test.db, test.wal, got, test.want)
 		}
+	}
+}
+
+func TestHealthReportsSQLiteReadMemoryBudget(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "health.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.EnsureSchema(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	report, err := db.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.SQLiteReadConnections != maxReadConnections || report.SQLiteCachePerConnMB != readCacheMiBPerConnection || report.SQLiteCacheBudgetMB != estimatedSQLiteReadCacheBudgetMiB || report.SQLiteMMapLimitMB != readMMapLimitMiB {
+		t.Fatalf("health SQLite memory budget is incomplete: %+v", report)
 	}
 }

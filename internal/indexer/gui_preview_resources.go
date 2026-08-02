@@ -36,7 +36,7 @@ func (db *DB) bindGUIPreviewTextures(ctx context.Context, preview *GUIPreviewRes
 			}
 			return &ref, nil
 		}
-		query := `SELECT r.source_name,r.kind,r.path FROM resources r JOIN files f ON f.id=r.file_id
+		query := `SELECT r.source_name,r.kind,r.path,f.id,f.file_size FROM resources r JOIN files f ON f.id=r.file_id
 			WHERE f.overridden=0 AND r.resource_path=?`
 		args := []any{path}
 		if !allowProject {
@@ -44,7 +44,7 @@ func (db *DB) bindGUIPreviewTextures(ctx context.Context, preview *GUIPreviewRes
 		}
 		query += ` ORDER BY r.source_rank ASC LIMIT 1`
 		ref := GUITextureRef{Path: path}
-		err := db.sql.QueryRowContext(ctx, query, args...).Scan(&ref.Source, &ref.Kind, &ref.filePath)
+		err := db.sql.QueryRowContext(ctx, query, args...).Scan(&ref.Source, &ref.Kind, &ref.filePath, &ref.fileID, &ref.fileSize)
 		if err == nil {
 			ref.Resolved = true
 			preview.Textures.Resolved++

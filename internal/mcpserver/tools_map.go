@@ -116,7 +116,10 @@ func handleMapSplitProvince(ctx context.Context, runtime *Runtime, definition *T
 	if err := decodeToolArgs(raw, definition.InputSchema, definition.CompatibilityProperties, &args); err != nil {
 		return toolOutput{}, err
 	}
-	_, visibility, err := args.options(0)
+	if err := validateMapArtifactRequestKey(args.RequestKey); err != nil {
+		return toolOutput{}, err
+	}
+	opts, visibility, err := args.options(0)
 	if err != nil {
 		return toolOutput{}, err
 	}
@@ -131,13 +134,17 @@ func handleMapSplitProvince(ctx context.Context, runtime *Runtime, definition *T
 	if args.TerrainWeight != nil {
 		weight = *args.TerrainWeight
 	}
-	result, plan, err := runtime.DB.SplitProvince(ctx,
-		indexer.MapSplitRequest{ProvinceID: args.ProvinceID, Seeds: args.Seeds, TerrainWeight: weight},
-		indexer.MapSplitEmit{
-			Definition:   args.EmitDefinition,
-			History:      args.EmitHistory,
-			LandedTitles: args.EmitLandedTitles,
-		})
+	state, err := runtime.DB.IndexState(ctx)
+	if err != nil {
+		return toolOutput{}, err
+	}
+	request := indexer.MapSplitRequest{ProvinceID: args.ProvinceID, Seeds: args.Seeds, RetainSeed: args.RetainSeed, TerrainWeight: weight}
+	emit := indexer.MapSplitEmit{
+		Definition:   args.EmitDefinition,
+		History:      args.EmitHistory,
+		LandedTitles: args.EmitLandedTitles,
+	}
+	result, plan, err := runtime.DB.SplitProvince(ctx, request, emit)
 	if err != nil {
 		// A seed in the wrong place is the caller's to fix, not a server fault,
 		// and saying so tells them to correct the request rather than retry it.
@@ -147,24 +154,36 @@ func handleMapSplitProvince(ctx context.Context, runtime *Runtime, definition *T
 		}
 		return toolOutput{}, err
 	}
+	cfg, err := mapSourcesForVisibility(runtime, opts.AllowProject)
+	if err != nil {
+		return toolOutput{}, err
+	}
+	cfg.ArtifactRoot = runtime.Config.ArtifactRoot
+	artifact, err := indexer.CreateMapSplitPlanArtifactWithRequestKey(ctx, cfg, runtime.DB, state, request, emit, result, plan, args.RequestKey)
+	if err != nil {
+		return toolOutput{}, mapSplitPlanError(err)
+	}
 	value := map[string]any{
 		"operation":    "split_province",
 		"province_id":  result.ProvinceID,
 		"source_pixel": result.SourcePixel,
 		"parts":        result.Parts,
 		"plan":         plan,
+		"plan_id":      artifact.PlanID,
+		"plan_hash":    artifact.PlanHash,
+		"plan_state":   artifact,
 		"applied":      false,
 		"guidance": []string{
-			"Nothing was written. Review plan.blockers first: a blocked plan would corrupt the map if applied.",
+			"An immutable server-side plan artifact was written; the Mod was not changed. Review plan.blockers first.",
 			"provinces.png is not modified by this tool; the plan describes which pixels each new province claims.",
 			"Re-scan after applying so the index matches the new geometry before splitting anything else.",
 		},
 	}
-	if len(plan.Blockers) > 0 {
+	if len(plan.Blockers) > 0 || len(plan.MissingDependencies) > 0 {
 		value["guidance"] = append(value["guidance"].([]string),
-			"This plan cannot be applied as-is.")
+			"This plan cannot be applied until every blocker and missing dependency is resolved.")
 	}
-	return toolOutput{Value: value, Visibility: visibility}, nil
+	return toolOutput{Value: value, Visibility: visibility, Committed: true}, nil
 }
 
 func handleMapPhysicalContext(ctx context.Context, runtime *Runtime, definition *ToolDefinition, raw json.RawMessage) (toolOutput, error) {

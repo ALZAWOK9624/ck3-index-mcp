@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"context"
 	"fmt"
 	"image"
 	"image/color"
@@ -181,6 +182,14 @@ func CarveRiverNetwork(img *image.Gray, region image.Rectangle, settings MapRive
 // This is the priority-flood method: grow outward from the boundary, always
 // from the lowest cell reached so far, and raise anything lower to that level.
 func fillDepressions(height []float64, w, h int, seaLevel float64) ([]float64, int) {
+	filled, sinks, _ := fillDepressionsContext(context.Background(), height, w, h, seaLevel)
+	return filled, sinks
+}
+
+func fillDepressionsContext(ctx context.Context, height []float64, w, h int, seaLevel float64) ([]float64, int, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, 0, err
+	}
 	filled := make([]float64, len(height))
 	copy(filled, height)
 	visited := make([]bool, len(height))
@@ -204,13 +213,25 @@ func fillDepressions(height []float64, w, h int, seaLevel float64) ([]float64, i
 	// Sea cells are outlets too, otherwise inland water bodies would be filled
 	// to the brim as though they were pits.
 	for i := range filled {
+		if i&4095 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, 0, err
+			}
+		}
 		if filled[i] <= seaLevel {
 			push(i)
 		}
 	}
 
 	sinks := 0
+	processed := 0
 	for queue.len() > 0 {
+		if processed&4095 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, 0, err
+			}
+		}
+		processed++
 		cell := queue.pop()
 		cx, cy := cell.index%w, cell.index/w
 		for _, step := range [4][2]int{{1, 0}, {-1, 0}, {0, 1}, {0, -1}} {
@@ -242,24 +263,40 @@ func fillDepressions(height []float64, w, h int, seaLevel float64) ([]float64, i
 			queue.push(floodCell{index: next, level: filled[next]})
 		}
 	}
-	return filled, sinks
+	return filled, sinks, ctx.Err()
 }
 
 // accumulateDrainage counts how many cells drain through each cell by walking
 // the grid from high to low, which needs no explicit flow graph: by the time a
 // cell is processed every cell above it already has been.
 func accumulateDrainage(height []float64, w, h int) []int {
+	drainage, _ := accumulateDrainageContext(context.Background(), height, w, h)
+	return drainage
+}
+
+func accumulateDrainageContext(ctx context.Context, height []float64, w, h int) ([]int, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	order := make([]int, len(height))
 	for i := range order {
 		order[i] = i
 	}
 	sort.Slice(order, func(a, b int) bool { return height[order[a]] > height[order[b]] })
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	drainage := make([]int, len(height))
 	for i := range drainage {
 		drainage[i] = 1
 	}
-	for _, i := range order {
+	for orderIndex, i := range order {
+		if orderIndex&4095 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		cx, cy := i%w, i/w
 		lowest, lowestHeight := -1, height[i]
 		// Eight directions, because four-way routing forces every channel onto
@@ -278,15 +315,28 @@ func accumulateDrainage(height []float64, w, h int) []int {
 			drainage[lowest] += drainage[i]
 		}
 	}
-	return drainage
+	return drainage, ctx.Err()
 }
 
 // spreadValley widens each cut with a falling profile, turning a channel into a
 // valley whose sides slope toward the water.
 func spreadValley(cut []float64, w, h, width int) []float64 {
+	out, _ := spreadValleyContext(context.Background(), cut, w, h, width)
+	return out
+}
+
+func spreadValleyContext(ctx context.Context, cut []float64, w, h, width int) ([]float64, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	out := make([]float64, len(cut))
 	copy(out, cut)
 	for y := 0; y < h; y++ {
+		if y&15 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		for x := 0; x < w; x++ {
 			depth := cut[y*w+x]
 			if depth <= 0 {
@@ -310,7 +360,7 @@ func spreadValley(cut []float64, w, h, width int) []float64 {
 			}
 		}
 	}
-	return out
+	return out, ctx.Err()
 }
 
 type floodCell struct {

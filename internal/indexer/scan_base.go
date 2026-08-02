@@ -5,10 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
+
+	"modernc.org/sqlite"
 )
 
 // UpstreamSourceFingerprint identifies every configured layer except the
@@ -71,63 +73,80 @@ func seedStagedScanFromBase(ctx context.Context, cfg Config, stagePath, engineFi
 	if basePath == "" {
 		return false, ""
 	}
-	reason, err := baseSeedRejection(ctx, cfg, basePath, engineFingerprint)
-	if err != nil {
-		return false, "base index could not be inspected: " + displayPath(basePath)
-	}
-	if reason != "" {
-		return false, reason
-	}
-	if err := copyDatabaseFile(basePath, stagePath); err != nil {
+	if err := onlineBackupDatabase(ctx, basePath, stagePath); err != nil {
 		return false, "base index could not be copied into the staging cache"
 	}
+	origin, reason, err := inspectBaseSeed(ctx, cfg, stagePath, engineFingerprint)
+	if err != nil {
+		removeDatabaseSnapshot(stagePath)
+		return false, "copied base index could not be inspected: " + displayPath(basePath)
+	}
+	if reason != "" {
+		removeDatabaseSnapshot(stagePath)
+		return false, reason
+	}
+	if err := recordBaseSeedOrigin(ctx, stagePath, origin); err != nil {
+		removeDatabaseSnapshot(stagePath)
+		return false, "base index provenance could not be recorded in the staging cache"
+	}
 	return true, ""
+}
+
+type baseSeedOrigin struct {
+	Generation  int64
+	Revision    string
+	Fingerprint string
 }
 
 // baseSeedRejection returns a human-readable reason the base cannot seed this
 // workspace, or an empty string when it can.
 func baseSeedRejection(ctx context.Context, cfg Config, basePath, engineFingerprint string) (string, error) {
+	_, reason, err := inspectBaseSeed(ctx, cfg, basePath, engineFingerprint)
+	return reason, err
+}
+
+func inspectBaseSeed(ctx context.Context, cfg Config, basePath, engineFingerprint string) (baseSeedOrigin, string, error) {
 	if info, err := os.Stat(basePath); err != nil || info.IsDir() {
-		return "base index does not exist at the configured path", nil
+		return baseSeedOrigin{}, "base index does not exist at the configured path", nil
 	}
 	base, err := OpenReadOnly(basePath)
 	if err != nil {
-		return "base index could not be opened", nil
+		return baseSeedOrigin{}, "base index could not be opened", nil
 	}
 	defer base.Close()
 	if !base.tableExists(ctx, "meta") {
-		return "base index has no meta table", nil
+		return baseSeedOrigin{}, "base index has no meta table", nil
 	}
 	state, err := base.IndexState(ctx)
 	if err != nil {
-		return "", err
+		return baseSeedOrigin{}, "", err
 	}
 	if !state.Ready() {
-		return fmt.Sprintf("base index is not a published ready generation (status %q)", state.Status), nil
+		return baseSeedOrigin{}, fmt.Sprintf("base index is not a published ready generation (status %q)", state.Status), nil
 	}
 	ruleVersion, err := base.metaValue(ctx, "index_rule_version")
 	if err != nil {
-		return "", err
+		return baseSeedOrigin{}, "", err
 	}
 	if ruleVersion != indexRuleVersion {
-		return fmt.Sprintf("base index rule version %q does not match %q", ruleVersion, indexRuleVersion), nil
+		return baseSeedOrigin{}, fmt.Sprintf("base index rule version %q does not match %q", ruleVersion, indexRuleVersion), nil
 	}
 	baseEngine, err := base.metaValue(ctx, "engine_data_fingerprint")
 	if err != nil {
-		return "", err
+		return baseSeedOrigin{}, "", err
 	}
 	if baseEngine != engineFingerprint {
-		return "base index was built from different engine log rules", nil
+		return baseSeedOrigin{}, "base index was built from different engine log rules", nil
 	}
 	baseUpstream, err := base.metaValue(ctx, "upstream_source_fingerprint")
 	if err != nil {
-		return "", err
+		return baseSeedOrigin{}, "", err
 	}
 	if baseUpstream == "" {
-		return "base index predates upstream source fingerprinting; rebuild it", nil
+		return baseSeedOrigin{}, "base index predates upstream source fingerprinting; rebuild it", nil
 	}
 	if baseUpstream != UpstreamSourceFingerprint(cfg) {
-		return "base index was built from different upstream sources", nil
+		return baseSeedOrigin{}, "base index was built from different upstream sources", nil
 	}
 	// A base must carry no project rows. Seeding relies on every upstream file
 	// starting out active, so that becoming hidden by this project is always an
@@ -135,51 +154,99 @@ func baseSeedRejection(ctx context.Context, cfg Config, basePath, engineFingerpr
 	// project layered on it would instead need the reverse transition, and a
 	// file that was never parsed because it was overridden cannot be revived by
 	// metadata alone.
-	rank, err := projectRank(cfg)
-	if err != nil {
-		return "", err
-	}
 	var projectFiles int
-	if err := base.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM files WHERE source_rank=?`, rank).Scan(&projectFiles); err != nil {
-		return "", err
+	if err := base.sql.QueryRowContext(ctx, `SELECT COUNT(*) FROM files f
+		JOIN source_layers s ON lower(s.name)=lower(f.source_name) WHERE s.role=?`, SourceRoleProject).Scan(&projectFiles); err != nil {
+		return baseSeedOrigin{}, "", err
 	}
 	if projectFiles > 0 {
-		return fmt.Sprintf("base index already contains %d file(s) at the project rank; build it against an empty project directory", projectFiles), nil
+		return baseSeedOrigin{}, fmt.Sprintf("base index already contains %d file(s) from a project role; build it against an empty project directory", projectFiles), nil
 	}
-	return "", nil
+	origin := baseSeedOrigin{Generation: state.Generation, Revision: state.Revision}
+	hash := sha256.New()
+	fmt.Fprintf(hash, "base-origin-v1\x00%d\x00%s\x00%s\x00%s\x00", state.Generation, state.Revision, baseEngine, baseUpstream)
+	origin.Fingerprint = hex.EncodeToString(hash.Sum(nil))
+	return origin, "", nil
 }
 
-// copyDatabaseFile materializes the base as the staging cache. The base is
-// opened read-only and its WAL is not copied: a ready published generation has
-// already been checkpointed into the main database file, and a stale sidecar
-// would otherwise be replayed over the copy.
-func copyDatabaseFile(src, dst string) error {
-	in, err := os.Open(src)
+type sqliteBackuper interface {
+	NewBackup(string) (*sqlite.Backup, error)
+}
+
+// onlineBackupDatabase copies one coherent SQLite snapshot, including pages
+// that are still resident in the source WAL. Copying only the main file can
+// validate one generation and seed a different, older one.
+func onlineBackupDatabase(ctx context.Context, src, dst string) error {
+	removeDatabaseSnapshot(dst)
+	base, err := OpenReadOnly(src)
 	if err != nil {
 		return err
 	}
-	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	defer base.Close()
+	conn, err := base.sql.Conn(ctx)
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		_ = os.Remove(dst)
+	defer conn.Close()
+	err = conn.Raw(func(driverConn any) error {
+		backuper, ok := driverConn.(sqliteBackuper)
+		if !ok {
+			return fmt.Errorf("SQLite driver does not support online backup")
+		}
+		backup, err := backuper.NewBackup(dst)
+		if err != nil {
+			return err
+		}
+		var stepErr error
+		for more := true; more; {
+			if err := ctx.Err(); err != nil {
+				stepErr = err
+				break
+			}
+			more, stepErr = backup.Step(256)
+			if stepErr != nil {
+				break
+			}
+		}
+		finishErr := backup.Finish()
+		if stepErr != nil {
+			return stepErr
+		}
+		return finishErr
+	})
+	if err != nil {
+		removeDatabaseSnapshot(dst)
 		return err
-	}
-	if err := out.Sync(); err != nil {
-		out.Close()
-		_ = os.Remove(dst)
-		return err
-	}
-	if err := out.Close(); err != nil {
-		_ = os.Remove(dst)
-		return err
-	}
-	// A copied database must not inherit sidecars from a previous staging run.
-	for _, suffix := range []string{"-wal", "-shm"} {
-		_ = os.Remove(dst + suffix)
 	}
 	return nil
+}
+
+func recordBaseSeedOrigin(ctx context.Context, stagePath string, origin baseSeedOrigin) error {
+	stage, err := Open(stagePath)
+	if err != nil {
+		return err
+	}
+	defer stage.Close()
+	tx, err := stage.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for key, value := range map[string]string{
+		"base_origin_generation":  strconv.FormatInt(origin.Generation, 10),
+		"base_origin_revision":    origin.Revision,
+		"base_origin_fingerprint": origin.Fingerprint,
+	} {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES(?,?)
+			ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func removeDatabaseSnapshot(path string) {
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		_ = os.Remove(path + suffix)
+	}
 }

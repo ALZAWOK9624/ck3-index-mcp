@@ -240,6 +240,21 @@ func TestToolErrorsUseCancellationAndTimeoutCodes(t *testing.T) {
 	}
 }
 
+func TestSourceChangedErrorPrescribesAFileRefresh(t *testing.T) {
+	err := toolErrorFrom(&indexer.SourceChangedError{Path: "common/test.txt", Reason: "file hash differs from the index", IndexedGeneration: 9, IndexedRevision: "r9", ExpectedSize: 12, ActualSize: 13})
+	if err.Code != ErrorSourceChanged || !err.Retryable {
+		t.Fatalf("source change error=%+v", err)
+	}
+	action, ok := err.Recovery["required_action"].(map[string]any)
+	if !ok || action["tool"] != "ck3_refresh" || action["operation"] != "files" {
+		t.Fatalf("required action=%#v", err.Recovery["required_action"])
+	}
+	paths, ok := action["paths"].([]string)
+	if !ok || len(paths) != 1 || paths[0] != "common/test.txt" {
+		t.Fatalf("refresh paths=%#v", action["paths"])
+	}
+}
+
 func TestPublicVisibilityHonorsExplicitSourcePrivacyPolicy(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()

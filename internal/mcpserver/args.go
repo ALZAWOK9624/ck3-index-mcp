@@ -222,31 +222,33 @@ type mapSplitProvinceArgs struct {
 	visibilityArgs
 	ProvinceID       int                    `json:"province_id"`
 	Seeds            []indexer.MapSplitSeed `json:"seeds"`
+	RetainSeed       *int                   `json:"retain_seed,omitempty"`
 	TerrainWeight    *float64               `json:"terrain_weight,omitempty"`
 	EmitDefinition   bool                   `json:"emit_definition,omitempty"`
 	EmitHistory      bool                   `json:"emit_history,omitempty"`
 	EmitLandedTitles bool                   `json:"emit_landed_titles,omitempty"`
+	RequestKey       string                 `json:"request_key,omitempty"`
 }
 
-// mapApplySplitArgs repeats the planning arguments rather than carrying a plan
-// back in: a plan holds every run of every part, which is megabytes of geometry
-// no caller should have to round-trip. The split is deterministic, so replanning
-// from the same province and seeds reproduces it exactly.
 type mapApplySplitArgs struct {
 	visibilityArgs
-	ProvinceID       int                    `json:"province_id"`
-	Seeds            []indexer.MapSplitSeed `json:"seeds"`
-	TerrainWeight    *float64               `json:"terrain_weight,omitempty"`
-	EmitDefinition   bool                   `json:"emit_definition,omitempty"`
-	EmitHistory      bool                   `json:"emit_history,omitempty"`
-	EmitLandedTitles bool                   `json:"emit_landed_titles,omitempty"`
-	Confirm          bool                   `json:"confirm"`
+	PlanID     string `json:"plan_id"`
+	PlanHash   string `json:"plan_hash"`
+	Confirm    bool   `json:"confirm"`
+	RequestKey string `json:"request_key,omitempty"`
 }
 
 type mapTerrainEditArgs struct {
 	visibilityArgs
 	indexer.MapTerrainEditSpec
-	Confirm bool `json:"confirm"`
+	Confirm    bool   `json:"confirm"`
+	RequestKey string `json:"request_key,omitempty"`
+}
+
+type mapArtifactArgs struct {
+	visibilityArgs
+	Operation  string `json:"operation"`
+	ArtifactID string `json:"artifact_id,omitempty"`
 }
 
 type mapPhysicalContextArgs struct {

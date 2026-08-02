@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"strings"
 )
 
 // Everything a split needs is already indexed: the province outline, every id
@@ -113,6 +114,31 @@ func (db *DB) LoadProvinceSplitInputs(ctx context.Context, provinceID int) (Prov
 	inputs.Context.SourceCounty = county.String
 	if sourceColor.Valid && sourceColor.Int64 >= 0 {
 		inputs.Context.SourceColor = uint32(sourceColor.Int64) & 0xFFFFFF
+	}
+	inputs.Context.ExistingTitleIDs = map[string]bool{}
+	titleRows, err := db.sql.QueryContext(ctx, `SELECT title_id FROM map_titles`)
+	if err != nil {
+		return inputs, err
+	}
+	for titleRows.Next() {
+		var id string
+		if err := titleRows.Scan(&id); err != nil {
+			titleRows.Close()
+			return inputs, err
+		}
+		inputs.Context.ExistingTitleIDs[strings.ToLower(strings.TrimSpace(id))] = true
+	}
+	if err := titleRows.Close(); err != nil {
+		return inputs, err
+	}
+	var retainX, retainY float64
+	if err := db.sql.QueryRowContext(ctx, `SELECT x,y FROM map_object_instances
+		WHERE province_id=? AND object_kind='holding' ORDER BY source_rank,id LIMIT 1`, provinceID).Scan(&retainX, &retainY); err == nil {
+		inputs.Context.RetainX = int(math.Round(retainX))
+		inputs.Context.RetainY = int(math.Round(retainY))
+		inputs.Context.HasRetainPoint = true
+	} else if err != sql.ErrNoRows {
+		return inputs, err
 	}
 	// The barony name is the closest thing the index holds to the province's
 	// own label, and it is what a modder recognises; definition.csv names are

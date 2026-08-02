@@ -47,6 +47,14 @@ type HealthReport struct {
 	WALFiles              []HealthFile      `json:"wal_files,omitempty"`
 	MCPConfigured         bool              `json:"mcp_configured"`
 	FTS5Available         bool              `json:"fts5_available"`
+	SQLiteReadConnections int               `json:"sqlite_read_connections"`
+	SQLiteCachePerConnMB  int               `json:"sqlite_cache_per_connection_mb"`
+	SQLiteCacheBudgetMB   int               `json:"sqlite_cache_budget_mb"`
+	SQLiteMMapLimitMB     int               `json:"sqlite_mmap_limit_mb"`
+	ActiveTasks           int               `json:"active_tasks"`
+	ActiveHeavyTasks      int               `json:"active_heavy_tasks"`
+	ActiveRasterTasks     int               `json:"active_raster_tasks"`
+	EstimatedTaskMemoryMB int               `json:"estimated_task_memory_mb"`
 	GIS                   *GISSidecarStatus `json:"gis,omitempty"`
 	Guidance              []string          `json:"guidance,omitempty"`
 
@@ -335,7 +343,11 @@ func (db *DB) health(ctx context.Context, configuredPath string) (HealthReport, 
 			{Name: "wal", Path: dbPath + "-wal", Exists: fileExists(dbPath + "-wal"), SizeMB: fileSizeMB(dbPath + "-wal")},
 			{Name: "shm", Path: dbPath + "-shm", Exists: fileExists(dbPath + "-shm"), SizeMB: fileSizeMB(dbPath + "-shm")},
 		},
-		MCPConfigured: codexMCPConfigured(),
+		MCPConfigured:         codexMCPConfigured(),
+		SQLiteReadConnections: maxReadConnections,
+		SQLiteCachePerConnMB:  readCacheMiBPerConnection,
+		SQLiteCacheBudgetMB:   estimatedSQLiteReadCacheBudgetMiB,
+		SQLiteMMapLimitMB:     readMMapLimitMiB,
 	}
 	if db.tableExists(ctx, "meta") {
 		state, err := db.IndexState(ctx)
@@ -361,7 +373,9 @@ func (db *DB) health(ctx context.Context, configuredPath string) (HealthReport, 
 		report.Status = "error"
 		report.Guidance = append(report.Guidance, "The opened database is not the database selected by the active configuration.")
 	}
-	if db.tableExists(ctx, "search_fts") && db.sql.QueryRowContext(ctx, `SELECT count(*) FROM search_fts WHERE search_fts MATCH 'ck3indexhealthtoken'`).Scan(new(int)) == nil {
+	semanticFTSReady := db.tableExists(ctx, "search_fts") && db.sql.QueryRowContext(ctx, `SELECT count(*) FROM search_fts WHERE search_fts MATCH 'ck3indexhealthtoken'`).Scan(new(int)) == nil
+	scriptFTSReady := db.tableExists(ctx, "script_text_fts") && db.sql.QueryRowContext(ctx, `SELECT count(*) FROM script_text_fts WHERE script_text_fts MATCH 'ck3indexhealthtoken'`).Scan(new(int)) == nil
+	if semanticFTSReady && scriptFTSReady {
 		report.FTS5Available = true
 	} else {
 		report.Status = "error"
@@ -404,7 +418,7 @@ func walHealthDegraded(databaseMB, walMB float64) bool {
 
 func (db *DB) tableCounts(ctx context.Context) (map[string]int, error) {
 	out := map[string]int{}
-	for _, table := range []string{"source_layers", "files", "objects", "refs", "localization", "resources", "schema_fields", "object_fields", "diagnostics", "engine_datatypes", "engine_scope_rules", "search_fts"} {
+	for _, table := range []string{"source_layers", "files", "objects", "refs", "localization", "resources", "schema_fields", "object_fields", "diagnostics", "engine_datatypes", "engine_scope_rules", "search_fts", "script_text_fts"} {
 		if !db.tableExists(ctx, table) {
 			out[table] = 0
 			continue

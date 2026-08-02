@@ -169,7 +169,7 @@ func buildCanonicalTools() []ToolDefinition {
 		{
 			Name:         "ck3_health",
 			Title:        "Check CK3 Index Health",
-			Description:  "Check whether the database, schema, indexes, and MCP registration are trustworthy, and confirm which configuration is live. Reports the active config path and every source's resolved root so a workspace with multiple ck3-index.toml files cannot be misread; the database path itself stays redacted.",
+			Description:  "Check whether the database, schema, indexes, and MCP registration are trustworthy, and confirm which configuration is live. Reports bounded SQLite read/cache settings plus active heavy/raster tasks and estimated task memory. The active config and source roots are identifiable while the database path stays redacted.",
 			InputSchema:  objectSchema(map[string]any{}),
 			OutputSchema: output, Annotations: annotations, Handler: handleHealth,
 		},
@@ -317,7 +317,7 @@ func standardizeCanonicalToolDescriptions(definitions []ToolDefinition) []ToolDe
 			When:     "checking whether the MCP registration and index database are trustworthy, or confirming which configuration and source trees are live",
 			DoNotUse: "the task is to diagnose CK3 source logic; use ck3_diagnostics or ck3_review instead",
 			Input:    "no arguments",
-			Returns:  "database, schema, and registration health, plus the active config path and each source's resolved root",
+			Returns:  "database, schema, registration, SQLite cache budget, active task/memory health, plus the active config path and each source's resolved root",
 			Unlike:   "ck3_refresh, it observes health and does not update the index",
 		},
 		"ck3_package": {
@@ -372,8 +372,8 @@ func standardizeCanonicalToolDescriptions(definitions []ToolDefinition) []ToolDe
 		"map_apply_split": {
 			When:     "a split already reviewed through map_split_province must be turned into an actual recoloured provinces.png",
 			DoNotUse: "the division is still being decided; use map_split_province, which writes nothing",
-			Input:    "the same province id, seeds, and terrain weight that were planned, plus explicit confirmation",
-			Returns:  "an artifact directory holding the rewritten raster and the file edits that must accompany it",
+			Input:    "the immutable plan_id and plan_hash that were reviewed, explicit confirmation, and an optional request_key",
+			Returns:  "an immutable artifact holding the rewritten raster and the file edits that must accompany it",
 			Unlike:   "map_split_province, it writes files instead of only proposing them",
 		},
 		"map_terrain_edit": {
@@ -382,6 +382,13 @@ func standardizeCanonicalToolDescriptions(definitions []ToolDefinition) []ToolDe
 			Input:    "compose, large_rivers, or small_rivers settings, an optional region and base_artifact_id, plus confirm=false for preview or true for publication",
 			Returns:  "an in-memory preview or immutable artifact id, relative file hashes, original bit depth, layer statistics, hydrology status, and a CK3-repack requirement",
 			Unlike:   "map_render, it produces CK3 map inputs rather than a picture of the map",
+		},
+		"map_artifact": {
+			When:     "a map publication response was lost, or committed terrain, split-plan, and split-result artifacts need listing or integrity inspection",
+			DoNotUse: "a new artifact must be generated; use map_terrain_edit, map_split_province, or map_apply_split",
+			Input:    "operation=list, status, or inspect; status and inspect also require artifact_id",
+			Returns:  "bounded committed artifact metadata and integrity status without changing files",
+			Unlike:   "the map authoring tools, it only recovers and verifies already published artifacts",
 		},
 		"map_province_info": {
 			When:     "one province or title's exact map, title, terrain, and neighbor context is needed",
@@ -658,26 +665,31 @@ func buildCanonicalMapTools(annotations ToolAnnotations, output map[string]any) 
 			"limit":             limitProperty(),
 			"visibility":        visibilityProperty(),
 		}, "source", "target"), handleMapProvinceMapping, legacyPrivacyProperties),
-		mapTool("map_split_province", "Plan Province Split", "Divide one indexed province among caller-chosen seed pixels by terrain-aware growth, so boundaries settle along ridges instead of cutting straight lines, then plan the definition.csv, history, and landed-title edits CK3 needs to stay consistent. Allocates collision-free province ids and colours, or blocks when uniqueness cannot be proven. Returns a reviewable plan and writes nothing.", objectSchema(map[string]any{
+		mapArtifactTool("map_split_province", "Plan Province Split", "Divide one indexed province among caller-chosen seed pixels by terrain-aware growth, then publish an immutable server-side plan bound to the current scan generation plus provinces.png and definition.csv hashes. The Mod is never changed. Apply only the returned plan_id and plan_hash.", objectSchema(map[string]any{
 			"province_id":        integerProperty("Indexed province id to divide.", 1, 0, 0),
 			"seeds":              splitSeedsProperty(),
+			"retain_seed":        integerProperty("Optional zero-based seed index whose part must keep the original province id, colour, history, and title. Without it the indexed holding locator is preferred, then the largest part.", 0, 15, 0),
 			"terrain_weight":     map[string]any{"type": "number", "minimum": 0, "maximum": 8, "default": 3, "description": "How strongly terrain deflects boundaries. 0 grows by distance alone and yields geometric edges; higher values bend boundaries toward steep ground. Requires an indexed elevation raster to have any effect."},
 			"emit_definition":    booleanProperty("Include the definition.csv rows for the new provinces."),
 			"emit_history":       booleanProperty("Include history/provinces entries inheriting the parent's culture, faith, and holding."),
 			"emit_landed_titles": booleanProperty("Include barony skeletons for the owning county."),
+			"request_key":        artifactRequestKeyProperty(),
 			"limit":              limitProperty(), "visibility": visibilityProperty(),
 		}, "province_id", "seeds"), handleMapSplitProvince, legacyPrivacyProperties),
-		mapArtifactTool("map_apply_split", "Apply Province Split", "Replay a province split and write the recoloured provinces.png into the server artifact area, alongside the definition.csv, history, and landed-title edits that must accompany it. Verifies every pixel against the indexed province colour first and refuses to write when the index is stale or the plan has blockers. The Mod itself is never modified.", objectSchema(map[string]any{
-			"province_id":        integerProperty("Indexed province id to divide.", 1, 0, 0),
-			"seeds":              splitSeedsProperty(),
-			"terrain_weight":     map[string]any{"type": "number", "minimum": 0, "maximum": 8, "default": 3, "description": "Must match the value planned with map_split_province, or the geometry written will not be the geometry reviewed."},
-			"emit_definition":    booleanProperty("Include the definition.csv rows for the new provinces."),
-			"emit_history":       booleanProperty("Include history/provinces entries inheriting the parent's culture, faith, and holding."),
-			"emit_landed_titles": booleanProperty("Include barony skeletons for the owning county."),
-			"confirm":            booleanProperty("Must be true. Acknowledges that a new provinces.png will be written to the server artifact area."),
-			"limit":              limitProperty(), "visibility": visibilityProperty(),
-		}, "province_id", "seeds", "confirm"), handleMapApplySplit, legacyPrivacyProperties),
+		mapArtifactTool("map_apply_split", "Apply Province Split", "Load the exact immutable split geometry previously reviewed and write its recoloured provinces.png into the server artifact area. Rejects any plan hash, scan generation, provinces.png, or definition.csv drift. The Mod itself is never modified.", objectSchema(map[string]any{
+			"plan_id":     map[string]any{"type": "string", "pattern": `^split-plan-[0-9a-f]{32}$`, "description": "Immutable plan id returned by map_split_province."},
+			"plan_hash":   map[string]any{"type": "string", "pattern": `^[0-9a-f]{64}$`, "description": "Exact immutable plan hash returned by map_split_province."},
+			"confirm":     booleanProperty("Must be true. Acknowledges that a new provinces.png will be written to the server artifact area."),
+			"request_key": artifactRequestKeyProperty(),
+			"limit":       limitProperty(), "visibility": visibilityProperty(),
+		}, "plan_id", "plan_hash", "confirm"), handleMapApplySplit, legacyPrivacyProperties),
 		mapArtifactTool("map_terrain_edit", "Edit CK3 Physical Terrain", "Compose ordered point, polyline, or polygon physical-landform layers; carve large-river valleys; or replace a bounded small-river window while preserving everything outside it. confirm=false returns an in-memory preview, and confirm=true creates a verified immutable artifact containing only raw heightmap/rivers inputs plus review previews. Never modifies the Mod and always requires CK3 heightmap repacking.", terrainEditSchema(), handleMapTerrainEdit, legacyPrivacyProperties),
+		mapTool("map_artifact", "Inspect Map Artifacts", "List, check status, or fully inspect committed map terrain, province-split plan, and province-split raster artifacts. Verifies immutable manifests and output hashes so a caller can recover an artifact id after a timeout without generating duplicate files.", objectSchema(map[string]any{
+			"operation":   stringProperty("Artifact recovery operation.", "list", "status", "inspect"),
+			"artifact_id": stringProperty("Controlled map artifact id. Required for status or inspect."),
+			"limit":       limitProperty(),
+			"visibility":  visibilityProperty(),
+		}, "operation"), handleMapArtifact, legacyPrivacyProperties),
 		mapTool("map_province_info", "Inspect Map Province", "Inspect one province's exact geometry, titles, scripted terrain, observed surface-material blend, texture resources, and direct boundaries. Returns read-only precision context and classified neighbors.", objectSchema(map[string]any{
 			"id": stringProperty("Map subject: numeric province id, b_/c_/d_/k_/e_ title id, or an exact unique English or Chinese localized name."), "year": integerProperty("CK3 history year.", 1, 0, 1), "limit": limitProperty(), "visibility": visibilityProperty(),
 		}, "id"), handleMapProvinceInfo, legacyPrivacyProperties),
@@ -732,6 +744,14 @@ func splitSeedsProperty() map[string]any {
 	seeds["minItems"] = 2
 	seeds["maxItems"] = 16
 	return seeds
+}
+
+func artifactRequestKeyProperty() map[string]any {
+	return map[string]any{
+		"type": "string", "maxLength": 128,
+		"pattern":     `^[A-Za-z0-9][A-Za-z0-9._:-]*$`,
+		"description": "Optional idempotency key. Retrying the same publication with the same key returns its committed artifact; reusing it for different input is rejected.",
+	}
 }
 
 func mapRouteSchema() map[string]any {
@@ -859,6 +879,7 @@ func terrainEditSchema() map[string]any {
 		"small_rivers":     smallRivers,
 		"region":           region,
 		"confirm":          booleanProperty("False validates and returns an in-memory PNG preview; true creates a new immutable artifact."),
+		"request_key":      artifactRequestKeyProperty(),
 		"limit":            limitProperty(), "visibility": visibilityProperty(),
 	}, "operation")
 }

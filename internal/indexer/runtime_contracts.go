@@ -12,6 +12,10 @@ import (
 // narrow: a missing entry here is safer than treating the empirical field
 // table as an exhaustive engine schema.
 func checkRuntimeContracts(nodes []*script.Node, relPath string) []ctxDiag {
+	return checkRuntimeContractsWithRules(nodes, relPath, currentEngineRuleSet())
+}
+
+func checkRuntimeContractsWithRules(nodes []*script.Node, relPath string, rules *EngineRuleSet) []ctxDiag {
 	rel := strings.ToLower(filepathSlash(relPath))
 	var out []ctxDiag
 	if isEventPath(rel) {
@@ -46,16 +50,16 @@ func checkRuntimeContracts(nodes []*script.Node, relPath string) []ctxDiag {
 		out = append(out, checkCasusBelliScriptValueFields(nodes)...)
 	}
 	if strings.Contains(rel, "common/modifier_definition_formats/") && !strings.HasSuffix(rel, ".info") {
-		out = append(out, checkModifierDefinitionFields(nodes)...)
+		out = append(out, checkModifierDefinitionFieldsWithRules(nodes, rules)...)
 	}
 	if strings.Contains(rel, "common/modifiers/") && !strings.HasSuffix(rel, ".info") {
-		out = append(out, checkCharacterModifierDefinitions(nodes)...)
+		out = append(out, checkCharacterModifierDefinitionsWithRules(nodes, rules)...)
 	}
 	if strings.Contains(rel, "common/opinion_modifiers/") && !strings.HasSuffix(rel, ".info") {
 		out = append(out, checkOpinionModifierContracts(nodes)...)
 	}
 	if strings.Contains(rel, "common/scripted_relations/") && !strings.HasSuffix(rel, ".info") {
-		out = append(out, checkScriptedRelationContracts(nodes)...)
+		out = append(out, checkScriptedRelationContractsWithRules(nodes, rules)...)
 	}
 	if strings.Contains(rel, "common/religion/religion_types/") && !strings.HasSuffix(rel, ".info") {
 		out = append(out, checkReligionDoctrineOrder(nodes)...)
@@ -118,7 +122,7 @@ func checkRuntimeContracts(nodes []*script.Node, relPath string) []ctxDiag {
 	if strings.Contains(rel, "common/struggle/struggles/") && !strings.HasSuffix(rel, ".info") {
 		out = append(out, checkStruggleContracts(nodes)...)
 	}
-	out = append(out, checkModifierContainerFields(nodes, rel)...)
+	out = append(out, checkModifierContainerFieldsWithRules(nodes, rel, rules)...)
 	return out
 }
 
@@ -289,12 +293,16 @@ var modifierDefinitionFields = map[string]bool{
 }
 
 func checkModifierDefinitionFields(nodes []*script.Node) []ctxDiag {
+	return checkModifierDefinitionFieldsWithRules(nodes, currentEngineRuleSet())
+}
+
+func checkModifierDefinitionFieldsWithRules(nodes []*script.Node, rules *EngineRuleSet) []ctxDiag {
 	var out []ctxDiag
 	for _, definition := range nodes {
 		if definition.Kind != "block" || definition.Key == "" {
 			continue
 		}
-		if !LookupModifier(definition.Key).Found {
+		if !lookupModifierWithRules(rules, definition.Key).Found {
 			out = append(out, ctxDiag{
 				severity: "error",
 				code:     "unknown_modifier_definition",
@@ -392,6 +400,10 @@ var modifierContainerMetadata = map[string]map[string]bool{
 }
 
 func checkModifierContainerFields(nodes []*script.Node, relPath string) []ctxDiag {
+	return checkModifierContainerFieldsWithRules(nodes, relPath, currentEngineRuleSet())
+}
+
+func checkModifierContainerFieldsWithRules(nodes []*script.Node, relPath string, rules *EngineRuleSet) []ctxDiag {
 	var out []ctxDiag
 	rel := strings.ToLower(filepathSlash(relPath))
 	// common/game_concepts contains display concepts named
@@ -426,7 +438,7 @@ func checkModifierContainerFields(nodes []*script.Node, relPath string) []ctxDia
 				strings.HasPrefix(rel, "common/council_tasks/") {
 				continue
 			}
-			modifier := LookupModifier(field.Key)
+			modifier := lookupModifierWithRules(rules, field.Key)
 			if !modifier.Found {
 				out = append(out, ctxDiag{
 					severity: "error",

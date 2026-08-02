@@ -21,7 +21,7 @@ func TestQueryGUILocalizationBindsBilingualValuesWithoutPathLeak(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	guiPath := writeGUIQueryFixture(t, root, "project/localized.gui", `types Demo {
+	guiPath := writeGUIQueryFixture(t, root, "project/gui/localized.gui", `types Demo {
 	type localized_panel = vbox {
 		size = { 420 160 }
 		text_single = { name = "heading" text = OPEN_BESTIARY }
@@ -56,6 +56,7 @@ func TestQueryGUILocalizationBindsBilingualValuesWithoutPathLeak(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	publishVerifiedGUIFixture(t, ctx, db)
 
 	result, err := db.QueryGUI(ctx, GUIQueryOptions{
 		Operation: "preview", Symbol: "localized_panel", AllowProject: true,
@@ -190,7 +191,7 @@ func TestQueryGUICompilesRawConditionalLocalizationPerLanguage(t *testing.T) {
 	if err := db.EnsureSchema(ctx); err != nil {
 		t.Fatal(err)
 	}
-	guiPath := writeGUIQueryFixture(t, root, "base/conditional.gui", `types Demo {
+	guiPath := writeGUIQueryFixture(t, root, "base/gui/conditional.gui", `types Demo {
 	type conditional_panel = text_single {
 		name = "status"
 		raw_text = "[SelectLocalization( IsReady, 'READY_LABEL', 'WAIT_LABEL' )]"
@@ -224,6 +225,7 @@ func TestQueryGUICompilesRawConditionalLocalizationPerLanguage(t *testing.T) {
 			}
 		}
 	}
+	publishVerifiedGUIFixture(t, ctx, db)
 	result, err := db.QueryGUI(ctx, GUIQueryOptions{
 		Operation: "preview", Symbol: "conditional_panel", AllowProject: true,
 		Width: 640, Height: 360, Format: "html", HTMLMode: GUIHTMLModeInspector,
@@ -276,7 +278,7 @@ func TestGUIPreviewLocalizationHonorsPublicProjectBoundary(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	guiPath := writeGUIQueryFixture(t, root, "base/panel.gui", `types Demo { type public_panel = text_single { text = PRIVATE_LABEL } }`)
+	guiPath := writeGUIQueryFixture(t, root, "base/gui/panel.gui", `types Demo { type public_panel = text_single { text = PRIVATE_LABEL } }`)
 	locPath := filepath.Join(root, "project/private_l_english.yml")
 	for _, row := range []struct {
 		id     int
@@ -296,6 +298,7 @@ func TestGUIPreviewLocalizationHonorsPublicProjectBoundary(t *testing.T) {
 	if _, err := db.sql.ExecContext(ctx, `INSERT INTO localization(key,language,value,file_id,source_name,source_rank,path,line,replace_dir) VALUES('PRIVATE_LABEL','english','private value',2,'project',1,?,1,0)`, locPath); err != nil {
 		t.Fatal(err)
 	}
+	publishVerifiedGUIFixture(t, ctx, db)
 	privateResult, err := db.QueryGUI(ctx, GUIQueryOptions{Operation: "preview", Symbol: "public_panel", AllowProject: true, Format: "html", Language: GUIPreviewLanguageEnglish})
 	if err != nil || privateResult.Preview == nil || privateResult.Preview.Localization.Resolved != 1 {
 		t.Fatalf("private localization binding missing: result=%+v err=%v", privateResult.Preview, err)

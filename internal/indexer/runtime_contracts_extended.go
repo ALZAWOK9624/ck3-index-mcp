@@ -63,6 +63,10 @@ var characterModifierScaleFields = map[string]bool{
 // modifier tags, with the documented icon/scale metadata and the additional
 // engine-supported stacking and hide_effects flags observed in vanilla.
 func checkCharacterModifierDefinitions(nodes []*script.Node) []ctxDiag {
+	return checkCharacterModifierDefinitionsWithRules(nodes, currentEngineRuleSet())
+}
+
+func checkCharacterModifierDefinitionsWithRules(nodes []*script.Node, rules *EngineRuleSet) []ctxDiag {
 	var out []ctxDiag
 	for _, definition := range nodes {
 		if definition.Kind != "block" || definition.Key == "" {
@@ -100,7 +104,7 @@ func checkCharacterModifierDefinitions(nodes []*script.Node) []ctxDiag {
 			if characterModifierDefinitionFields[field.Key] {
 				continue
 			}
-			modifier := LookupModifier(field.Key)
+			modifier := lookupModifierWithRules(rules, field.Key)
 			if !modifier.Found {
 				out = append(out, ctxDiag{
 					severity: "error",
@@ -219,6 +223,10 @@ func checkOpinionModifierContracts(nodes []*script.Node) []ctxDiag {
 }
 
 func checkScriptedRelationContracts(nodes []*script.Node) []ctxDiag {
+	return checkScriptedRelationContractsWithRules(nodes, currentEngineRuleSet())
+}
+
+func checkScriptedRelationContractsWithRules(nodes []*script.Node, rules *EngineRuleSet) []ctxDiag {
 	var out []ctxDiag
 	for _, relation := range nodes {
 		if relation.Kind != "block" || relation.Key == "" {
@@ -241,7 +249,7 @@ func checkScriptedRelationContracts(nodes []*script.Node) []ctxDiag {
 				if modifierField.Key == "name" {
 					continue
 				}
-				modifier := LookupModifier(modifierField.Key)
+				modifier := lookupModifierWithRules(rules, modifierField.Key)
 				if !modifier.Found {
 					out = append(out, ctxDiag{
 						severity: "error",

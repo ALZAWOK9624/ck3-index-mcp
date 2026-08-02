@@ -454,6 +454,11 @@ func handleHealth(ctx context.Context, runtime *Runtime, definition *ToolDefinit
 	if err == nil {
 		gis := runtime.DB.GISSidecarStatus(ctx, runtime.Config)
 		health.GIS = &gis
+		usage := currentMCPTaskUsage()
+		health.ActiveTasks = usage.Active
+		health.ActiveHeavyTasks = usage.Heavy
+		health.ActiveRasterTasks = usage.Raster
+		health.EstimatedTaskMemoryMB = usage.EstimatedMemoryMB
 	}
 	if err != nil {
 		return toolOutput{}, err

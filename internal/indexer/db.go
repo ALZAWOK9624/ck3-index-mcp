@@ -80,7 +80,12 @@ func openSQLite(path string, readOnly bool) (*DB, error) {
 	return &DB{sql: db, path: path}, nil
 }
 
-const maxReadConnections = 8
+const (
+	maxReadConnections                = 8
+	readCacheMiBPerConnection         = 64
+	readMMapLimitMiB                  = 1024
+	estimatedSQLiteReadCacheBudgetMiB = maxReadConnections * readCacheMiBPerConnection
+)
 
 // readConnectionPragmas configure the query path. Only busy_timeout used to be
 // set here, which left a multi-gigabyte index being read through SQLite's
@@ -150,7 +155,10 @@ func (db *DB) reset(ctx context.Context) error {
 			return err
 		}
 	}
-	return db.ensureSchemaNoIndexes(ctx)
+	if err := db.ensureSchemaNoIndexes(ctx); err != nil {
+		return err
+	}
+	return db.ensureScriptTextTriggers(ctx)
 }
 
 // ensureSchema creates tables and indexes if they do not exist. Idempotent.
@@ -194,6 +202,9 @@ func (db *DB) ensureSchema(ctx context.Context) error {
 		if err := db.ensureColumn(ctx, migration.table, migration.column, migration.definition); err != nil {
 			return err
 		}
+	}
+	if err := db.ensureScriptTextTriggers(ctx); err != nil {
+		return err
 	}
 	return db.CreateIndexes(ctx)
 }
@@ -668,10 +679,32 @@ func (db *DB) ensureSchemaNoIndexes(ctx context.Context) error {
 			PRIMARY KEY(name,rule_kind)
 		)`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(kind, name, text, source, path UNINDEXED, file_id UNINDEXED, tokenize='unicode61 remove_diacritics 2')`,
+		`CREATE VIRTUAL TABLE IF NOT EXISTS script_text_fts USING fts5(search_text, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2')`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.sql.ExecContext(ctx, stmt); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func (db *DB) ensureScriptTextTriggers(ctx context.Context) error {
+	statements := []string{
+		`CREATE TRIGGER IF NOT EXISTS files_script_text_ai AFTER INSERT ON files WHEN new.kind='script' BEGIN
+			INSERT INTO script_text_fts(rowid,search_text) VALUES(new.id,new.search_text);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS files_script_text_ad AFTER DELETE ON files WHEN old.kind='script' BEGIN
+			DELETE FROM script_text_fts WHERE rowid=old.id;
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS files_script_text_au AFTER UPDATE OF kind,search_text ON files BEGIN
+			DELETE FROM script_text_fts WHERE rowid=old.id;
+			INSERT INTO script_text_fts(rowid,search_text) SELECT new.id,new.search_text WHERE new.kind='script';
+		END`,
+	}
+	for _, statement := range statements {
+		if _, err := db.sql.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("create script text maintenance trigger: %w", err)
 		}
 	}
 	return nil

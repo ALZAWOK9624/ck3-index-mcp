@@ -91,6 +91,34 @@ func TestLexReportsUnterminatedArithmeticExpression(t *testing.T) {
 	}
 }
 
+func TestLexOperatorMatrixWithoutWhitespace(t *testing.T) {
+	tests := []struct {
+		source   string
+		operator string
+	}{
+		{source: "left=right", operator: "="},
+		{source: "left==right", operator: "=="},
+		{source: "left!=right", operator: "!="},
+		{source: "left?=right", operator: "?="},
+		{source: "left<right", operator: "<"},
+		{source: "left<=right", operator: "<="},
+		{source: "left>right", operator: ">"},
+		{source: "left>=right", operator: ">="},
+	}
+	for _, test := range tests {
+		t.Run(test.operator, func(t *testing.T) {
+			tokens := Lex(test.source)
+			if len(tokens) != 4 || tokens[0].Text != "left" || tokens[1].Kind != TokenOperator || tokens[1].Text != test.operator || tokens[2].Text != "right" || tokens[3].Kind != TokenEOF {
+				t.Fatalf("tokens=%+v", tokens)
+			}
+			parsed := Parse(test.source)
+			if len(parsed.Errors) != 0 || len(parsed.Nodes) != 1 || parsed.Nodes[0].Operator != test.operator {
+				t.Fatalf("parsed=%+v", parsed)
+			}
+		})
+	}
+}
+
 func TestParseGUIJominiPrefixes(t *testing.T) {
 	src := `types HUD {
 	type icon_hud_background_container = container {

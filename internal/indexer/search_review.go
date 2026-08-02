@@ -2,10 +2,7 @@ package indexer
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -19,6 +16,11 @@ type SearchOptions struct {
 	Page       int
 	LLMOptions
 }
+
+// Script-text evidence is the only search path that must reopen, hash, and
+// lex source files after the database query. Keep that work bounded even when
+// a caller asks for a deep page over a very broad token.
+const maxScriptTextVerificationCandidates = 32
 
 // LLMInspectSmart is the broad one-id entry point. It deliberately uses the
 // aggregate diagnosis path so objects, localization, resources, references,
@@ -105,6 +107,11 @@ func (db *DB) LLMSearch(ctx context.Context, opts SearchOptions) (LLMResult, err
 	if fetchLimit > 501 {
 		fetchLimit = 501
 	}
+	scriptTextWindowLimited := false
+	if opts.Kind == "script_text" && fetchLimit > maxScriptTextVerificationCandidates {
+		fetchLimit = maxScriptTextVerificationCandidates
+		scriptTextWindowLimited = true
+	}
 	searcherLimit := fetchLimit
 	if opts.publicMode() {
 		// Public policy is applied before cross-kind ranking/capacity. Fetch a
@@ -125,28 +132,63 @@ func (db *DB) LLMSearch(ctx context.Context, opts SearchOptions) (LLMResult, err
 
 	type searcher struct {
 		kind string
-		fn   func() ([]LLMEvidence, error)
+		fn   func(SearchOptions, int) ([]LLMEvidence, error)
 	}
 	searchers := []searcher{
-		{"object", func() ([]LLMEvidence, error) { return db.searchObjects(ctx, query, prefix, opts, searcherLimit) }},
-		{"reference", func() ([]LLMEvidence, error) { return db.searchRefs(ctx, query, prefix, opts, searcherLimit) }},
-		{"localization", func() ([]LLMEvidence, error) {
-			return db.searchLocalizationKeys(ctx, query, prefix, opts, searcherLimit)
+		{"object", func(searchOpts SearchOptions, searchLimit int) ([]LLMEvidence, error) {
+			return db.searchObjects(ctx, query, prefix, searchOpts, searchLimit)
 		}},
-		{"resource", func() ([]LLMEvidence, error) { return db.searchResources(ctx, query, prefix, opts, searcherLimit) }},
-		{"diagnostic", func() ([]LLMEvidence, error) { return db.searchDiagnostics(ctx, query, prefix, opts, searcherLimit) }},
-		{"script_key", func() ([]LLMEvidence, error) { return db.searchScriptKeys(ctx, query, prefix, opts, searcherLimit) }},
-		{"datatype", func() ([]LLMEvidence, error) { return db.searchDatatypes(ctx, query, prefix, opts, searcherLimit) }},
+		{"reference", func(searchOpts SearchOptions, searchLimit int) ([]LLMEvidence, error) {
+			return db.searchRefs(ctx, query, prefix, searchOpts, searchLimit)
+		}},
+		{"localization", func(searchOpts SearchOptions, searchLimit int) ([]LLMEvidence, error) {
+			return db.searchLocalizationKeys(ctx, query, prefix, searchOpts, searchLimit)
+		}},
+		{"resource", func(searchOpts SearchOptions, searchLimit int) ([]LLMEvidence, error) {
+			return db.searchResources(ctx, query, prefix, searchOpts, searchLimit)
+		}},
+		{"diagnostic", func(searchOpts SearchOptions, searchLimit int) ([]LLMEvidence, error) {
+			return db.searchDiagnostics(ctx, query, prefix, searchOpts, searchLimit)
+		}},
+		{"script_key", func(searchOpts SearchOptions, searchLimit int) ([]LLMEvidence, error) {
+			return db.searchScriptKeys(ctx, query, prefix, searchOpts, searchLimit)
+		}},
+		{"datatype", func(searchOpts SearchOptions, searchLimit int) ([]LLMEvidence, error) {
+			return db.searchDatatypes(ctx, query, prefix, searchOpts, searchLimit)
+		}},
 	}
+	projectSource := ""
+	if opts.Source == "" {
+		resolvedProjectSource, projectErr := db.projectSourceName(ctx)
+		if projectErr != nil {
+			return LLMResult{}, projectErr
+		}
+		projectSource = resolvedProjectSource
+		if opts.publicMode() && opts.sourceIsPrivate(projectSource) {
+			projectSource = ""
+		}
+	}
+	projectQuota := projectPrefixQuota(fetchLimit)
+	scriptTextVerificationLimited := false
 	for _, search := range searchers {
 		if opts.Kind != "" && opts.Kind != search.kind {
 			continue
 		}
-		evidence, err := search.fn()
+		evidence, err := search.fn(opts, searcherLimit)
 		if err != nil {
 			return LLMResult{}, err
 		}
 		evidence = filterSearchEvidenceBeforeCapacity(evidence, opts.LLMOptions)
+		if projectSource != "" && projectQuota > 0 {
+			projectOpts := opts
+			projectOpts.Source = projectSource
+			reserved, reserveErr := search.fn(projectOpts, projectQuota+1)
+			if reserveErr != nil {
+				return LLMResult{}, reserveErr
+			}
+			reserved = filterSearchEvidenceBeforeCapacity(reserved, opts.LLMOptions)
+			evidence = appendUniqueEvidence(evidence, reserved, len(evidence)+len(reserved))
+		}
 		result.Counts[search.kind] = len(evidence)
 		result.Evidence = append(result.Evidence, evidence...)
 	}
@@ -167,6 +209,7 @@ func (db *DB) LLMSearch(ctx context.Context, opts SearchOptions) (LLMResult, err
 		return ri < rj
 	})
 	result.Evidence = dedupeSearchEvidence(result.Evidence)
+	result.Evidence = prioritizeProjectPrefixEvidence(result.Evidence, query, projectSource, projectQuota)
 	if len(result.Evidence) > fetchLimit {
 		result.Evidence = result.Evidence[:fetchLimit]
 	}
@@ -185,9 +228,13 @@ func (db *DB) LLMSearch(ctx context.Context, opts SearchOptions) (LLMResult, err
 		result.Evidence = appendUniqueEvidence(result.Evidence, fts, fetchLimit)
 	}
 	if len(result.Evidence) < fetchLimit && (opts.Kind == "" || opts.Kind == "script_text") {
-		scriptText, err := db.searchScriptText(ctx, query, opts, fetchLimit-len(result.Evidence))
+		scriptText, verificationLimited, err := db.searchScriptText(ctx, query, opts, fetchLimit-len(result.Evidence))
 		if err != nil {
 			return LLMResult{}, err
+		}
+		if verificationLimited {
+			result.Truncated = true
+			scriptTextVerificationLimited = true
 		}
 		result.Counts["script_text"] = len(scriptText)
 		result.Evidence = appendUniqueEvidence(result.Evidence, scriptText, fetchLimit)
@@ -207,6 +254,14 @@ func (db *DB) LLMSearch(ctx context.Context, opts SearchOptions) (LLMResult, err
 	}
 	result = result.withPublicFilter(opts.LLMOptions)
 	result = paginateLLMResult(result, page, limit)
+	if scriptTextVerificationLimited {
+		result.Truncated = true
+		result.Guidance = append(result.Guidance, "Script-text verification stopped at 32 source files; narrow source/path or use a more specific token before paging further.")
+	}
+	if scriptTextWindowLimited {
+		result.Truncated = true
+		result.Guidance = append(result.Guidance, "Script-text pagination is bounded to the first 32 verified source candidates; narrow source/path or query text for later matches.")
+	}
 	result.Summary = fmt.Sprintf("Semantic search for %q returned %d evidence item(s) on page %d.", query, len(result.Evidence), page)
 	if len(result.Evidence) > 0 && !opts.publicMode() {
 		best := result.Evidence[0]
@@ -217,6 +272,56 @@ func (db *DB) LLMSearch(ctx context.Context, opts SearchOptions) (LLMResult, err
 		result.NextQueries = []LLMNextQuery{{Tool: "ck3_inspect", ID: id, Reason: "inspect the highest-ranked semantic match"}}
 	}
 	return result, nil
+}
+
+func projectPrefixQuota(limit int) int {
+	if limit <= 0 {
+		return 0
+	}
+	quota := (limit + 3) / 4
+	if quota < 1 {
+		quota = 1
+	}
+	if quota > 4 {
+		quota = 4
+	}
+	return quota
+}
+
+// prioritizeProjectPrefixEvidence keeps exact matches first, then reserves a
+// small bounded share of the prefix window for the configured project layer.
+// The ordinary index-order walk still fills every remaining slot, so broad
+// upstream namespaces remain fast without starving a later-named project id.
+func prioritizeProjectPrefixEvidence(in []LLMEvidence, query, projectSource string, quota int) []LLMEvidence {
+	if len(in) == 0 || projectSource == "" || quota <= 0 {
+		return in
+	}
+	out := make([]LLMEvidence, 0, len(in))
+	seen := map[string]bool{}
+	appendIfNew := func(ev LLMEvidence) {
+		key := searchEvidenceKey(ev)
+		if !seen[key] {
+			out = append(out, ev)
+			seen[key] = true
+		}
+	}
+	for _, ev := range in {
+		if ev.Name == query {
+			appendIfNew(ev)
+		}
+	}
+	reserved := 0
+	for _, ev := range in {
+		if ev.Name == query || !strings.EqualFold(ev.Source, projectSource) || reserved >= quota {
+			continue
+		}
+		appendIfNew(ev)
+		reserved++
+	}
+	for _, ev := range in {
+		appendIfNew(ev)
+	}
+	return out
 }
 
 func expandedSearchCandidateLimit(limit int) int {
@@ -249,10 +354,10 @@ func dedupeSearchEvidence(in []LLMEvidence) []LLMEvidence {
 func appendUniqueEvidence(dst, src []LLMEvidence, limit int) []LLMEvidence {
 	seen := map[string]bool{}
 	for _, ev := range dst {
-		seen[ev.Kind+"\x00"+ev.Name+"\x00"+ev.Path] = true
+		seen[searchEvidenceKey(ev)] = true
 	}
 	for _, ev := range src {
-		k := ev.Kind + "\x00" + ev.Name + "\x00" + ev.Path
+		k := searchEvidenceKey(ev)
 		if !seen[k] {
 			dst = append(dst, ev)
 			seen[k] = true
@@ -262,6 +367,10 @@ func appendUniqueEvidence(dst, src []LLMEvidence, limit int) []LLMEvidence {
 		}
 	}
 	return dst
+}
+
+func searchEvidenceKey(ev LLMEvidence) string {
+	return ev.Kind + "\x00" + ev.Name + "\x00" + ev.Path
 }
 
 func (db *DB) searchDatatypes(ctx context.Context, query, prefix string, opts SearchOptions, limit int) ([]LLMEvidence, error) {
@@ -318,49 +427,55 @@ func (db *DB) searchFTS(ctx context.Context, query string, opts SearchOptions, l
 // only after structured ids/refs/fields and the existing semantic FTS rows.
 // Public calls filter source policy in SQL and again before touching files, so
 // a private candidate can never trigger a source read or snippet generation.
-func (db *DB) searchScriptText(ctx context.Context, query string, opts SearchOptions, limit int) ([]LLMEvidence, error) {
+func (db *DB) searchScriptText(ctx context.Context, query string, opts SearchOptions, limit int) ([]LLMEvidence, bool, error) {
 	if limit <= 0 || len([]rune(query)) < 2 {
-		return nil, nil
+		return nil, false, nil
 	}
 	// Restrict MATCH to the compact AST document. The row's kind, source, and
 	// relative path are indexed for the shared table's legacy consumers, but a
 	// hit in that metadata cannot be resolved to a script-token location.
-	match := `text : "` + strings.ReplaceAll(query, `"`, `""`) + `"`
-	queryText := `SELECT s.source,s.path,s.file_id,f.id,f.source_name,f.rel_path,f.path,f.file_size,f.sha256,bm25(search_fts)
-		FROM search_fts s
-		JOIN files f ON CAST(s.file_id AS INTEGER)=f.id
-			AND s.source=f.source_name AND s.path=f.rel_path`
+	match := `search_text : "` + strings.ReplaceAll(query, `"`, `""`) + `"`
+	queryText := `SELECT f.source_name,f.rel_path,f.id,bm25(script_text_fts)
+		FROM script_text_fts s
+		JOIN files f ON s.rowid=f.id`
 	args := []any{match, opts.Source, opts.Source, opts.PathPrefix, escapeLike(opts.PathPrefix) + "%"}
 	if opts.publicMode() {
 		queryText += ` JOIN source_layers sl ON lower(sl.name)=lower(f.source_name) AND sl.private=0`
 	}
-	queryText += ` WHERE search_fts MATCH ? AND s.kind='script_text' AND f.overridden=0
+	queryText += ` WHERE script_text_fts MATCH ? AND f.overridden=0 AND f.kind='script'
 		AND (?='' OR f.source_name=?) AND (?='' OR f.rel_path LIKE ? ESCAPE '\')
-		ORDER BY bm25(search_fts),f.source_rank,f.rel_path LIMIT ?`
-	args = append(args, expandedSearchCandidateLimit(limit))
+		ORDER BY bm25(script_text_fts),f.source_rank,f.rel_path LIMIT ?`
+	candidateLimit := expandedSearchCandidateLimit(limit)
+	if candidateLimit > maxScriptTextVerificationCandidates+1 {
+		candidateLimit = maxScriptTextVerificationCandidates + 1
+	}
+	args = append(args, candidateLimit)
 	rows, err := db.sql.QueryContext(ctx, queryText, args...)
 	if err != nil {
-		return nil, fmt.Errorf("script-text FTS5 query failed: %w", err)
+		return nil, false, fmt.Errorf("script-text FTS5 query failed: %w", err)
 	}
 	defer rows.Close()
 	var out []LLMEvidence
+	verifiedCandidates := 0
 	for rows.Next() {
-		var ftsSource, ftsPath, ftsFileID string
+		if verifiedCandidates >= maxScriptTextVerificationCandidates {
+			return out, true, nil
+		}
+		verifiedCandidates++
+		var ftsSource, ftsPath string
 		var fileID int64
-		var source, relPath, absolutePath, fileSHA string
-		var fileSize int64
 		var score float64
-		if err := rows.Scan(&ftsSource, &ftsPath, &ftsFileID, &fileID, &source, &relPath, &absolutePath, &fileSize, &fileSHA, &score); err != nil {
-			return nil, err
+		if err := rows.Scan(&ftsSource, &ftsPath, &fileID, &score); err != nil {
+			return nil, false, err
 		}
-		if ftsSource != source || ftsPath != relPath || ftsFileID != fmt.Sprint(fileID) {
+		data, snapshot, err := db.ReadVerifiedIndexedFile(ctx, fileID)
+		if err != nil {
+			return nil, false, err
+		}
+		if ftsSource != snapshot.Source || ftsPath != snapshot.RelPath {
 			continue
 		}
-		if opts.publicMode() && opts.sourceIsPrivate(source) {
-			continue
-		}
-		data, ok := readVerifiedIndexedScript(absolutePath, relPath, fileSize, fileSHA)
-		if !ok {
+		if opts.publicMode() && opts.sourceIsPrivate(snapshot.Source) {
 			continue
 		}
 		location, ok := locateScriptText(data, query)
@@ -370,8 +485,8 @@ func (db *DB) searchScriptText(ctx context.Context, query string, opts SearchOpt
 		evidence := LLMEvidence{
 			Kind:    "script_text",
 			Name:    query,
-			Source:  source,
-			Path:    evidencePath(relPath),
+			Source:  snapshot.Source,
+			Path:    evidencePath(snapshot.RelPath),
 			Detail:  "verified indexed full-script token match",
 			Line:    location.Line,
 			Column:  location.Column,
@@ -382,33 +497,7 @@ func (db *DB) searchScriptText(ctx context.Context, query string, opts SearchOpt
 			break
 		}
 	}
-	return out, rows.Err()
-}
-
-func readVerifiedIndexedScript(indexedPath, relPath string, indexedSize int64, indexedSHA string) ([]byte, bool) {
-	root, err := indexedSourceRoot(indexedPath, relPath)
-	if err != nil {
-		return nil, false
-	}
-	if err := validateSourceRoots([]Source{{Name: "indexed", Path: root}}); err != nil {
-		return nil, false
-	}
-	safePath, info, err := sourceRegularFileAt(root, relPath)
-	if err != nil || filepath.Clean(safePath) != filepath.Clean(indexedPath) {
-		return nil, false
-	}
-	if indexedSize >= 0 && info.Size() != indexedSize {
-		return nil, false
-	}
-	data, err := os.ReadFile(safePath)
-	if err != nil {
-		return nil, false
-	}
-	digest := sha256.Sum256(data)
-	if indexedSHA == "" || !strings.EqualFold(hex.EncodeToString(digest[:]), indexedSHA) {
-		return nil, false
-	}
-	return data, true
+	return out, false, rows.Err()
 }
 
 func indexedSourceRoot(indexedPath, relPath string) (string, error) {

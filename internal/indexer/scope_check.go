@@ -43,12 +43,16 @@ type ScopeLookup struct {
 // A configured engine log is authoritative; the generated CK3 1.19 snapshot
 // is the offline fallback for rule bundles without engine logs.
 func LookupScope(key string) *ScopeLookup {
+	return lookupScopeWithRules(currentEngineRuleSet(), key)
+}
+
+func lookupScopeWithRules(rules *EngineRuleSet, key string) *ScopeLookup {
 	kl := strings.ToLower(key)
 	var ts, es EngineScope
 	var isTrig, isEff bool
-	if engineRulesConfigured() {
-		ts, isTrig = engineRuleScope(kl, "trigger")
-		es, isEff = engineRuleScope(kl, "effect")
+	if engineRulesConfiguredWithRules(rules) {
+		ts, isTrig = engineRuleScopeWithRules(rules, kl, "trigger")
+		es, isEff = engineRuleScopeWithRules(rules, kl, "effect")
 	} else {
 		ts, isTrig = engineTriggerScopes[kl]
 		es, isEff = engineEffectScopes[kl]
@@ -114,9 +118,13 @@ func IsDefine(key string) bool {
 
 // IsOnAction returns true if the key is a known CK3 on_action name.
 func IsOnAction(key string) bool {
+	return isOnActionWithRules(currentEngineRuleSet(), key)
+}
+
+func isOnActionWithRules(rules *EngineRuleSet, key string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(key))
 	_, ok := engineOnActions[normalized]
-	return ok || engineOnActionKnown(normalized)
+	return ok || engineOnActionKnownWithRules(rules, normalized)
 }
 
 // LookupExample returns description and usage example for a trigger/effect key
@@ -223,8 +231,12 @@ func matchesGeneratedModifierTemplate(pattern, key string) bool {
 // An empty UseAreas means that current vanilla format sources prove the name,
 // but modifiers.log did not publish an area contract for it.
 func LookupModifier(key string) ModifierLookup {
+	return lookupModifierWithRules(currentEngineRuleSet(), key)
+}
+
+func lookupModifierWithRules(rules *EngineRuleSet, key string) ModifierLookup {
 	key = strings.TrimSpace(key)
-	if info, ok := engineModifier(key); ok {
+	if info, ok := engineModifierWithRules(rules, key); ok {
 		return ModifierLookup{Found: true, UseAreas: info.UseAreas, Source: "engine_log"}
 	}
 	if info, ok := engineModifiers[key]; ok {

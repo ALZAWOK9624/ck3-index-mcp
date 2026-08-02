@@ -20,6 +20,10 @@ type scopeWalkState struct {
 // iterators and scope-to-scope transitions. Unknown roots fail closed: they do
 // not produce a hard scope_mismatch.
 func checkScopeTracker(nodes []*script.Node, relPath string) []ctxDiag {
+	return checkScopeTrackerWithRules(nodes, relPath, currentEngineRuleSet())
+}
+
+func checkScopeTrackerWithRules(nodes []*script.Node, relPath string, rules *EngineRuleSet) []ctxDiag {
 	if isEventPath(relPath) {
 		var out []ctxDiag
 		for _, obj := range nodes {
@@ -30,7 +34,7 @@ func checkScopeTracker(nodes []*script.Node, relPath string) []ctxDiag {
 			if root.IsZero() || root == ScopeAllScopes || root == ScopeValue {
 				continue
 			}
-			out = append(out, checkScopeNodes(obj.Children, relPath, obj.Key, root)...)
+			out = append(out, checkScopeNodesWithRules(obj.Children, relPath, obj.Key, root, rules)...)
 		}
 		return dedupeScopeDiagnostics(out)
 	}
@@ -44,12 +48,16 @@ func checkScopeTracker(nodes []*script.Node, relPath string) []ctxDiag {
 		if obj.Kind != "block" || obj.Key == "" {
 			continue
 		}
-		out = append(out, checkScopeNodes(obj.Children, relPath, obj.Key, root)...)
+		out = append(out, checkScopeNodesWithRules(obj.Children, relPath, obj.Key, root, rules)...)
 	}
 	return dedupeScopeDiagnostics(out)
 }
 
 func checkScopeNodes(nodes []*script.Node, relPath, objectName string, root EngineScope) []ctxDiag {
+	return checkScopeNodesWithRules(nodes, relPath, objectName, root, currentEngineRuleSet())
+}
+
+func checkScopeNodesWithRules(nodes []*script.Node, relPath, objectName string, root EngineScope, rules *EngineRuleSet) []ctxDiag {
 	namedScopes := map[string]EngineScope{}
 	initial := scopeWalkState{
 		root:    root,
@@ -68,10 +76,10 @@ func checkScopeNodes(nodes []*script.Node, relPath, objectName string, root Engi
 			}
 
 			if (state.context == "trigger" || state.context == "effect") && !state.current.IsZero() {
-				need, found := requiredScopeForContext(key, state.context)
+				need, found := requiredScopeForContextWithRules(key, state.context, rules)
 				if found && isConcreteScope(need) && !state.current.Intersects(need) && !isKnownScopeArgumentCollision(key, state.current, state.trace) {
 					d := scopeMismatchDiagnostic(relPath, objectName, n, key, need, state.current, state.trace)
-					if !engineScopeConfirms(key, state.context, need) {
+					if !engineScopeConfirmsWithRules(rules, key, state.context, need) {
 						d.code = "scope_uncertain"
 						d.severity = "info"
 						d.msg += "; generated 1.19 snapshot rule was not confirmed by current engine logs"
@@ -92,7 +100,7 @@ func checkScopeNodes(nodes []*script.Node, relPath, objectName string, root Engi
 
 			scopeBlock := false
 			if n.Kind == "block" {
-				if target, source, ok := resolveChildScope(key, state, namedScopes, relPath); (state.context != "" || isScopeContextEntry(relPath, key)) && ok {
+				if target, source, ok := resolveChildScopeWithRules(key, state, namedScopes, relPath, rules); (state.context != "" || isScopeContextEntry(relPath, key)) && ok {
 					scopeBlock = true
 					child.previous = state.current
 					child.current = target
@@ -103,7 +111,7 @@ func checkScopeNodes(nodes []*script.Node, relPath, objectName string, root Engi
 					d.code = "scope_uncertain"
 					d.severity = "info"
 					out = append(out, d)
-				} else if inScope, ok := engineRuleScope(key, "target"); state.context != "" && ok && isConcreteScope(inScope) && !state.current.IsZero() && !state.current.Intersects(inScope) {
+				} else if inScope, ok := engineRuleScopeWithRules(rules, key, "target"); state.context != "" && ok && isConcreteScope(inScope) && !state.current.IsZero() && !state.current.Intersects(inScope) {
 					d := scopeContainerMismatchDiagnostic(relPath, objectName, n, "engine target", key, inScope, state.current, state.trace)
 					d.code = "scope_uncertain"
 					d.severity = "info"
@@ -129,6 +137,10 @@ func checkScopeNodes(nodes []*script.Node, relPath, objectName string, root Engi
 }
 
 func requiredScopeForContext(key, contextKind string) (EngineScope, bool) {
+	return requiredScopeForContextWithRules(key, contextKind, currentEngineRuleSet())
+}
+
+func requiredScopeForContextWithRules(key, contextKind string, rules *EngineRuleSet) (EngineScope, bool) {
 	if contextKind == "trigger" {
 		if scope, ok := engineTriggerScopes[key]; ok {
 			return scope, true
@@ -139,14 +151,18 @@ func requiredScopeForContext(key, contextKind string) (EngineScope, bool) {
 	// The engine log is authoritative for membership and documented input
 	// scopes, but it does not describe iterator/context transitions. Use it to
 	// cover newly introduced keys only after the richer static table misses.
-	return engineRuleScope(key, contextKind)
+	return engineRuleScopeWithRules(rules, key, contextKind)
 }
 
 func resolveChildScope(key string, state scopeWalkState, named map[string]EngineScope, relPath string) (EngineScope, string, bool) {
+	return resolveChildScopeWithRules(key, state, named, relPath, currentEngineRuleSet())
+}
+
+func resolveChildScopeWithRules(key string, state scopeWalkState, named map[string]EngineScope, relPath string, rules *EngineRuleSet) (EngineScope, string, bool) {
 	if strings.Contains(key, ".") {
 		chainState := state
 		for _, segment := range strings.Split(key, ".") {
-			target, _, ok := resolveChildScope(segment, chainState, named, relPath)
+			target, _, ok := resolveChildScopeWithRules(segment, chainState, named, relPath, rules)
 			if !ok {
 				return EngineScope{}, "chain " + key, true
 			}
@@ -177,7 +193,7 @@ func resolveChildScope(key string, state scopeWalkState, named map[string]Engine
 		// that as a child scope would turn the enclosing script into value scope.
 		return EngineScope{}, "", false
 	}
-	if scope, source, ok := typedTargetScope(key, state.current); ok {
+	if scope, source, ok := typedTargetScopeWithRules(key, state.current, rules); ok {
 		return scope, source, true
 	}
 	if scope, ok := explicitTypedScope(key); ok {
@@ -189,7 +205,7 @@ func resolveChildScope(key string, state scopeWalkState, named map[string]Engine
 	if scope, ok := iteratorScopeOut[key]; ok {
 		return scope, "iterator " + key, true
 	}
-	if scope, ok := engineTargetOutputScope(key); ok {
+	if scope, ok := engineTargetOutputScopeWithRules(rules, key); ok {
 		return scope, "engine target " + key, true
 	}
 	if scope, ok := engineScopeTransitionsOut[key]; ok {
@@ -207,6 +223,10 @@ func resolveChildScope(key string, state scopeWalkState, named map[string]Engine
 // documented target transition whenever the current scope satisfies its input
 // contract, then fall back to an explicit typed scope such as title:<key>.
 func typedTargetScope(key string, current EngineScope) (EngineScope, string, bool) {
+	return typedTargetScopeWithRules(key, current, currentEngineRuleSet())
+}
+
+func typedTargetScopeWithRules(key string, current EngineScope, rules *EngineRuleSet) (EngineScope, string, bool) {
 	parts := strings.SplitN(key, ":", 2)
 	if len(parts) != 2 {
 		return EngineScope{}, "", false
@@ -215,7 +235,7 @@ func typedTargetScope(key string, current EngineScope) (EngineScope, string, boo
 	if scope, ok := engineScopeTransitionsOut[target]; ok && targetInputAllows(engineScopeTransitionsIn, target, current) {
 		return scope, "transition " + target, true
 	}
-	if scope, ok := engineTargetOutputScope(target); ok && targetInputAllowsEngine(target, current) {
+	if scope, ok := engineTargetOutputScopeWithRules(rules, target); ok && targetInputAllowsEngineWithRules(target, current, rules) {
 		return scope, "engine target " + target, true
 	}
 	return EngineScope{}, "", false
@@ -227,7 +247,11 @@ func targetInputAllows(inputs map[string]EngineScope, target string, current Eng
 }
 
 func targetInputAllowsEngine(target string, current EngineScope) bool {
-	input, documented := engineRuleScope(target, "target")
+	return targetInputAllowsEngineWithRules(target, current, currentEngineRuleSet())
+}
+
+func targetInputAllowsEngineWithRules(target string, current EngineScope, rules *EngineRuleSet) bool {
+	input, documented := engineRuleScopeWithRules(rules, target, "target")
 	return !documented || current.IsZero() || !isConcreteScope(input) || current.Intersects(input)
 }
 
@@ -374,7 +398,7 @@ func checkMenAtArmsCanRecruitScope(nodes []*script.Node, relPath string) []ctxDi
 }
 
 func checkTriggerBlockScope(nodes []*script.Node, relPath, objectName string, rootScope EngineScope) []ctxDiag {
-	return checkScopeNodes(nodes, relPath, objectName, rootScope)
+	return checkScopeNodesWithRules(nodes, relPath, objectName, rootScope, currentEngineRuleSet())
 }
 
 func menAtArmsCanRecruitScopeMessage(objectName, key string, needScope, currentScope EngineScope) string {

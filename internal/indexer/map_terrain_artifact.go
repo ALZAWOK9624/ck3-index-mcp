@@ -2,6 +2,7 @@ package indexer
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -34,6 +35,8 @@ type MapTerrainArtifactFile struct {
 type MapTerrainArtifactManifest struct {
 	SchemaVersion     int                      `json:"schema_version"`
 	ArtifactID        string                   `json:"artifact_id"`
+	RequestKey        string                   `json:"request_key,omitempty"`
+	RequestSHA256     string                   `json:"request_sha256,omitempty"`
 	ParentArtifactID  string                   `json:"parent_artifact_id,omitempty"`
 	CreatedAt         string                   `json:"created_at"`
 	Operation         string                   `json:"operation"`
@@ -47,6 +50,7 @@ type MapTerrainArtifactManifest struct {
 	HydrologyStatus   string                   `json:"hydrology_status"`
 	RequiresCK3Repack bool                     `json:"requires_ck3_repack"`
 	Files             []MapTerrainArtifactFile `json:"files"`
+	Result            MapTerrainEditResult     `json:"result,omitempty"`
 }
 
 type terrainEditInput struct {
@@ -60,7 +64,11 @@ type terrainEditInput struct {
 // PreviewMapTerrainEdit validates and executes an edit entirely in memory. It
 // never creates an artifact directory.
 func PreviewMapTerrainEdit(cfg Config, spec MapTerrainEditSpec) (MapTerrainEditResult, error) {
-	prepared, err := prepareMapTerrainEdit(cfg, normalizeMapTerrainEditSpec(spec))
+	return PreviewMapTerrainEditContext(context.Background(), cfg, spec)
+}
+
+func PreviewMapTerrainEditContext(ctx context.Context, cfg Config, spec MapTerrainEditSpec) (MapTerrainEditResult, error) {
+	prepared, err := prepareMapTerrainEditContext(ctx, cfg, normalizeMapTerrainEditSpec(spec))
 	if err != nil {
 		return MapTerrainEditResult{}, err
 	}
@@ -72,6 +80,25 @@ func PreviewMapTerrainEdit(cfg Config, spec MapTerrainEditSpec) (MapTerrainEditR
 // CreateMapTerrainEditArtifact publishes a fresh immutable artifact under the
 // configured server-controlled root. It never accepts a caller path.
 func CreateMapTerrainEditArtifact(cfg Config, spec MapTerrainEditSpec) (MapTerrainEditResult, error) {
+	return CreateMapTerrainEditArtifactContext(context.Background(), cfg, spec)
+}
+
+func CreateMapTerrainEditArtifactContext(ctx context.Context, cfg Config, spec MapTerrainEditSpec) (MapTerrainEditResult, error) {
+	return CreateMapTerrainEditArtifactWithRequestKeyContext(ctx, cfg, spec, "")
+}
+
+// CreateMapTerrainEditArtifactWithRequestKeyContext makes publication
+// idempotent when requestKey is present. The same key and normalized request
+// return the already committed artifact; reusing a key for different input is
+// rejected instead of silently creating a second artifact.
+func CreateMapTerrainEditArtifactWithRequestKeyContext(ctx context.Context, cfg Config, spec MapTerrainEditSpec, requestKey string) (MapTerrainEditResult, error) {
+	if err := ctx.Err(); err != nil {
+		return MapTerrainEditResult{}, err
+	}
+	requestKey, err := NormalizeArtifactRequestKey(requestKey)
+	if err != nil {
+		return MapTerrainEditResult{}, terrainInputErrorf("%s", err)
+	}
 	if strings.TrimSpace(cfg.ArtifactRoot) == "" {
 		return MapTerrainEditResult{}, terrainInputErrorf("artifact_root is not configured")
 	}
@@ -89,13 +116,36 @@ func CreateMapTerrainEditArtifact(cfg Config, spec MapTerrainEditSpec) (MapTerra
 		return MapTerrainEditResult{}, terrainInputErrorf("artifact root is unsafe: %v", err)
 	}
 	normalized := normalizeMapTerrainEditSpec(spec)
-	prepared, err := prepareMapTerrainEdit(cfg, normalized)
+	specJSON, err := json.Marshal(normalized)
 	if err != nil {
 		return MapTerrainEditResult{}, err
 	}
-	id, err := newTerrainArtifactID()
+	requestSHA, err := artifactRequestSHA256(normalized)
 	if err != nil {
 		return MapTerrainEditResult{}, err
+	}
+	id := ""
+	if requestKey != "" {
+		id = idempotentArtifactID("map-edit-", "map_terrain_edit", requestKey)
+		final := filepath.Join(base, id)
+		if _, statErr := os.Lstat(final); statErr == nil {
+			return loadTerrainArtifactReplay(ctx, cfg, id, requestKey, requestSHA)
+		} else if !os.IsNotExist(statErr) {
+			return MapTerrainEditResult{}, statErr
+		}
+	}
+	prepared, err := prepareMapTerrainEditContext(ctx, cfg, normalized)
+	if err != nil {
+		return MapTerrainEditResult{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return MapTerrainEditResult{}, err
+	}
+	if id == "" {
+		id, err = newTerrainArtifactID()
+		if err != nil {
+			return MapTerrainEditResult{}, err
+		}
 	}
 	temp, err := os.MkdirTemp(base, ".building-"+id+"-")
 	if err != nil {
@@ -107,22 +157,29 @@ func CreateMapTerrainEditArtifact(cfg Config, spec MapTerrainEditSpec) (MapTerra
 			_ = os.RemoveAll(temp)
 		}
 	}()
-	result, err := prepared.write(temp)
+	result, err := prepared.writeContext(ctx, temp)
 	if err != nil {
 		return MapTerrainEditResult{}, err
 	}
-	specJSON, err := json.Marshal(normalized)
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return MapTerrainEditResult{}, err
 	}
+	storedResult := result
+	storedResult.ArtifactID = id
+	storedResult.ManifestRel = "manifest.json"
+	storedResult.PreviewPNG = nil
+	for index := range storedResult.Outputs {
+		storedResult.Outputs[index].Path = ""
+	}
+	storedResult.Guidance = append([]string{"A new immutable artifact was created under the controlled map-edits store."}, storedResult.Guidance...)
 	manifest := MapTerrainArtifactManifest{
-		SchemaVersion: terrainArtifactSchemaVersion, ArtifactID: id,
+		SchemaVersion: terrainArtifactSchemaVersion, ArtifactID: id, RequestKey: requestKey, RequestSHA256: requestSHA,
 		ParentArtifactID: result.ParentArtifactID, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		Operation: result.Operation, SourceName: result.SourceName,
 		SourceFingerprint: result.SourceFingerprint, NormalizedSpec: specJSON,
 		Width: result.Width, Height: result.Height, BitDepth: result.BitDepth,
 		ModifiedBounds: result.ModifiedBounds, HydrologyStatus: result.HydrologyStatus,
-		RequiresCK3Repack: true,
+		RequiresCK3Repack: true, Result: storedResult,
 	}
 	for _, output := range result.Outputs {
 		bitDepth := 0
@@ -149,6 +206,10 @@ func CreateMapTerrainEditArtifact(cfg Config, spec MapTerrainEditSpec) (MapTerra
 		file.Close()
 		return MapTerrainEditResult{}, err
 	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return MapTerrainEditResult{}, err
+	}
 	if err := file.Close(); err != nil {
 		return MapTerrainEditResult{}, err
 	}
@@ -158,16 +219,51 @@ func CreateMapTerrainEditArtifact(cfg Config, spec MapTerrainEditSpec) (MapTerra
 	} else if !os.IsNotExist(err) {
 		return MapTerrainEditResult{}, err
 	}
+	// This is the commit boundary. Cancellation before the atomic directory
+	// rename leaves only the disposable temporary build; cancellation after it
+	// must be reported as a committed artifact by the MCP layer.
+	if err := ctx.Err(); err != nil {
+		return MapTerrainEditResult{}, err
+	}
 	if err := os.Rename(temp, final); err != nil {
+		if requestKey != "" {
+			if replay, replayErr := loadTerrainArtifactReplay(context.Background(), cfg, id, requestKey, requestSHA); replayErr == nil {
+				return replay, nil
+			}
+		}
 		return MapTerrainEditResult{}, err
 	}
 	published = true
-	result.ArtifactID = id
-	result.ManifestRel = "manifest.json"
-	for index := range result.Outputs {
-		result.Outputs[index].Path = ""
+	return storedResult, nil
+}
+
+func loadTerrainArtifactReplay(ctx context.Context, cfg Config, id, requestKey, requestSHA string) (MapTerrainEditResult, error) {
+	root := filepath.Join(cfg.ArtifactRoot, "map-edits")
+	manifestPath := filepath.Join(root, id, "manifest.json")
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return MapTerrainEditResult{}, err
 	}
-	result.Guidance = append([]string{"A new immutable artifact was created under the controlled map-edits store."}, result.Guidance...)
+	var stored MapTerrainArtifactManifest
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return MapTerrainEditResult{}, terrainInputErrorf("request_key %q points to a damaged terrain artifact: %v", requestKey, err)
+	}
+	if stored.ArtifactID != id || stored.RequestKey != requestKey || stored.RequestSHA256 != requestSHA {
+		return MapTerrainEditResult{}, terrainInputErrorf("request_key %q is already bound to a different terrain request", requestKey)
+	}
+	verified, _, err := verifyTerrainArtifact(cfg, id, stored.SourceFingerprint, map[string]bool{})
+	if err != nil {
+		return MapTerrainEditResult{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return MapTerrainEditResult{}, err
+	}
+	result := verified.Result
+	if result.ArtifactID != id || result.ManifestRel != "manifest.json" {
+		return MapTerrainEditResult{}, terrainInputErrorf("request_key %q points to an artifact without a recoverable result", requestKey)
+	}
+	result.Replayed = true
+	result.Guidance = append([]string{"Recovered the already committed artifact for request_key; no duplicate files were created."}, result.Guidance...)
 	return result, nil
 }
 
@@ -467,6 +563,14 @@ func newTerrainArtifactID() (string, error) {
 }
 
 func terrainPreviewImages(before, after *terrainHeightRaster, region image.Rectangle) (beforePNG, afterPNG, diffPNG []byte) {
+	beforePNG, afterPNG, diffPNG, _ = terrainPreviewImagesContext(context.Background(), before, after, region)
+	return beforePNG, afterPNG, diffPNG
+}
+
+func terrainPreviewImagesContext(ctx context.Context, before, after *terrainHeightRaster, region image.Rectangle) (beforePNG, afterPNG, diffPNG []byte, err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, nil, err
+	}
 	const maxSide = 512
 	scale := 1.0
 	if region.Dx() > maxSide || region.Dy() > maxSide {
@@ -497,6 +601,11 @@ func terrainPreviewImages(before, after *terrainHeightRaster, region image.Recta
 	const minDiffSpan = 1.0 / 255.0
 	peak := minDiffSpan
 	for y := 0; y < height; y++ {
+		if y&31 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, nil, err
+			}
+		}
 		for x := 0; x < width; x++ {
 			if d := mathAbs(sample(after, x, y) - sample(before, x, y)); d > peak {
 				peak = d
@@ -504,6 +613,11 @@ func terrainPreviewImages(before, after *terrainHeightRaster, region image.Recta
 		}
 	}
 	for y := 0; y < height; y++ {
+		if y&31 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, nil, err
+			}
+		}
 		for x := 0; x < width; x++ {
 			beforeShade.SetGray(x, y, color.Gray{Y: shade(before, x, y)})
 			afterShade.SetGray(x, y, color.Gray{Y: shade(after, x, y)})
@@ -519,16 +633,33 @@ func terrainPreviewImages(before, after *terrainHeightRaster, region image.Recta
 			}
 		}
 	}
-	return encodePNGImage(beforeShade), encodePNGImage(afterShade), encodePNGImage(diff)
+	beforePNG, err = encodePNGImageContext(ctx, beforeShade)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	afterPNG, err = encodePNGImageContext(ctx, afterShade)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	diffPNG, err = encodePNGImageContext(ctx, diff)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return beforePNG, afterPNG, diffPNG, nil
 }
 
 func encodePNGImage(img image.Image) []byte {
+	data, _ := encodePNGImageContext(context.Background(), img)
+	return data
+}
+
+func encodePNGImageContext(ctx context.Context, img image.Image) ([]byte, error) {
 	var out bytes.Buffer
 	encoder := png.Encoder{CompressionLevel: png.BestSpeed}
-	if err := encoder.Encode(&out, img); err != nil {
-		return nil
+	if err := encoder.Encode(contextCheckingWriter{ctx: ctx, writer: &out}, img); err != nil {
+		return nil, err
 	}
-	return out.Bytes()
+	return out.Bytes(), ctx.Err()
 }
 
 func decodePNGBytes(data []byte) (image.Image, error) {

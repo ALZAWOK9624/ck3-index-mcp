@@ -268,3 +268,96 @@ func TestSanitizeTitleKey(t *testing.T) {
 		}
 	}
 }
+
+func TestPlanSplitRetainsExplicitSeedBeforeLargestPart(t *testing.T) {
+	result, context := planFixture(t)
+	retain := 1
+	result.RetainSeed = &retain
+	// Make the other part obviously larger so this proves retain_seed wins over
+	// the old size heuristic.
+	result.Parts[0].PixelCount = result.Parts[1].PixelCount + 500
+	plan, err := PlanProvinceSplit(result, context, MapSplitEmit{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.RetainedPart != 1 {
+		t.Fatalf("retained part=%d want explicit seed 1", plan.RetainedPart)
+	}
+}
+
+func TestPlanSplitPrefersHoldingLocator(t *testing.T) {
+	result, context := planFixture(t)
+	context.HasRetainPoint = true
+	context.RetainX = result.Parts[1].Seed.X
+	context.RetainY = result.Parts[1].Seed.Y
+	plan, err := PlanProvinceSplit(result, context, MapSplitEmit{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.RetainedPart != 1 {
+		t.Fatalf("retained part=%d want holding-locator part 1", plan.RetainedPart)
+	}
+}
+
+func TestPlanSplitMakesChineseBaronyKeysUnique(t *testing.T) {
+	result, context := planFixture(t)
+	result.Parts = append(result.Parts, result.Parts[1])
+	result.Parts[1].Seed.Name = "东部平原"
+	result.Parts[2].Index = 2
+	result.Parts[2].Seed.Name = "西部平原"
+	result.Parts[2].PixelCount = 10
+	plan, err := PlanProvinceSplit(result, context, MapSplitEmit{LandedTitles: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, province := range plan.NewProvinces {
+		if province.Barony == "" || seen[province.Barony] {
+			t.Fatalf("non-unique Chinese-derived barony key: %+v", plan.NewProvinces)
+		}
+		seen[province.Barony] = true
+	}
+}
+
+func TestPlanSplitAvoidsExistingBaronyIDs(t *testing.T) {
+	result, context := planFixture(t)
+	context.ExistingTitleIDs = map[string]bool{
+		"b_new_ford":     true,
+		"b_new_ford_103": true,
+	}
+	plan, err := PlanProvinceSplit(result, context, MapSplitEmit{LandedTitles: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.NewProvinces) != 1 || plan.NewProvinces[0].Barony != "b_new_ford_103_2" {
+		t.Fatalf("existing title ids were not avoided: %+v", plan.NewProvinces)
+	}
+}
+
+func TestPlanSplitRejectsDefinitionDelimiterInjection(t *testing.T) {
+	result, context := planFixture(t)
+	result.Parts[1].Seed.Name = "bad;name\n42;1;2;3;injected"
+	plan, err := PlanProvinceSplit(result, context, MapSplitEmit{Definition: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Blockers) == 0 || !strings.Contains(strings.Join(plan.Blockers, " "), "delimiter") {
+		t.Fatalf("unsafe definition name was not blocked: %+v", plan)
+	}
+	for _, file := range plan.Files {
+		if strings.Contains(file.Content, "injected") {
+			t.Fatalf("unsafe name reached emitted definition content: %q", file.Content)
+		}
+	}
+}
+
+func TestPlanSplitReportsUnemittedDownstreamDependencies(t *testing.T) {
+	result, context := planFixture(t)
+	plan, err := PlanProvinceSplit(result, context, MapSplitEmit{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.MissingDependencies) != 3 {
+		t.Fatalf("missing dependencies=%v", plan.MissingDependencies)
+	}
+}

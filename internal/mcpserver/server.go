@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync/atomic"
 
 	"ck3-index/internal/buildinfo"
 	"ck3-index/internal/indexer"
@@ -37,8 +38,18 @@ type mcpToolTask struct {
 }
 
 type mcpToolTaskResult struct {
-	idKey    string
-	response rpcResponse
+	idKey     string
+	response  rpcResponse
+	committed bool
+}
+
+type mcpCommitState struct{ committed bool }
+type mcpCommitStateKey struct{}
+
+func markMCPCommitted(ctx context.Context) {
+	if state, ok := ctx.Value(mcpCommitStateKey{}).(*mcpCommitState); ok {
+		state.committed = true
+	}
 }
 
 type mcpSession struct {
@@ -57,16 +68,53 @@ func (s mcpSession) readyForTools() bool {
 type mcpTaskClass string
 
 const (
-	mcpTaskRead  mcpTaskClass = "read"
-	mcpTaskHeavy mcpTaskClass = "heavy"
+	mcpTaskRead   mcpTaskClass = "read"
+	mcpTaskHeavy  mcpTaskClass = "heavy"
+	mcpTaskRaster mcpTaskClass = "raster"
 
-	maxMCPTasks      = 12
-	maxMCPHeavyTasks = 2
+	maxMCPTasks       = 12
+	maxMCPHeavyTasks  = 2
+	maxMCPRasterTasks = 1
 )
 
 type mcpTaskLimiter struct {
-	active int
-	heavy  int
+	active       int
+	heavy        int
+	raster       int
+	trackProcess bool
+}
+
+var processMCPTaskUsage struct {
+	active atomic.Int64
+	heavy  atomic.Int64
+	raster atomic.Int64
+}
+
+type mcpTaskUsageSnapshot struct {
+	Active            int
+	Heavy             int
+	Raster            int
+	EstimatedMemoryMB int
+}
+
+const (
+	estimatedReadTaskMemoryMB   = 8
+	estimatedHeavyTaskMemoryMB  = 192
+	estimatedRasterTaskMemoryMB = 768
+)
+
+func currentMCPTaskUsage() mcpTaskUsageSnapshot {
+	active := int(processMCPTaskUsage.active.Load())
+	heavy := int(processMCPTaskUsage.heavy.Load())
+	raster := int(processMCPTaskUsage.raster.Load())
+	reads := active - heavy - raster
+	if reads < 0 {
+		reads = 0
+	}
+	return mcpTaskUsageSnapshot{
+		Active: active, Heavy: heavy, Raster: raster,
+		EstimatedMemoryMB: reads*estimatedReadTaskMemoryMB + heavy*estimatedHeavyTaskMemoryMB + raster*estimatedRasterTaskMemoryMB,
+	}
 }
 
 func (limiter *mcpTaskLimiter) acquire(class mcpTaskClass) bool {
@@ -76,20 +124,60 @@ func (limiter *mcpTaskLimiter) acquire(class mcpTaskClass) bool {
 	if class == mcpTaskHeavy && limiter.heavy >= maxMCPHeavyTasks {
 		return false
 	}
+	if class == mcpTaskRaster && limiter.raster >= maxMCPRasterTasks {
+		return false
+	}
 	limiter.active++
 	if class == mcpTaskHeavy {
 		limiter.heavy++
+	}
+	if class == mcpTaskRaster {
+		limiter.raster++
+	}
+	if limiter.trackProcess {
+		processMCPTaskUsage.active.Add(1)
+		if class == mcpTaskHeavy {
+			processMCPTaskUsage.heavy.Add(1)
+		}
+		if class == mcpTaskRaster {
+			processMCPTaskUsage.raster.Add(1)
+		}
 	}
 	return true
 }
 
 func (limiter *mcpTaskLimiter) release(class mcpTaskClass) {
-	if limiter.active > 0 {
-		limiter.active--
+	if limiter.active <= 0 {
+		return
 	}
+	limiter.active--
 	if class == mcpTaskHeavy && limiter.heavy > 0 {
 		limiter.heavy--
 	}
+	if class == mcpTaskRaster && limiter.raster > 0 {
+		limiter.raster--
+	}
+	if limiter.trackProcess {
+		processMCPTaskUsage.active.Add(-1)
+		if class == mcpTaskHeavy {
+			processMCPTaskUsage.heavy.Add(-1)
+		}
+		if class == mcpTaskRaster {
+			processMCPTaskUsage.raster.Add(-1)
+		}
+	}
+}
+
+func (limiter *mcpTaskLimiter) close() {
+	if !limiter.trackProcess {
+		return
+	}
+	processMCPTaskUsage.active.Add(-int64(limiter.active))
+	processMCPTaskUsage.heavy.Add(-int64(limiter.heavy))
+	processMCPTaskUsage.raster.Add(-int64(limiter.raster))
+	limiter.active = 0
+	limiter.heavy = 0
+	limiter.raster = 0
 }
 
 func classifyMCPTask(raw json.RawMessage) mcpTaskClass {
@@ -98,8 +186,10 @@ func classifyMCPTask(raw json.RawMessage) mcpTaskClass {
 		return mcpTaskRead
 	}
 	switch strings.ToLower(strings.TrimSpace(call.Name)) {
+	case "map_render", "map_terrain_edit", "map_split_province", "map_apply_split":
+		return mcpTaskRaster
 	case "ck3_refresh", "ck3_package", "ck3_gui",
-		"map_render", "map_build_metric", "map_physical_context",
+		"map_build_metric", "map_physical_context",
 		"map_migration_snapshot", "map_province_migration":
 		return mcpTaskHeavy
 	default:
@@ -113,6 +203,9 @@ func serveWithToolCaller(ctx context.Context, cfg indexer.Config, dbPath string,
 		return err
 	}
 	defer db.Close()
+	if err := indexer.RestorePublishedEngineRules(ctx, db, cfg.EngineLogs); err != nil {
+		return err
+	}
 
 	sessionCtx, cancelSession := context.WithCancel(ctx)
 	defer cancelSession()
@@ -121,7 +214,8 @@ func serveWithToolCaller(ctx context.Context, cfg indexer.Config, dbPath string,
 	tasks := map[string]mcpToolTask{}
 	inputClosed := false
 	session := mcpSession{seenRequestIDs: map[string]struct{}{}}
-	limiter := mcpTaskLimiter{}
+	limiter := mcpTaskLimiter{trackProcess: true}
+	defer limiter.close()
 
 	writeResponse := func(response rpcResponse) error {
 		return writeMCPMessage(out, response)
@@ -143,6 +237,7 @@ func serveWithToolCaller(ctx context.Context, cfg indexer.Config, dbPath string,
 			if !ok {
 				inputClosed = true
 				readEvents = nil
+				cancelTasks()
 				break
 			}
 			if event.Err != nil {
@@ -275,7 +370,7 @@ func serveWithToolCaller(ctx context.Context, cfg indexer.Config, dbPath string,
 			if task, active := tasks[result.idKey]; active {
 				delete(tasks, result.idKey)
 				limiter.release(task.class)
-				if !task.cancelled {
+				if !task.cancelled || result.committed {
 					if err := writeResponse(result.response); err != nil {
 						cancelTasks()
 						return err
@@ -386,6 +481,8 @@ func mcpRequestIDKey(raw json.RawMessage) string {
 }
 
 func runMCPToolTask(ctx, sessionCtx context.Context, caller mcpToolCaller, db *indexer.DB, cfg indexer.Config, params json.RawMessage, requestID json.RawMessage, idKey string, results chan<- mcpToolTaskResult) {
+	commitState := &mcpCommitState{}
+	ctx = context.WithValue(ctx, mcpCommitStateKey{}, commitState)
 	response := rpcResponse{JSONRPC: "2.0", ID: requestID}
 	result, err := caller(ctx, db, cfg, params)
 	if err != nil {
@@ -398,8 +495,13 @@ func runMCPToolTask(ctx, sessionCtx context.Context, caller mcpToolCaller, db *i
 	} else {
 		response.Result = result
 	}
+	taskResult := mcpToolTaskResult{idKey: idKey, response: response, committed: commitState.committed}
+	if commitState.committed {
+		results <- taskResult
+		return
+	}
 	select {
-	case results <- mcpToolTaskResult{idKey: idKey, response: response}:
+	case results <- taskResult:
 	case <-sessionCtx.Done():
 	}
 }

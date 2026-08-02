@@ -97,6 +97,55 @@ func TestCachedEngineBundleReusesAndInvalidatesManifest(t *testing.T) {
 	}
 }
 
+func TestRestorePublishedEngineRulesBindsRulesToReadyDatabaseGeneration(t *testing.T) {
+	ctx := context.Background()
+	logs := makeEngineLogs(t, "")
+	if err := os.WriteFile(filepath.Join(logs, "triggers.log"), []byte("generation_bound_trigger - fixture\nSupported Scopes: character\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := LoadEngineBundle(ctx, logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(filepath.Join(t.TempDir(), "published.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.sql.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES
+		('scan_generation','19'),('scan_revision','revision-19'),('scan_status','ready'),('engine_data_fingerprint',?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, bundle.Fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	publishEngineRules(nil, IndexState{})
+	t.Cleanup(func() { publishEngineRules(nil, IndexState{}) })
+	if err := RestorePublishedEngineRules(ctx, db, logs); err != nil {
+		t.Fatal(err)
+	}
+	engineScopeRegistry.RLock()
+	published := engineScopeRegistry.published
+	engineScopeRegistry.RUnlock()
+	if published == nil || published.Generation != 19 || published.Revision != "revision-19" || published.Fingerprint != bundle.Fingerprint {
+		t.Fatalf("restored engine snapshot = %+v", published)
+	}
+	if _, ok := engineRuleScope("generation_bound_trigger", "trigger"); !ok {
+		t.Fatal("restored generation did not expose its engine rule")
+	}
+
+	if _, err := db.sql.ExecContext(ctx, `UPDATE meta SET value='mismatched-fingerprint' WHERE key='engine_data_fingerprint'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := RestorePublishedEngineRules(ctx, db, logs); err != nil {
+		t.Fatal(err)
+	}
+	if engineRulesConfigured() {
+		t.Fatal("mismatched engine logs were published over the database generation")
+	}
+}
+
 func TestStrictEngineBundleDoesNotTrustPreservedMTimeAndSize(t *testing.T) {
 	ctx := context.Background()
 	logs := makeEngineLogs(t, "")

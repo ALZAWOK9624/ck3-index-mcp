@@ -1,16 +1,16 @@
 [
   {
     "name": "search/prefix",
-    "wire_bytes": 4361,
-    "content_bytes": 1936,
-    "structured_bytes": 1936,
+    "wire_bytes": 4341,
+    "content_bytes": 1926,
+    "structured_bytes": 1926,
     "evidence_items": 8
   },
   {
     "name": "search/prefix_limit20",
-    "wire_bytes": 9453,
-    "content_bytes": 4314,
-    "structured_bytes": 4314,
+    "wire_bytes": 9421,
+    "content_bytes": 4298,
+    "structured_bytes": 4298,
     "evidence_items": 20
   },
   {

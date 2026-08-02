@@ -53,6 +53,27 @@ resource_only = true
 
 `role` 表示来源身份，`rank` 只表示覆盖优先级；配置必须恰好有一个 `project` 来源。`private = true` 的来源不会进入公开可见性结果。`resource_only = true` 只遍历 `gfx/`、`map_data/` 和 `sound/`，适合把 CK3 安装目录中的 `game`、`clausewitz`、`jomini` 资源补入解析，而不重复索引其脚本定义；它不能用于 `project` 来源。
 
+### 多工程共用上游索引
+
+上游层占索引的绝大部分，多个工程各自重扫一遍纯属浪费。可选的 `base_database` 指向一份只含上游层的预建索引，全量重建会先复制它，再只解析工程层。
+
+```toml
+database = "cache/my-mod.sqlite"
+base_database = "cache/base-vanilla.sqlite"
+```
+
+base 必须用一份**工程来源指向空目录**、其余来源与本配置逐项一致的配置扫出来：
+
+```powershell
+./ck3-index.exe --config base-vanilla.toml scan --clean
+```
+
+空目录这条不是形式要求。播种的正确性依赖"上游文件一开始都是活跃的"，这样被工程隐藏时永远是 活跃 → 被覆盖 的单向转换；反向转换救不回来，因为被覆盖的文件从未被解析过，光凭元数据无法复原派生行。base 里带了别的工程的行会被直接拒绝。
+
+发布代次、索引规则版本、引擎日志指纹和上游来源指纹（含每层的 `rank`、`role`、`private`、`resource_only`）四项中任何一项不匹配都会拒绝复用。**拒绝不是错误**：刷新照常回退成完整解析，产出同一份索引，只是慢一些，原因写在 `base_seed.reason` 里。看到重建没有变快，先查 `stats.base_seed`。`base_database` 不能与 `database` 指向同一个文件，否则一次刷新就会用单个工程的快照覆盖共用的上游索引。
+
+上游本身变了才需要重建 base。
+
 ## 证据索引与刷新边界
 
 `ck3-index` 的职责是把 CK3 文本、索引快照和有限运行时日志组织成可追溯证据，而不是替调用方生成或修改 Mod 内容。来源层由 `role`、`private` 和覆盖 `rank` 三项独立描述；扫描将这份策略写进可重建 SQLite 缓存，MCP 再以相同策略过滤公开结果。

@@ -18,8 +18,13 @@ import (
 var defaultConfigText string
 
 type Config struct {
-	ConfigPath             string
-	Database               string
+	ConfigPath string
+	Database   string
+	// BaseDatabase is an optional prebuilt index holding only the immutable
+	// upstream layers. A full refresh seeds from it instead of reparsing those
+	// trees, so two projects that share the same game/mod sources pay that cost
+	// once. Empty means every full refresh parses every source.
+	BaseDatabase           string
 	EngineLogs             string
 	ArtifactRoot           string
 	MigrationSnapshotRoot  string
@@ -345,6 +350,7 @@ func WriteDefaultConfig(path string) error {
 
 type configTOML struct {
 	Database               string       `toml:"database"`
+	BaseDatabase           string       `toml:"base_database"`
 	EngineLogs             string       `toml:"engine_logs"`
 	ArtifactRoot           string       `toml:"artifact_root"`
 	MigrationSnapshotRoot  string       `toml:"migration_snapshot_root"`
@@ -396,6 +402,7 @@ func LoadConfig(path string) (Config, error) {
 	cfg := Config{
 		ConfigPath:             absPath,
 		Database:               filepath.FromSlash(decoded.Database),
+		BaseDatabase:           resolveOptionalConfigPath(baseDir, decoded.BaseDatabase),
 		EngineLogs:             resolveOptionalConfigPath(baseDir, decoded.EngineLogs),
 		ArtifactRoot:           resolveOptionalConfigPath(baseDir, decoded.ArtifactRoot),
 		MigrationSnapshotRoot:  resolveOptionalConfigPath(baseDir, decoded.MigrationSnapshotRoot),
@@ -458,6 +465,18 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if cfg, err = NormalizeConfig(cfg); err != nil {
 		return Config{}, err
+	}
+	if cfg.BaseDatabase != "" {
+		databasePath, databaseErr := ConfiguredDatabasePath(cfg)
+		if databaseErr != nil {
+			return Config{}, databaseErr
+		}
+		// Seeding copies the base over the staging cache. Letting the two names
+		// resolve to one file would make a refresh overwrite the shared upstream
+		// index with a single project's snapshot.
+		if canonicalConfigPath(databasePath) == canonicalConfigPath(cfg.BaseDatabase) {
+			return Config{}, fmt.Errorf("base_database must name a different file than database")
+		}
 	}
 	if cfg.ArtifactRoot == "" {
 		cfg.ArtifactRoot = resolveConfigPath(baseDir, "cache/artifacts")

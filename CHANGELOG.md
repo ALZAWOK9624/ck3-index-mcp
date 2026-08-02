@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Shared upstream index
+
+- New optional `base_database` names a prebuilt index holding only the upstream layers. A staged full refresh copies it into the staging cache and parses just the project layer, so several projects sharing the same game and Mod trees pay for those trees once instead of once each. Measured on a warm cache: sandbox project 84.9s → 53.8s, a 68845-file Godherja project 156.8s → 81.8s. Omitting the key keeps the previous behaviour exactly.
+- Seeding reuses the ordinary incremental scan rather than a second parsing path. After the copy the stage is scanned incrementally, not clean, so the existing override pass recomputes precedence across every layer and upstream rows hidden by the project lose their derived rows the same way a full scan would drop them. `TestSeededRefreshMatchesFullScan` compares the two paths table by table.
+- A base is only reused when its published generation is ready and its index rule version, engine-log fingerprint, and upstream source fingerprint all match. That last fingerprint covers every non-project source's canonical path, `rank`, `role`, `private`, and `resource_only`, because a base built under a different override precedence is not interchangeable. A base is also rejected if it carries any row at the project rank: seeding depends on every upstream file starting out active so that being hidden is always an active-to-overridden transition, and the reverse cannot be reconstructed from metadata alone. Build the base against an empty project directory.
+- A rejected base is never fatal. The refresh falls back to parsing every source and reports `base_seed.configured`, `base_seed.used`, and the rejection reason in scan stats and in the `ck3_refresh` output schema, so a silent fallback cannot be mistaken for a cheap rebuild. `base_database` also participates in the scan configuration fingerprint, and pointing it at the same file as `database` is refused at load time rather than allowed to overwrite the shared upstream index with one project's snapshot.
+
 ### Rebase transaction safety and cost
 
 - Every operation that can change a rebase transaction now takes a cross-process lock (`transaction.lock`) in the transaction directory, and every manifest write is a compare-and-set on a new monotonic `revision`. Two concurrent `migrate build` invocations could previously both pass the status check and then write contradictory end states across the long copy that separates them. A lock whose holder stopped refreshing its heartbeat for two minutes and whose process is provably gone on this host is reclaimed automatically.

@@ -146,10 +146,27 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 	}
 	defer removeStagedDatabase(stagePath)
 
+	engineBundle, err := LoadEngineBundle(ctx, normalized.EngineLogs)
+	if err != nil {
+		err = sanitizeStagedFullScanFailure(err, scanRedactionPaths(normalized, dbPath, stagePath))
+		recordStagedFullScanFailure(normalized, err)
+		return ScanStats{}, err
+	}
+	seeded, seedRejection := seedStagedScanFromBase(ctx, normalized, stagePath, engineBundle.Fingerprint)
+	seedResult := &BaseSeedResult{
+		Configured: strings.TrimSpace(normalized.BaseDatabase) != "",
+		Used:       seeded,
+		Reason:     seedRejection,
+	}
+
 	stageConfig := normalized
 	stageConfig.Database = stagePath
-	stageConfig.ForceClean = true
-	stats, err := scanWithMode(ctx, stageConfig, true)
+	// A seeded stage already holds every upstream row, so it must be scanned
+	// incrementally: a clean rebuild would discard exactly the work the base was
+	// there to supply. Without a base the stage starts empty and a clean scan is
+	// both correct and marginally cheaper.
+	stageConfig.ForceClean = !seeded
+	stats, err := scanWithMode(ctx, stageConfig, !seeded)
 	if err != nil {
 		err = sanitizeStagedFullScanFailure(err, scanRedactionPaths(normalized, dbPath, stagePath))
 		recordStagedFullScanFailure(normalized, err)
@@ -169,6 +186,9 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 		stats.TimingsMillis = map[string]int64{}
 	}
 	stats.TimingsMillis["publish_staged"] = time.Since(publishStart).Milliseconds()
+	if seedResult.Configured {
+		stats.BaseSeed = seedResult
+	}
 	// The staging location is an implementation detail and must never become
 	// the apparent published database in refresh output.
 	stats.Database = dbPath

@@ -61,6 +61,20 @@ type ScanStats struct {
 	ChangedSymbols          []string             `json:"changed_symbols,omitempty"`
 	ChangedSymbolsTruncated bool                 `json:"changed_symbols_truncated,omitempty"`
 	DiagnosticDelta         *DiagnosticDelta     `json:"diagnostic_delta,omitempty"`
+	// BaseSeed is populated by a staged full refresh so a caller can tell a
+	// cheap seeded rebuild apart from one that reparsed every source, and can
+	// see why a configured base was rejected.
+	BaseSeed *BaseSeedResult `json:"base_seed,omitempty"`
+}
+
+// BaseSeedResult explains what a staged full refresh did with base_database.
+// A rejected base is never fatal: the refresh falls back to parsing every
+// source, which produces the same index more slowly. Reporting the reason
+// keeps that fallback from looking like a successful seed.
+type BaseSeedResult struct {
+	Configured bool   `json:"configured"`
+	Used       bool   `json:"used"`
+	Reason     string `json:"reason,omitempty"`
 }
 
 type DiagnosticDelta struct {
@@ -791,6 +805,13 @@ parsedFilesComplete:
 	stageStart = time.Now()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('index_rule_version',?)
 		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, indexRuleVersion); err != nil {
+		return ScanStats{}, err
+	}
+	// Record which upstream trees produced these rows so another workspace can
+	// prove this cache is a valid seed for its own project rather than trusting
+	// a filename.
+	if _, err := tx.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('upstream_source_fingerprint',?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, UpstreamSourceFingerprint(cfg)); err != nil {
 		return ScanStats{}, err
 	}
 	if err := bumpScanGeneration(ctx, tx); err != nil {

@@ -148,6 +148,10 @@ func TestScanConfigFingerprintCoversMoreThanSources(t *testing.T) {
 			cfg.Database = filepath.Join("D:", "workspace", "cache", "other.sqlite")
 			return cfg
 		},
+		"base_database": func(cfg Config) Config {
+			cfg.BaseDatabase = filepath.Join("D:", "workspace", "cache", "base.sqlite")
+			return cfg
+		},
 		"rank": func(cfg Config) Config {
 			cfg.Sources = []Source{{Name: "project", Path: cfg.Sources[0].Path, Rank: 9, Role: SourceRoleProject}}
 			return cfg

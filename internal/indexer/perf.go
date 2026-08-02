@@ -220,6 +220,7 @@ func ScanConfigFingerprint(cfg Config) string {
 	fmt.Fprintf(hash, "scan-config-v1\x00")
 	for _, item := range []struct{ key, value string }{
 		{"database", canonicalConfigPath(configuredDatabasePathOrRaw(cfg))},
+		{"base_database", canonicalConfigPath(cfg.BaseDatabase)},
 		{"engine_logs", canonicalConfigPath(cfg.EngineLogs)},
 		{"artifact_root", canonicalConfigPath(cfg.ArtifactRoot)},
 		{"migration_snapshot_root", canonicalConfigPath(cfg.MigrationSnapshotRoot)},

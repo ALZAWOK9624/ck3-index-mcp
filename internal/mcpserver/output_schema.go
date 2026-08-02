@@ -217,6 +217,11 @@ func scanStatsOutputSchema(delta map[string]any) map[string]any {
 		"changed_symbols":           arrayProperty("", map[string]any{"type": "string"}),
 		"changed_symbols_truncated": map[string]any{"type": "boolean"},
 		"diagnostic_delta":          nullableObjectSchema(delta),
+		"base_seed": nullableObjectSchema(objectSchema(map[string]any{
+			"configured": map[string]any{"type": "boolean"},
+			"used":       map[string]any{"type": "boolean"},
+			"reason":     map[string]any{"type": "string", "description": "Why a configured base index was not reused. Empty when it was."},
+		}, "configured", "used")),
 	}
 	for _, field := range []string{"files", "nodes", "objects", "references", "localization", "resources", "schema_fields", "object_fields", "diagnostics", "overridden", "files_read", "files_hashed", "files_parsed", "bytes_read", "bytes_hashed", "peak_queued_results", "elapsed_ms", "changed_files", "removed_files"} {
 		properties[field] = integer

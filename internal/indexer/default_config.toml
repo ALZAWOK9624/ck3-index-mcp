@@ -1,4 +1,11 @@
 database = "cache/ck3_index.sqlite"
+# Optional prebuilt index holding only the upstream layers, so several projects
+# that share the same game and Mod trees parse them once instead of once each.
+# Build it from a config whose project source points at an empty directory and
+# whose other sources match this file exactly, then name that file here. A base
+# that does not match is reported in `base_seed.reason` and ignored, never
+# fatal. It must not be the same file as `database`.
+# base_database = "cache/base-vanilla.sqlite"
 engine_logs = "../../logs"
 artifact_root = "cache/artifacts"
 migration_snapshot_root = "cache/migration-snapshots"

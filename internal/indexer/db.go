@@ -771,15 +771,20 @@ func (db *DB) CreateIndexes(ctx context.Context) error {
 
 // analyzeForPlanner records index selectivity statistics. Without them SQLite
 // plans from built-in guesses, which is why several hot queries had to name
-// their index with INDEXED BY to get a sane plan at all. Statistics are cheap
-// to gather once at the end of a scan and are read from the database on every
-// later connection.
+// their index with INDEXED BY to get a sane plan at all.
 //
-// A failure here is not fatal. ANALYZE is an optimisation: every query still
-// returns the same rows without it, so a database that cannot be analysed is
-// better published slow than not published.
+// PRAGMA optimize rather than ANALYZE, because this runs from ensureSchema on
+// every read-write open — including the small incremental refresh behind
+// ck3_refresh operation=files, which is supposed to return promptly. Measured
+// on the 1.4 GB sandbox index: a bare ANALYZE costs 1.1s every time, while
+// PRAGMA optimize costs 0.24s when statistics are missing entirely and is
+// immeasurable once they exist, because it only analyses what has drifted.
+//
+// A failure here is not fatal. Statistics are an optimisation: every query
+// returns the same rows without them, so a database that cannot be analysed is
+// better published slow than not published at all.
 func (db *DB) analyzeForPlanner(ctx context.Context) error {
-	if _, err := db.sql.ExecContext(ctx, `ANALYZE`); err != nil {
+	if _, err := db.sql.ExecContext(ctx, `PRAGMA optimize`); err != nil {
 		return nil
 	}
 	return nil

@@ -323,14 +323,27 @@ func (db *DB) searchLocalizationValues(ctx context.Context, query string, opts S
 	return out, rows.Err()
 }
 
-func (db *DB) searchObjects(ctx context.Context, query, prefix string, opts SearchOptions, limit int) ([]LLMEvidence, error) {
-	sqlText := `SELECT o.object_type,o.name,o.source_name,o.path,o.line,o.col
-		FROM objects o INDEXED BY idx_objects_name JOIN files f ON f.id=o.file_id
+// searchObjectsPrefixSQL is the plain prefix lookup, kept as a named constant
+// so a plan test can EXPLAIN the statement production actually runs. The
+// previous plan test compared against a copy of this text that had drifted out
+// of date, which is how it came to be asserting things about SQL nobody ran.
+//
+// CROSS JOIN is load-bearing and not a typo. It is semantically an inner join,
+// but it stops SQLite reordering the tables. Once ANALYZE supplies statistics
+// the planner will otherwise drive from files, which throws away the ordered
+// walk of idx_objects_name and reintroduces a full sort of the prefix range.
+// This query wants objects as the outer loop: seek the name range, take the
+// first rows in index order, then confirm each one is active.
+const searchObjectsPrefixSQL = `SELECT o.object_type,o.name,o.source_name,o.path,o.line,o.col
+		FROM objects o INDEXED BY idx_objects_name CROSS JOIN files f ON f.id=o.file_id
 		WHERE f.overridden=0 AND o.name>=? AND o.name<?
 		ORDER BY o.name,o.source_rank LIMIT ?`
+
+func (db *DB) searchObjects(ctx context.Context, query, prefix string, opts SearchOptions, limit int) ([]LLMEvidence, error) {
+	sqlText := searchObjectsPrefixSQL
 	args := []any{query, query + "\uffff", limit}
 	if opts.Source != "" || opts.PathPrefix != "" {
-		sqlText = `SELECT o.object_type,o.name,o.source_name,o.path,o.line,o.col FROM objects o INDEXED BY idx_objects_name JOIN files f ON f.id=o.file_id WHERE f.overridden=0 AND o.name>=? AND o.name<? AND (?='' OR o.source_name=?) AND (?='' OR f.rel_path LIKE ? ESCAPE '\') ORDER BY o.name,o.source_rank LIMIT ?`
+		sqlText = `SELECT o.object_type,o.name,o.source_name,o.path,o.line,o.col FROM objects o INDEXED BY idx_objects_name CROSS JOIN files f ON f.id=o.file_id WHERE f.overridden=0 AND o.name>=? AND o.name<? AND (?='' OR o.source_name=?) AND (?='' OR f.rel_path LIKE ? ESCAPE '\') ORDER BY o.name,o.source_rank LIMIT ?`
 		args = []any{query, query + "\uffff", opts.Source, opts.Source, opts.PathPrefix, escapeLike(opts.PathPrefix) + "%", limit}
 	}
 	rows, err := db.sql.QueryContext(ctx, sqlText, args...)
@@ -353,12 +366,12 @@ func (db *DB) searchObjects(ctx context.Context, query, prefix string, opts Sear
 
 func (db *DB) searchRefs(ctx context.Context, query, prefix string, opts SearchOptions, limit int) ([]LLMEvidence, error) {
 	sqlText := `SELECT r.ref_kind,r.ref_name,f.source_name,f.path,r.line,r.col,r.raw
-		FROM refs r INDEXED BY idx_refs_name JOIN files f ON f.id=r.file_id
+		FROM refs r INDEXED BY idx_refs_name CROSS JOIN files f ON f.id=r.file_id
 		WHERE f.overridden=0 AND r.ref_name>=? AND r.ref_name<?
 		ORDER BY r.ref_name,f.source_rank LIMIT ?`
 	args := []any{query, query + "\uffff", limit}
 	if opts.Source != "" || opts.PathPrefix != "" {
-		sqlText = `SELECT r.ref_kind,r.ref_name,f.source_name,f.path,r.line,r.col,r.raw FROM refs r INDEXED BY idx_refs_name JOIN files f ON f.id=r.file_id WHERE f.overridden=0 AND r.ref_name>=? AND r.ref_name<? AND (?='' OR f.source_name=?) AND (?='' OR f.rel_path LIKE ? ESCAPE '\') ORDER BY r.ref_name,f.source_rank LIMIT ?`
+		sqlText = `SELECT r.ref_kind,r.ref_name,f.source_name,f.path,r.line,r.col,r.raw FROM refs r INDEXED BY idx_refs_name CROSS JOIN files f ON f.id=r.file_id WHERE f.overridden=0 AND r.ref_name>=? AND r.ref_name<? AND (?='' OR f.source_name=?) AND (?='' OR f.rel_path LIKE ? ESCAPE '\') ORDER BY r.ref_name,f.source_rank LIMIT ?`
 		args = []any{query, query + "\uffff", opts.Source, opts.Source, opts.PathPrefix, escapeLike(opts.PathPrefix) + "%", limit}
 	}
 	rows, err := db.sql.QueryContext(ctx, sqlText, args...)
@@ -381,12 +394,12 @@ func (db *DB) searchRefs(ctx context.Context, query, prefix string, opts SearchO
 
 func (db *DB) searchLocalizationKeys(ctx context.Context, query, prefix string, opts SearchOptions, limit int) ([]LLMEvidence, error) {
 	sqlText := `SELECT l.key,l.source_name,l.path,l.line,l.language,l.value
-		FROM localization l INDEXED BY idx_loc_key JOIN files f ON f.id=l.file_id
+		FROM localization l INDEXED BY idx_loc_key CROSS JOIN files f ON f.id=l.file_id
 		WHERE f.overridden=0 AND l.key>=? AND l.key<?
 		ORDER BY l.key,l.source_rank LIMIT ?`
 	args := []any{query, query + "\uffff", limit}
 	if opts.Source != "" || opts.PathPrefix != "" {
-		sqlText = `SELECT l.key,l.source_name,l.path,l.line,l.language,l.value FROM localization l INDEXED BY idx_loc_key JOIN files f ON f.id=l.file_id WHERE f.overridden=0 AND l.key>=? AND l.key<? AND (?='' OR l.source_name=?) AND (?='' OR f.rel_path LIKE ? ESCAPE '\') ORDER BY l.key,l.source_rank LIMIT ?`
+		sqlText = `SELECT l.key,l.source_name,l.path,l.line,l.language,l.value FROM localization l INDEXED BY idx_loc_key CROSS JOIN files f ON f.id=l.file_id WHERE f.overridden=0 AND l.key>=? AND l.key<? AND (?='' OR l.source_name=?) AND (?='' OR f.rel_path LIKE ? ESCAPE '\') ORDER BY l.key,l.source_rank LIMIT ?`
 		args = []any{query, query + "\uffff", opts.Source, opts.Source, opts.PathPrefix, escapeLike(opts.PathPrefix) + "%", limit}
 	}
 	rows, err := db.sql.QueryContext(ctx, sqlText, args...)
@@ -411,12 +424,12 @@ func (db *DB) searchLocalizationKeys(ctx context.Context, query, prefix string, 
 
 func (db *DB) searchResources(ctx context.Context, query, prefix string, opts SearchOptions, limit int) ([]LLMEvidence, error) {
 	sqlText := `SELECT r.kind,r.resource_path,r.source_name,r.path
-		FROM resources r INDEXED BY idx_res_path JOIN files f ON f.id=r.file_id
+		FROM resources r INDEXED BY idx_res_path CROSS JOIN files f ON f.id=r.file_id
 		WHERE f.overridden=0 AND r.resource_path>=? AND r.resource_path<?
 		ORDER BY r.resource_path,r.source_rank LIMIT ?`
 	args := []any{query, query + "\uffff", limit}
 	if opts.Source != "" || opts.PathPrefix != "" {
-		sqlText = `SELECT r.kind,r.resource_path,r.source_name,r.path FROM resources r INDEXED BY idx_res_path JOIN files f ON f.id=r.file_id WHERE f.overridden=0 AND r.resource_path>=? AND r.resource_path<? AND (?='' OR r.source_name=?) AND (?='' OR f.rel_path LIKE ? ESCAPE '\') ORDER BY r.resource_path,r.source_rank LIMIT ?`
+		sqlText = `SELECT r.kind,r.resource_path,r.source_name,r.path FROM resources r INDEXED BY idx_res_path CROSS JOIN files f ON f.id=r.file_id WHERE f.overridden=0 AND r.resource_path>=? AND r.resource_path<? AND (?='' OR r.source_name=?) AND (?='' OR f.rel_path LIKE ? ESCAPE '\') ORDER BY r.resource_path,r.source_rank LIMIT ?`
 		args = []any{query, query + "\uffff", opts.Source, opts.Source, opts.PathPrefix, escapeLike(opts.PathPrefix) + "%", limit}
 	}
 	rows, err := db.sql.QueryContext(ctx, sqlText, args...)
@@ -469,12 +482,12 @@ func (db *DB) searchDiagnostics(ctx context.Context, query, prefix string, opts 
 
 func (db *DB) searchScriptKeys(ctx context.Context, query, prefix string, opts SearchOptions, limit int) ([]LLMEvidence, error) {
 	sqlText := `SELECT o.field,o.object_type,o.object_name,o.source_name,o.path,o.line,o.raw
-		FROM object_fields o INDEXED BY idx_object_fields_field JOIN files f ON f.id=o.file_id
+		FROM object_fields o INDEXED BY idx_object_fields_field CROSS JOIN files f ON f.id=o.file_id
 		WHERE f.overridden=0 AND o.field>=? AND o.field<?
 		ORDER BY o.field,o.source_rank LIMIT ?`
 	args := []any{query, query + "\uffff", limit}
 	if opts.Source != "" || opts.PathPrefix != "" {
-		sqlText = `SELECT o.field,o.object_type,o.object_name,o.source_name,o.path,o.line,o.raw FROM object_fields o INDEXED BY idx_object_fields_field JOIN files f ON f.id=o.file_id WHERE f.overridden=0 AND o.field>=? AND o.field<? AND (?='' OR o.source_name=?) AND (?='' OR f.rel_path LIKE ? ESCAPE '\') ORDER BY o.field,o.source_rank LIMIT ?`
+		sqlText = `SELECT o.field,o.object_type,o.object_name,o.source_name,o.path,o.line,o.raw FROM object_fields o INDEXED BY idx_object_fields_field CROSS JOIN files f ON f.id=o.file_id WHERE f.overridden=0 AND o.field>=? AND o.field<? AND (?='' OR o.source_name=?) AND (?='' OR f.rel_path LIKE ? ESCAPE '\') ORDER BY o.field,o.source_rank LIMIT ?`
 		args = []any{query, query + "\uffff", opts.Source, opts.Source, opts.PathPrefix, escapeLike(opts.PathPrefix) + "%", limit}
 	}
 	rows, err := db.sql.QueryContext(ctx, sqlText, args...)

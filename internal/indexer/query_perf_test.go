@@ -51,10 +51,11 @@ func TestHotQueryPlansUseIndexes(t *testing.T) {
 // sort of one equal-name group is fine and is reported differently.
 func TestSearchPrefixPlanDoesNotSortTheWholeRange(t *testing.T) {
 	db := writeQueryPlanFixture(t)
-	details := explainDetails(t, db, `EXPLAIN QUERY PLAN SELECT o.object_type,o.name,o.source_name,o.path,o.line,o.col
-		FROM objects o INDEXED BY idx_objects_name JOIN files f ON f.id=o.file_id
-		WHERE f.overridden=0 AND o.name>='plan_probe_' AND o.name<'plan_probe_￿'
-		ORDER BY o.name,o.source_rank LIMIT 9`)
+	// EXPLAIN the statement production runs, not a copy of it. The old plan
+	// test checked hand-copied SQL that had since drifted, so it was asserting
+	// things about a query nobody executes.
+	details := explainDetails(t, db, "EXPLAIN QUERY PLAN "+searchObjectsPrefixSQL,
+		"plan_probe_", "plan_probe_￿", 9)
 	for _, step := range strings.Split(details, " | ") {
 		if risk := queryPlanRisk(step); risk != "" {
 			t.Fatalf("prefix search plan regressed: %s\nfull plan: %s", risk, details)
@@ -112,9 +113,9 @@ func writeQueryPlanFixture(t *testing.T) *DB {
 	return db
 }
 
-func explainDetails(t *testing.T, db *DB, query string) string {
+func explainDetails(t *testing.T, db *DB, query string, args ...any) string {
 	t.Helper()
-	rows, err := db.sql.QueryContext(context.Background(), query)
+	rows, err := db.sql.QueryContext(context.Background(), query, args...)
 	if err != nil {
 		t.Fatal(err)
 	}

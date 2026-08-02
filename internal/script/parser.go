@@ -1,5 +1,7 @@
 package script
 
+import "unicode/utf8"
+
 type Node struct {
 	ID       int64
 	Parent   int64
@@ -26,16 +28,31 @@ type ParseError struct {
 	Col     int
 }
 
+const parserLookahead = 4
+const maxParserNodeChunk = 1024
+
 type parser struct {
-	tokens []Token
-	pos    int
-	nextID int64
-	errors []ParseError
-	gui    bool
+	lexer         *Lexer
+	lookahead     [parserLookahead]Token
+	head          int
+	buffered      int
+	nodeChunks    [][]Node
+	nodeChunk     []Node
+	nodeChunkSize int
+	nodePos       int
+	nextID        int64
+	errors        []ParseError
+	gui           bool
 }
 
 func Parse(text string) File {
-	return parse(text, false)
+	return parseLexer(newParserStringLexer(text), false)
+}
+
+// ParseBytes makes one immutable owned copy of UTF-8 CK3 source, then scans it
+// byte by byte without a []rune conversion or a complete token tape.
+func ParseBytes(input []byte) File {
+	return parseLexer(newParserByteLexer(input), false)
 }
 
 // ParseGUI parses CK3/Jomini GUI syntax in addition to ordinary PDX script.
@@ -51,32 +68,37 @@ func Parse(text string) File {
 // Keeping these forms behind a GUI mode avoids changing the meaning of
 // similarly named keys in events, history, and common script files.
 func ParseGUI(text string) File {
-	return parse(text, true)
+	return parseLexer(newParserStringLexer(text), true)
 }
 
-func parse(text string, gui bool) File {
-	p := &parser{tokens: Lex(text), nextID: 1, gui: gui}
-	nodes, _ := p.parseBlock(0, 0)
-	return File{Nodes: nodes, Errors: p.errors}
+// ParseGUIBytes is the byte-oriented equivalent of ParseGUI.
+func ParseGUIBytes(input []byte) File {
+	return parseLexer(newParserByteLexer(input), true)
 }
 
-func (p *parser) parseBlock(parent int64, depth int) ([]*Node, *Token) {
-	var nodes []*Node
+func parseLexer(lexer *Lexer, gui bool) File {
+	p := &parser{lexer: lexer, nodeChunkSize: parserNodeChunkSize(lexer.sourceLen()), nextID: 1, gui: gui}
+	p.parseBlock(0, 0)
+	return File{Nodes: p.buildTree(), Errors: p.errors}
+}
+
+func (p *parser) parseBlock(parent int64, depth int) (Token, bool, *Node) {
+	var last *Node
 	for {
 		tok := p.peek()
 		switch tok.Kind {
 		case TokenEOF:
-			return nodes, nil
+			return Token{}, false, last
 		case TokenRBrace:
 			close := p.advance()
-			return nodes, &close
+			return close, true, last
 		case TokenError:
 			p.err(tok.Text, tok)
 			p.advance()
 		case TokenLBrace:
-			nodes = append(nodes, p.anonymousBlock(parent, depth))
+			last = p.anonymousBlock(parent, depth)
 		case TokenIdent, TokenString:
-			nodes = append(nodes, p.statement(parent, depth))
+			last = p.statement(parent, depth)
 		default:
 			p.err("expected statement", tok)
 			p.advance()
@@ -86,15 +108,14 @@ func (p *parser) parseBlock(parent int64, depth int) ([]*Node, *Token) {
 
 func (p *parser) anonymousBlock(parent int64, depth int) *Node {
 	start := p.advance()
-	n := &Node{ID: p.nextID, Parent: parent, Depth: depth, Kind: "block", Line: start.Line, Col: start.Col}
+	n := p.allocNode()
+	*n = Node{ID: p.nextID, Parent: parent, Depth: depth, Kind: "block", Line: start.Line, Col: start.Col}
 	p.nextID++
-	var close *Token
-	n.Children, close = p.parseBlock(n.ID, depth+1)
-	if close != nil {
+	close, closed, lastChild := p.parseBlock(n.ID, depth+1)
+	if closed {
 		n.EndLine, n.EndCol = close.Line, close.Col+1
-	} else if len(n.Children) > 0 {
-		last := n.Children[len(n.Children)-1]
-		n.EndLine, n.EndCol = last.EndLine, last.EndCol
+	} else if lastChild != nil {
+		n.EndLine, n.EndCol = lastChild.EndLine, lastChild.EndCol
 	} else {
 		n.EndLine, n.EndCol = start.Line, start.Col+1
 	}
@@ -109,7 +130,8 @@ func (p *parser) statement(parent int64, depth int) *Node {
 	}
 
 	key := p.advance()
-	n := &Node{ID: p.nextID, Parent: parent, Depth: depth, Key: key.Text, Line: key.Line, Col: key.Col}
+	n := p.allocNode()
+	*n = Node{ID: p.nextID, Parent: parent, Depth: depth, Key: key.Text, Line: key.Line, Col: key.Col}
 	p.nextID++
 	op := p.peek()
 	if op.Kind == TokenOperator {
@@ -120,29 +142,26 @@ func (p *parser) statement(parent int64, depth int) *Node {
 		case TokenLBrace:
 			p.advance()
 			n.Kind = "block"
-			var close *Token
-			n.Children, close = p.parseBlock(n.ID, depth+1)
-			if close != nil {
+			close, closed, lastChild := p.parseBlock(n.ID, depth+1)
+			if closed {
 				n.EndLine, n.EndCol = close.Line, close.Col+1
-			} else if len(n.Children) > 0 {
-				last := n.Children[len(n.Children)-1]
-				n.EndLine, n.EndCol = last.EndLine, last.EndCol
+			} else if lastChild != nil {
+				n.EndLine, n.EndCol = lastChild.EndLine, lastChild.EndCol
 			}
 		case TokenIdent, TokenString, TokenOperator:
 			// TokenOperator as value: OPERATOR = <=, COUNT = 1
 			p.advance()
 			n.Value = val.Text
 			n.Kind = "atom"
-			n.EndLine, n.EndCol = val.Line, val.Col+len([]rune(val.Text))
+			n.EndLine, n.EndCol = val.Line, val.Col+runeLen(val.Text)
 			// Jomini GUI also permits inheritance/instantiation followed by a
 			// body: child = parent { ... }. Preserve parent in Value and attach
 			// the following block to the same node.
 			if p.gui && p.peek().Kind == TokenLBrace {
 				p.advance()
 				n.Kind = "block"
-				var close *Token
-				n.Children, close = p.parseBlock(n.ID, depth+1)
-				if close != nil {
+				close, closed, _ := p.parseBlock(n.ID, depth+1)
+				if closed {
 					n.EndLine, n.EndCol = close.Line, close.Col+1
 				}
 				break
@@ -154,7 +173,7 @@ func (p *parser) statement(parent int64, depth int) *Node {
 				if nextVal.Kind == TokenIdent || nextVal.Kind == TokenString {
 					p.advance()
 					n.Value = n.Value + " " + nextOp.Text + " " + nextVal.Text
-					n.EndLine, n.EndCol = nextVal.Line, nextVal.Col+len([]rune(nextVal.Text))
+					n.EndLine, n.EndCol = nextVal.Line, nextVal.Col+runeLen(nextVal.Text)
 				}
 			}
 		default:
@@ -165,17 +184,16 @@ func (p *parser) statement(parent int64, depth int) *Node {
 		p.advance()
 		n.Operator = "="
 		n.Kind = "block"
-		var close *Token
-		n.Children, close = p.parseBlock(n.ID, depth+1)
-		if close != nil {
+		close, closed, _ := p.parseBlock(n.ID, depth+1)
+		if closed {
 			n.EndLine, n.EndCol = close.Line, close.Col+1
 		}
 	} else {
 		n.Kind = "bare"
-		n.EndLine, n.EndCol = key.Line, key.Col+len([]rune(key.Text))
+		n.EndLine, n.EndCol = key.Line, key.Col+runeLen(key.Text)
 	}
 	if n.EndLine == 0 {
-		n.EndLine, n.EndCol = n.Line, n.Col+len([]rune(n.Key))
+		n.EndLine, n.EndCol = n.Line, n.Col+runeLen(n.Key)
 	}
 	return n
 }
@@ -187,7 +205,8 @@ func (p *parser) guiPrefixedStatement(parent int64, depth int) (*Node, bool) {
 	}
 
 	newNode := func(key, operator, value string) *Node {
-		n := &Node{
+		n := p.allocNode()
+		*n = Node{
 			ID:       p.nextID,
 			Parent:   parent,
 			Depth:    depth,
@@ -212,9 +231,8 @@ func (p *parser) guiPrefixedStatement(parent int64, depth int) (*Node, bool) {
 		p.advance()
 		n := newNode("types", "namespace", name.Text)
 		n.Kind = "block"
-		var close *Token
-		n.Children, close = p.parseBlock(n.ID, depth+1)
-		setBlockEnd(n, close)
+		close, closed, lastChild := p.parseBlock(n.ID, depth+1)
+		setBlockEnd(n, close, closed, lastChild)
 		return n, true
 
 	case "template", "local_template":
@@ -228,9 +246,8 @@ func (p *parser) guiPrefixedStatement(parent int64, depth int) (*Node, bool) {
 		p.advance()
 		n := newNode(name.Text, first.Text, "")
 		n.Kind = "block"
-		var close *Token
-		n.Children, close = p.parseBlock(n.ID, depth+1)
-		setBlockEnd(n, close)
+		close, closed, lastChild := p.parseBlock(n.ID, depth+1)
+		setBlockEnd(n, close, closed, lastChild)
 		return n, true
 
 	case "type":
@@ -248,12 +265,11 @@ func (p *parser) guiPrefixedStatement(parent int64, depth int) (*Node, bool) {
 		if p.peek().Kind == TokenLBrace {
 			p.advance()
 			n.Kind = "block"
-			var close *Token
-			n.Children, close = p.parseBlock(n.ID, depth+1)
-			setBlockEnd(n, close)
+			close, closed, lastChild := p.parseBlock(n.ID, depth+1)
+			setBlockEnd(n, close, closed, lastChild)
 		} else {
 			n.Kind = "atom"
-			n.EndLine, n.EndCol = base.Line, base.Col+len([]rune(base.Text))
+			n.EndLine, n.EndCol = base.Line, base.Col+runeLen(base.Text)
 		}
 		return n, true
 
@@ -268,26 +284,24 @@ func (p *parser) guiPrefixedStatement(parent int64, depth int) (*Node, bool) {
 		p.advance()
 		n := newNode(first.Text, "slot", name.Text)
 		n.Kind = "block"
-		var close *Token
-		n.Children, close = p.parseBlock(n.ID, depth+1)
-		setBlockEnd(n, close)
+		close, closed, lastChild := p.parseBlock(n.ID, depth+1)
+		setBlockEnd(n, close, closed, lastChild)
 		return n, true
 	}
 
 	return nil, false
 }
 
-func setBlockEnd(n *Node, close *Token) {
-	if close != nil {
+func setBlockEnd(n *Node, close Token, closed bool, lastChild *Node) {
+	if closed {
 		n.EndLine, n.EndCol = close.Line, close.Col+1
 		return
 	}
-	if len(n.Children) > 0 {
-		last := n.Children[len(n.Children)-1]
-		n.EndLine, n.EndCol = last.EndLine, last.EndCol
+	if lastChild != nil {
+		n.EndLine, n.EndCol = lastChild.EndLine, lastChild.EndCol
 		return
 	}
-	n.EndLine, n.EndCol = n.Line, n.Col+len([]rune(n.Key))
+	n.EndLine, n.EndCol = n.Line, n.Col+runeLen(n.Key)
 }
 
 func tokenValueKind(tok Token) string {
@@ -301,25 +315,105 @@ func tokenValueKind(tok Token) string {
 	return "atom"
 }
 
-func (p *parser) peek() Token {
-	if p.pos >= len(p.tokens) {
-		return Token{Kind: TokenEOF}
+func runeLen(text string) int {
+	return utf8.RuneCountInString(text)
+}
+
+func (p *parser) allocNode() *Node {
+	if p.nodePos == len(p.nodeChunk) {
+		p.nodeChunk = make([]Node, p.nodeChunkSize)
+		p.nodeChunks = append(p.nodeChunks, p.nodeChunk)
+		p.nodePos = 0
 	}
-	return p.tokens[p.pos]
+	node := &p.nodeChunk[p.nodePos]
+	p.nodePos++
+	return node
+}
+
+func (p *parser) nodeAt(id int64) *Node {
+	index := int(id - 1)
+	return &p.nodeChunks[index/p.nodeChunkSize][index%p.nodeChunkSize]
+}
+
+func parserNodeChunkSize(sourceBytes int) int {
+	size := sourceBytes / 64
+	if size < 16 {
+		return 16
+	}
+	if size > maxParserNodeChunk {
+		return maxParserNodeChunk
+	}
+	return size
+}
+
+func (p *parser) buildTree() []*Node {
+	nodeCount := int(p.nextID - 1)
+	if nodeCount == 0 {
+		return nil
+	}
+	childSlots := make([]int, nodeCount+1)
+	rootCount := 0
+	for id := int64(1); id < p.nextID; id++ {
+		node := p.nodeAt(id)
+		if node.Parent == 0 {
+			rootCount++
+		} else {
+			childSlots[node.Parent]++
+		}
+	}
+
+	edges := make([]*Node, nodeCount-rootCount)
+	offset := 0
+	for id := int64(1); id < p.nextID; id++ {
+		count := childSlots[id]
+		if count == 0 {
+			continue
+		}
+		p.nodeAt(id).Children = edges[offset : offset+count : offset+count]
+		childSlots[id] = offset
+		offset += count
+	}
+
+	roots := make([]*Node, 0, rootCount)
+	for id := int64(1); id < p.nextID; id++ {
+		node := p.nodeAt(id)
+		if node.Parent == 0 {
+			roots = append(roots, node)
+			continue
+		}
+		index := childSlots[node.Parent]
+		edges[index] = node
+		childSlots[node.Parent]++
+	}
+	return roots
+}
+
+func (p *parser) peek() Token {
+	return p.peekAt(0)
 }
 
 func (p *parser) peekAt(offset int) Token {
-	pos := p.pos + offset
-	if pos < 0 || pos >= len(p.tokens) {
+	if offset < 0 || offset >= parserLookahead {
 		return Token{Kind: TokenEOF}
 	}
-	return p.tokens[pos]
+	for p.buffered <= offset {
+		tok := p.lexer.Next()
+		for tok.Kind == TokenComment {
+			tok = p.lexer.Next()
+		}
+		index := (p.head + p.buffered) % parserLookahead
+		p.lookahead[index] = tok
+		p.buffered++
+	}
+	return p.lookahead[(p.head+offset)%parserLookahead]
 }
 
 func (p *parser) advance() Token {
 	t := p.peek()
-	if p.pos < len(p.tokens) {
-		p.pos++
+	if p.buffered > 0 {
+		p.lookahead[p.head] = Token{}
+		p.head = (p.head + 1) % parserLookahead
+		p.buffered--
 	}
 	return t
 }

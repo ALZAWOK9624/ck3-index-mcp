@@ -37,7 +37,32 @@ func benchmarkParse(b *testing.B, size int) {
 	}
 }
 
+func benchmarkLexBytes(b *testing.B, size int) {
+	source := []byte(benchmarkScript(size))
+	b.ReportAllocs()
+	b.SetBytes(int64(len(source)))
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		_ = LexBytes(source)
+	}
+}
+
+func benchmarkParseBytes(b *testing.B, size int) {
+	source := []byte(benchmarkScript(size))
+	b.ReportAllocs()
+	b.SetBytes(int64(len(source)))
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		_ = ParseBytes(source)
+	}
+}
+
 func BenchmarkLexScript100KB(b *testing.B)   { benchmarkLex(b, 100<<10) }
 func BenchmarkLexScript1MB(b *testing.B)     { benchmarkLex(b, 1<<20) }
 func BenchmarkParseScript100KB(b *testing.B) { benchmarkParse(b, 100<<10) }
 func BenchmarkParseScript1MB(b *testing.B)   { benchmarkParse(b, 1<<20) }
+
+func BenchmarkLexBytesScript100KB(b *testing.B)   { benchmarkLexBytes(b, 100<<10) }
+func BenchmarkLexBytesScript1MB(b *testing.B)     { benchmarkLexBytes(b, 1<<20) }
+func BenchmarkParseBytesScript100KB(b *testing.B) { benchmarkParseBytes(b, 100<<10) }
+func BenchmarkParseBytesScript1MB(b *testing.B)   { benchmarkParseBytes(b, 1<<20) }

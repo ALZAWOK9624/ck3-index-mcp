@@ -334,13 +334,28 @@ func publishStagedFullScan(ctx context.Context, cfg Config, stagePath string, ba
 			return err
 		}
 	}
+	// A live cache may have reached the current schema through ALTER TABLE,
+	// while a clean staging cache was created directly from the latest CREATE
+	// TABLE declaration. SQLite preserves those different physical column
+	// orders. Build every copy from explicit names before deleting anything so
+	// publication cannot silently shift values when a migration appends a new
+	// column (and cannot partially publish an incompatible future schema).
+	publicationColumns := make(map[string]string, len(publishedIndexTables))
+	for _, table := range publishedIndexTables {
+		columns, err := stagedPublicationColumnList(ctx, conn, table)
+		if err != nil {
+			return err
+		}
+		publicationColumns[table] = columns
+	}
 	for _, table := range publishedIndexTables {
 		if _, err := conn.ExecContext(ctx, `DELETE FROM `+qualifiedSQLiteIdentifier("main", table)); err != nil {
 			return fmt.Errorf("clear published table %s: %w", table, err)
 		}
 	}
 	for _, table := range publishedIndexTables {
-		if _, err := conn.ExecContext(ctx, `INSERT INTO `+qualifiedSQLiteIdentifier("main", table)+` SELECT * FROM `+qualifiedSQLiteIdentifier(stagedFullScanSchema, table)); err != nil {
+		columns := publicationColumns[table]
+		if _, err := conn.ExecContext(ctx, `INSERT INTO `+qualifiedSQLiteIdentifier("main", table)+` (`+columns+`) SELECT `+columns+` FROM `+qualifiedSQLiteIdentifier(stagedFullScanSchema, table)); err != nil {
 			return fmt.Errorf("copy staged table %s: %w", table, err)
 		}
 	}
@@ -378,6 +393,10 @@ type stagedTableQueryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
+type stagedTableColumnQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
 func verifyStagedTable(ctx context.Context, queryer stagedTableQueryer, table string) error {
 	var count int
 	if err := queryer.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+stagedFullScanSchema+`.sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
@@ -387,6 +406,51 @@ func verifyStagedTable(ctx context.Context, queryer stagedTableQueryer, table st
 		return fmt.Errorf("staged full scan is missing table %q", table)
 	}
 	return nil
+}
+
+func stagedPublicationColumnList(ctx context.Context, queryer stagedTableColumnQueryer, table string) (string, error) {
+	mainColumns, err := sqliteTableColumns(ctx, queryer, "main", table)
+	if err != nil {
+		return "", fmt.Errorf("inspect published table %s columns: %w", table, err)
+	}
+	stagedColumns, err := sqliteTableColumns(ctx, queryer, stagedFullScanSchema, table)
+	if err != nil {
+		return "", fmt.Errorf("inspect staged table %s columns: %w", table, err)
+	}
+	if len(mainColumns) == 0 || len(mainColumns) != len(stagedColumns) {
+		return "", fmt.Errorf("staged full scan table %q columns do not match the published schema", table)
+	}
+	staged := make(map[string]bool, len(stagedColumns))
+	for _, column := range stagedColumns {
+		staged[column] = true
+	}
+	quoted := make([]string, 0, len(mainColumns))
+	for _, column := range mainColumns {
+		if !staged[column] {
+			return "", fmt.Errorf("staged full scan table %q is missing column %q", table, column)
+		}
+		quoted = append(quoted, quoteSQLiteIdentifier(column))
+	}
+	return strings.Join(quoted, ","), nil
+}
+
+func sqliteTableColumns(ctx context.Context, queryer stagedTableColumnQueryer, schema, table string) ([]string, error) {
+	rows, err := queryer.QueryContext(ctx, `PRAGMA `+quoteSQLiteIdentifier(schema)+`.table_info(`+quoteSQLiteIdentifier(table)+`)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var columns []string
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, dataType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return nil, err
+		}
+		columns = append(columns, name)
+	}
+	return columns, rows.Err()
 }
 
 func qualifiedSQLiteIdentifier(schema, table string) string {

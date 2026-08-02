@@ -1,0 +1,10 @@
+[package]
+name = "ck3-index-jomini-oracle"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+jomini = { version = "=0.35.0", default-features = false }

@@ -10,7 +10,7 @@ ck3-index 公开 33 个规范工具。细分能力由各工具的受限 operatio
 
 | 参数 | 必填 | 类型 | 约束 | 说明 |
 |---|---:|---|---|---|
-| `kind` | 否 | 字符串 | 可选值=[object reference localization resource diagnostic script_key datatype] | 可选的证据类别。 |
+| `kind` | 否 | 字符串 | 可选值=[object reference localization resource diagnostic script_key script_text datatype] | 可选的证据类别。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
 | `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
 | `page` | 否 | 整数 | 最小值=1; 最大值=25; 默认值=1 | 从 1 开始的证据页码；仅在工具结果返回的已发布扫描 generation 未变化时页面顺序稳定。 |

@@ -1,6 +1,9 @@
 package script
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestParseCK3Script(t *testing.T) {
 	src := `my_event = {
@@ -166,5 +169,81 @@ local_template LocalWidget { size = { 10 20 } }`)
 	}
 	if f.Nodes[1].Key != "LocalWidget" || f.Nodes[1].Operator != "local_template" {
 		t.Fatalf("bad local template node: %+v", f.Nodes[1])
+	}
+}
+
+func TestByteEntrypointsMatchStringEntrypoints(t *testing.T) {
+	ordinary := "\ufeff\u82f9\u679c\u4e8b\u4ef6 = {\r\n\t# comment\r\n\tdesc = \"\u82f9\u679c\\\"\u6811\u7cbe\"\r\n\tvalue = @[outer[1 + 2]\r\n + 3]\r\n}\r\n"
+	if got, want := LexBytes([]byte(ordinary)), Lex(ordinary); !reflect.DeepEqual(got, want) {
+		t.Fatalf("byte lexer differs from string lexer:\n got: %#v\nwant: %#v", got, want)
+	}
+	if got, want := ParseBytes([]byte(ordinary)), Parse(ordinary); !reflect.DeepEqual(got, want) {
+		t.Fatalf("byte parser differs from string parser:\n got: %#v\nwant: %#v", got, want)
+	}
+
+	gui := "\ufefftypes \u82f9\u679c {\r\n type \u5b50 = widget { block \"\u5185\u5bb9\" { text = \"\u6811\u7cbe\" } }\r\n}"
+	if got, want := ParseGUIBytes([]byte(gui)), ParseGUI(gui); !reflect.DeepEqual(got, want) {
+		t.Fatalf("byte GUI parser differs from string parser:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestByteEntrypointsCopyMaterializedText(t *testing.T) {
+	input := []byte("apple_key = apple_value")
+	tokens := LexBytes(input)
+	parsed := ParseBytes(input)
+	for index := range input {
+		input[index] = 'x'
+	}
+	if tokens[0].Text != "apple_key" || tokens[2].Text != "apple_value" {
+		t.Fatalf("lexed tokens retained mutable input: %+v", tokens)
+	}
+	if len(parsed.Nodes) != 1 || parsed.Nodes[0].Key != "apple_key" || parsed.Nodes[0].Value != "apple_value" {
+		t.Fatalf("parsed nodes retained mutable input: %+v", parsed.Nodes)
+	}
+}
+
+func TestLexBytesTracksUTF8RuneColumns(t *testing.T) {
+	tokens := LexBytes([]byte("\u82f9\u679c = yes\r\n  \u6811\u7cbe = no"))
+	want := map[string]struct {
+		line int
+		col  int
+	}{
+		"\u82f9\u679c": {line: 1, col: 1},
+		"=":            {line: 1, col: 4},
+		"yes":          {line: 1, col: 6},
+		"\u6811\u7cbe": {line: 2, col: 3},
+		"no":           {line: 2, col: 8},
+	}
+	for _, token := range tokens {
+		position, ok := want[token.Text]
+		if !ok {
+			continue
+		}
+		if token.Line != position.line || token.Col != position.col {
+			t.Fatalf("token %q position=%d:%d want=%d:%d", token.Text, token.Line, token.Col, position.line, position.col)
+		}
+		delete(want, token.Text)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing positioned tokens: %v", want)
+	}
+}
+
+func TestLexBytesPreservesStringEscapeBehavior(t *testing.T) {
+	tokens := LexBytes([]byte("value = \"a\\\"b\\\\c\r\nline\""))
+	if len(tokens) < 4 || tokens[2].Kind != TokenString {
+		t.Fatalf("string token missing: %+v", tokens)
+	}
+	if got, want := tokens[2].Text, "a\"b\\c\rline"; got != want {
+		t.Fatalf("decoded string=%q want=%q", got, want)
+	}
+}
+
+func TestParseBytesReportsExistingErrors(t *testing.T) {
+	source := "value = @[1 + 2"
+	got := ParseBytes([]byte(source))
+	want := Parse(source)
+	if !reflect.DeepEqual(got.Errors, want.Errors) || len(got.Errors) != 1 || got.Errors[0].Line != 1 || got.Errors[0].Col != 9 {
+		t.Fatalf("byte parser errors=%+v want=%+v", got.Errors, want.Errors)
 	}
 }

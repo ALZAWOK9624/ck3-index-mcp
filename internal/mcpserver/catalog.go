@@ -16,10 +16,10 @@ func buildCanonicalTools() []ToolDefinition {
 		{
 			Name:        "ck3_search",
 			Title:       "Search CK3 Index",
-			Description: "Search when the exact CK3 id is unknown. Returns ranked object, localization, resource, reference, diagnostic, datatype, and script-key evidence.",
+			Description: "Search when the exact CK3 id is unknown. Returns ranked object, localization, resource, reference, diagnostic, datatype, script-key, and full-script token evidence.",
 			InputSchema: objectSchema(map[string]any{
 				"query":       stringProperty("CK3 id, localized text, resource path, diagnostic code, or semantic prefix."),
-				"kind":        stringProperty("Optional evidence category.", "object", "reference", "localization", "resource", "diagnostic", "script_key", "datatype"),
+				"kind":        stringProperty("Optional evidence category.", "object", "reference", "localization", "resource", "diagnostic", "script_key", "script_text", "datatype"),
 				"source":      stringProperty("Optional indexed source name."),
 				"path_prefix": stringProperty("Optional source-root-relative path prefix."),
 				"limit":       limitProperty(),

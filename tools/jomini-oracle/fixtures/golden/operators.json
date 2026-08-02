@@ -1,0 +1,30 @@
+{
+  "schema": "ck3-index-jomini-text-tape/v1",
+  "jomini": "0.35.0",
+  "utf8_bom": false,
+  "tokens": [
+    {"index":0,"kind":"unquoted","bytes_hex":"6c657373","utf8":"less"},
+    {"index":1,"kind":"operator","name":"LESS_THAN","symbol":"<"},
+    {"index":2,"kind":"unquoted","bytes_hex":"31","utf8":"1"},
+    {"index":3,"kind":"unquoted","bytes_hex":"6c6573735f6f725f657175616c","utf8":"less_or_equal"},
+    {"index":4,"kind":"operator","name":"LESS_THAN_EQUAL","symbol":"<="},
+    {"index":5,"kind":"unquoted","bytes_hex":"32","utf8":"2"},
+    {"index":6,"kind":"unquoted","bytes_hex":"67726561746572","utf8":"greater"},
+    {"index":7,"kind":"operator","name":"GREATER_THAN","symbol":">"},
+    {"index":8,"kind":"unquoted","bytes_hex":"33","utf8":"3"},
+    {"index":9,"kind":"unquoted","bytes_hex":"677265617465725f6f725f657175616c","utf8":"greater_or_equal"},
+    {"index":10,"kind":"operator","name":"GREATER_THAN_EQUAL","symbol":">="},
+    {"index":11,"kind":"unquoted","bytes_hex":"34","utf8":"4"},
+    {"index":12,"kind":"unquoted","bytes_hex":"6e6f745f657175616c","utf8":"not_equal"},
+    {"index":13,"kind":"operator","name":"NOT_EQUAL","symbol":"!="},
+    {"index":14,"kind":"unquoted","bytes_hex":"35","utf8":"5"},
+    {"index":15,"kind":"unquoted","bytes_hex":"6578616374","utf8":"exact"},
+    {"index":16,"kind":"operator","name":"EXACT","symbol":"=="},
+    {"index":17,"kind":"unquoted","bytes_hex":"36","utf8":"6"},
+    {"index":18,"kind":"unquoted","bytes_hex":"657869737473","utf8":"exists"},
+    {"index":19,"kind":"operator","name":"EXISTS","symbol":"?="},
+    {"index":20,"kind":"unquoted","bytes_hex":"796573","utf8":"yes"},
+    {"index":21,"kind":"unquoted","bytes_hex":"657175616c","utf8":"equal"},
+    {"index":22,"kind":"unquoted","bytes_hex":"38","utf8":"8"}
+  ]
+}

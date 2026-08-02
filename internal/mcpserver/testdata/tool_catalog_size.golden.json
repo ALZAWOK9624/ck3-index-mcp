@@ -1,8 +1,8 @@
 {
   "tools": 33,
-  "total_bytes": 118158,
-  "description_bytes": 21832,
-  "input_schema_bytes": 65807,
+  "total_bytes": 118191,
+  "description_bytes": 21851,
+  "input_schema_bytes": 65821,
   "output_schema_bytes": 24251,
   "name_and_title_bytes": 1212,
   "annotation_bytes": 2217,

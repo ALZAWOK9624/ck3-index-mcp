@@ -145,7 +145,7 @@ func legacyToolCatalog() []map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"query":         map[string]any{"type": "string", "description": "CK3 id, key, resource path, diagnostic code, or semantic prefix."},
-			"kind":          map[string]any{"type": "string", "description": "Optional category: object, reference, localization, resource, diagnostic, script_key, or datatype."},
+			"kind":          map[string]any{"type": "string", "description": "Optional category: object, reference, localization, resource, diagnostic, script_key, script_text, or datatype."},
 			"source":        map[string]any{"type": "string", "description": "Optional indexed source name such as project, godherja, game, or translation."},
 			"path_prefix":   map[string]any{"type": "string", "description": "Optional source-root-relative path prefix."},
 			"limit":         map[string]any{"type": "integer", "description": "Maximum evidence items. Defaults to 8, caps at 20."},
@@ -155,7 +155,7 @@ func legacyToolCatalog() []map[string]any {
 		"required": []string{"query"},
 	}
 	return []map[string]any{
-		{"name": "ck3_search", "description": "START HERE for broad CK3 discovery before rg. Searches ids, references, English/Chinese localization values, resources, script fields, datatypes, and FTS5 content with exact matches first.", "inputSchema": searchSchema},
+		{"name": "ck3_search", "description": "START HERE for broad CK3 discovery before rg. Searches ids, references, English/Chinese localization values, resources, script fields, datatypes, and full-script token content with exact matches first.", "inputSchema": searchSchema},
 		{"name": "ck3_inspect", "description": "START HERE for one CK3 id. Aggregates object, localization, resource, sound, reference, and diagnostic classification in one call.", "inputSchema": schema("Object id, localization key, resource path, sound id, or diagnostic clue.")},
 		{"name": "ck3_review", "description": "START HERE for CK3 code review. Reviews proposed complete files, or current dirty project files when files are omitted, including parser, scope, refs, localization, and resources.", "inputSchema": reviewSchema},
 		{"name": "query_object", "description": "Primary CK3 semantic definition lookup; use before raw text search. Returns active definitions and override context.", "inputSchema": schema("Object id or type:id.")},

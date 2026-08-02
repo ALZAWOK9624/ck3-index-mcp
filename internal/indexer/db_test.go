@@ -109,7 +109,7 @@ func TestEnsureSchemaMigratesOldFilesTable(t *testing.T) {
 	if err := db.EnsureSchema(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	for _, column := range []string{"overridden", "override_reason", "file_size"} {
+	for _, column := range []string{"overridden", "override_reason", "file_size", "search_text"} {
 		var count int
 		if err := db.sql.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('files') WHERE name=?`, column).Scan(&count); err != nil {
 			t.Fatal(err)

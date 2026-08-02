@@ -5,10 +5,170 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestStagedPublicationCopiesMigratedSchemaByColumnName(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	project := filepath.Join(dir, "project")
+	rel := "common/traits/staged_column_order.txt"
+	sourcePath := filepath.Join(project, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sourcePath, []byte(`staged_column_order = {
+		nested = { value = zz_staged_column_search }
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(dir, "cache", "test.sqlite")
+	legacy, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This is the files layout from before incremental migrations. EnsureSchema
+	// appends newer columns, so file_size follows the override columns even
+	// though a clean database places it before sha256. search_text remains last
+	// in both layouts, which also guards the current clean-schema convention.
+	if _, err := legacy.sql.ExecContext(ctx, `CREATE TABLE files (
+		id INTEGER PRIMARY KEY,
+		source_name TEXT NOT NULL,
+		source_rank INTEGER NOT NULL,
+		path TEXT NOT NULL,
+		rel_path TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		mtime INTEGER NOT NULL,
+		sha256 TEXT NOT NULL
+	)`); err != nil {
+		legacy.Close()
+		t.Fatal(err)
+	}
+	if err := legacy.EnsureSchema(ctx); err != nil {
+		legacy.Close()
+		t.Fatal(err)
+	}
+	columns, err := sqliteTableColumns(ctx, legacy.sql, "main", "files")
+	if err != nil {
+		legacy.Close()
+		t.Fatal(err)
+	}
+	columnIndex := func(wanted string) int {
+		for index, column := range columns {
+			if column == wanted {
+				return index
+			}
+		}
+		return -1
+	}
+	if columnIndex("override_rule") < 0 || columnIndex("file_size") <= columnIndex("override_rule") || columnIndex("search_text") != len(columns)-1 {
+		legacy.Close()
+		t.Fatalf("fixture did not create a migrated physical column order: %v", columns)
+	}
+	for key, value := range map[string]string{
+		"scan_generation":    "7",
+		"scan_revision":      "legacy-column-order",
+		"scan_status":        "ready",
+		"scan_committed_at":  "2026-08-02T00:00:00Z",
+		"index_rule_version": "2026-08-02-v0.5.0-script-text-1",
+	} {
+		if _, err := legacy.sql.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES(?,?)`, key, value); err != nil {
+			legacy.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Config{
+		ConfigPath: filepath.Join(dir, "ck3-index.toml"),
+		Database:   "cache/test.sqlite",
+		Sources:    []Source{{Name: "project", Path: project, Rank: 1, Role: SourceRoleProject, Private: true}},
+	}
+	if _, err := ScanFullStaged(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	published, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer published.Close()
+	var overridden int
+	var searchText, overrideRule string
+	if err := published.sql.QueryRowContext(ctx, `SELECT overridden,search_text,override_rule FROM files WHERE rel_path=?`, rel).
+		Scan(&overridden, &searchText, &overrideRule); err != nil {
+		t.Fatal(err)
+	}
+	if overridden != 0 || overrideRule != "" || !strings.Contains(searchText, "zz_staged_column_search") {
+		t.Fatalf("staged publication shifted files columns: overridden=%d override_rule=%q search_text=%q", overridden, overrideRule, searchText)
+	}
+	version, err := published.metaValue(ctx, "index_rule_version")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != indexRuleVersion {
+		t.Fatalf("published index rule version = %q, want %q", version, indexRuleVersion)
+	}
+	result, err := published.LLMSearch(ctx, SearchOptions{
+		Query: "zz_staged_column_search", Kind: "script_text",
+		LLMOptions: LLMOptions{AllowProject: true, Limit: 8},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Evidence) != 1 || result.Evidence[0].Path != rel {
+		t.Fatalf("staged script-text search evidence = %+v", result.Evidence)
+	}
+}
+
+func TestStagedPublicationRejectsColumnSetMismatchBeforeClearingLiveRows(t *testing.T) {
+	ctx := context.Background()
+	cfg, reader, sourcePath, dbPath := stagedFullRefreshFixture(t)
+	before, err := reader.IndexState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("staged_future_schema = {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stagePath, err := stagedFullScanPath(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer removeStagedDatabase(stagePath)
+	stageConfig := cfg
+	stageConfig.Database = stagePath
+	stageConfig.ForceClean = true
+	if _, err := scanWithMode(ctx, stageConfig, true); err != nil {
+		t.Fatal(err)
+	}
+	stage, err := Open(stagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stage.sql.ExecContext(ctx, `ALTER TABLE files ADD COLUMN future_only_column TEXT NOT NULL DEFAULT ''`); err != nil {
+		stage.Close()
+		t.Fatal(err)
+	}
+	if err := stage.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err = publishStagedFullScan(ctx, cfg, stagePath, publicationBaseFromState(before))
+	if err == nil || !strings.Contains(err.Error(), `table "files" columns do not match`) {
+		t.Fatalf("column-set mismatch publication error = %v", err)
+	}
+	oldObject, err := reader.QueryObject(ctx, "staged_before")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(oldObject.Definitions) != 1 {
+		t.Fatalf("column-set mismatch cleared the live generation: %+v", oldObject)
+	}
+}
 
 func stagedFullRefreshFixture(t *testing.T) (Config, *DB, string, string) {
 	t.Helper()

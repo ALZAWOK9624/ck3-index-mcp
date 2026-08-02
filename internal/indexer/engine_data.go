@@ -396,6 +396,7 @@ func rebuildSearchFTS(ctx context.Context, tx *sql.Tx) error {
 		`INSERT INTO search_fts(kind,name,text,source,path,file_id) SELECT 'object',o.name,o.object_type||' '||o.name||' '||f.rel_path,o.source_name,f.rel_path,f.id FROM objects o JOIN files f ON f.id=o.file_id WHERE f.overridden=0`,
 		`INSERT INTO search_fts(kind,name,text,source,path,file_id) SELECT 'resource',r.resource_path,r.kind||' '||r.resource_path,r.source_name,f.rel_path,f.id FROM resources r JOIN files f ON f.id=r.file_id WHERE f.overridden=0`,
 		`INSERT INTO search_fts(kind,name,text,source,path,file_id) SELECT 'script_key',o.field,o.field||' '||o.object_name||' '||o.raw,o.source_name,f.rel_path,f.id FROM object_fields o JOIN files f ON f.id=o.file_id WHERE f.overridden=0`,
+		`INSERT INTO search_fts(kind,name,text,source,path,file_id) SELECT 'script_text',f.rel_path,f.search_text,f.source_name,f.rel_path,f.id FROM files f WHERE f.overridden=0 AND f.kind='script'`,
 		`INSERT INTO search_fts(kind,name,text,source,path,file_id) SELECT 'localization',l.key,l.key||' '||l.value,l.source_name,f.rel_path,f.id FROM localization l JOIN files f ON f.id=l.file_id WHERE f.overridden=0 AND (lower(l.language) LIKE '%english%' OR lower(l.language) LIKE '%simp%')`,
 		`INSERT INTO search_fts(kind,name,text,source,path,file_id) SELECT 'datatype',name,signature||' '||COALESCE(description,'')||' '||COALESCE(return_type,''),'engine_logs',source_path,0 FROM engine_datatypes`,
 	}

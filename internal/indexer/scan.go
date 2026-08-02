@@ -116,7 +116,7 @@ type fileRecord struct {
 	OverrideRule     string
 }
 
-const indexRuleVersion = "2026-07-24-v0.5.0-diagnostic-provenance-2"
+const indexRuleVersion = "2026-08-02-v0.5.0-script-text-2"
 
 // Keep ordinary full scans well below SQLite's variable limit when they take
 // the scoped resolver/validator path. Larger edits remain correct by falling
@@ -372,7 +372,7 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanS
 				rel:        rel,
 				kind:       kind,
 				prev:       existing[path],
-				forceParse: engineDataDirty && kind == "script",
+				forceParse: (engineDataDirty || cachedRuleVersion != indexRuleVersion) && kind == "script",
 			})
 			return nil
 		}); err != nil {
@@ -527,7 +527,7 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanS
 					return ScanStats{}, err
 				}
 			}
-			if _, err := writer.fileStmt.ExecContext(ctx, src.Name, src.Rank, res.job.path, res.job.rel, res.job.kind, res.info.ModTime().UnixNano(), res.info.Size(), res.sum, 1,
+			if _, err := writer.fileStmt.ExecContext(ctx, src.Name, src.Rank, res.job.path, res.job.rel, res.job.kind, res.info.ModTime().UnixNano(), res.info.Size(), res.sum, "", 1,
 				res.job.overrideReason, res.job.overrideBySource, res.job.overrideByRank, res.job.overrideRule); err != nil {
 				return ScanStats{}, err
 			}
@@ -971,7 +971,7 @@ func refreshSkippedFileMetadata(ctx context.Context, tx *sql.Tx, result fileResu
 
 func writeFileResult(ctx context.Context, w scanWriter, res fileResult, stats *ScanStats, locKeys, resources map[string]bool) (fileRecord, error) {
 	src := res.job.src
-	r2, err := w.fileStmt.ExecContext(ctx, src.Name, src.Rank, res.job.path, res.job.rel, res.job.kind, res.info.ModTime().UnixNano(), res.info.Size(), res.sum, 0, "", "", 0, "")
+	r2, err := w.fileStmt.ExecContext(ctx, src.Name, src.Rank, res.job.path, res.job.rel, res.job.kind, res.info.ModTime().UnixNano(), res.info.Size(), res.sum, res.searchText, 0, "", "", 0, "")
 	if err != nil {
 		return fileRecord{}, err
 	}
@@ -1275,9 +1275,9 @@ func localizationReferencesInScriptFile(path, rel, source string, rank int) (map
 	}
 	var parsed script.File
 	if strings.HasSuffix(strings.ToLower(rel), ".gui") {
-		parsed = script.ParseGUI(string(data))
+		parsed = script.ParseGUIBytes(data)
 	} else {
-		parsed = script.Parse(string(data))
+		parsed = script.ParseBytes(data)
 	}
 	rec := fileRecord{Path: path, RelPath: rel, SourceName: source, SourceRank: rank, Kind: "script"}
 	objects := extractObjects(rec, parsed.Nodes)
@@ -1727,6 +1727,7 @@ type fileResult struct {
 	ctxDiags      []ctxDiag
 	savedScopes   []string
 	variables     []string
+	searchText    string
 	work          fileWorkMetrics
 	err           error
 }
@@ -1953,13 +1954,14 @@ func parseOneFile(j fileJob) fileResult {
 		var parsed script.File
 		isGUI := strings.HasSuffix(strings.ToLower(j.rel), ".gui")
 		if isGUI {
-			parsed = script.ParseGUI(string(data))
+			parsed = script.ParseGUIBytes(data)
 		} else {
-			parsed = script.Parse(string(data))
+			parsed = script.ParseBytes(data)
 		}
 		result.work.parseFinished = time.Now()
 		result.work.parseCPU += result.work.parseFinished.Sub(parseStart)
 		result.parseErrors = parsed.Errors
+		result.searchText = buildScriptSearchText(parsed.Nodes)
 		lintStart := time.Now()
 		if !isGUI {
 			result.ctxDiags = checkScriptContext(parsed.Nodes, j.rel)

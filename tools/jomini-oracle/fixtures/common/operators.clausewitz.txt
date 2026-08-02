@@ -1,0 +1,9 @@
+less < 1
+less_or_equal <= 2
+greater > 3
+greater_or_equal >= 4
+not_equal != 5
+exact == 6
+exists ?= yes
+equal = 8
+

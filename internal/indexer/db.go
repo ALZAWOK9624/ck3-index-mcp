@@ -188,6 +188,7 @@ func (db *DB) ensureSchema(ctx context.Context) error {
 		{"refs", "resolution_reason", "TEXT NOT NULL DEFAULT ''"},
 		{"object_fields", "date_key", "INTEGER NOT NULL DEFAULT 0"},
 		{"files", "file_size", "INTEGER NOT NULL DEFAULT -1"},
+		{"files", "search_text", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, migration := range migrations {
 		if err := db.ensureColumn(ctx, migration.table, migration.column, migration.definition); err != nil {
@@ -238,7 +239,8 @@ func (db *DB) ensureSchemaNoIndexes(ctx context.Context) error {
 			override_reason TEXT NOT NULL DEFAULT '',
 			override_by_source TEXT NOT NULL DEFAULT '',
 			override_by_rank INTEGER NOT NULL DEFAULT 0,
-			override_rule TEXT NOT NULL DEFAULT ''
+			override_rule TEXT NOT NULL DEFAULT '',
+			search_text TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE TABLE IF NOT EXISTS nodes (
 			id INTEGER PRIMARY KEY,

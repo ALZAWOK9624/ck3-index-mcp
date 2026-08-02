@@ -2,7 +2,11 @@ package indexer
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -101,6 +105,13 @@ func (db *DB) LLMSearch(ctx context.Context, opts SearchOptions) (LLMResult, err
 	if fetchLimit > 501 {
 		fetchLimit = 501
 	}
+	searcherLimit := fetchLimit
+	if opts.publicMode() {
+		// Public policy is applied before cross-kind ranking/capacity. Fetch a
+		// bounded surplus so private rows returned by an individual legacy
+		// searcher do not hide public rows that follow them.
+		searcherLimit = expandedSearchCandidateLimit(fetchLimit)
+	}
 	prefix := escapeLike(query) + "%"
 	result := LLMResult{
 		Query:  query,
@@ -117,13 +128,15 @@ func (db *DB) LLMSearch(ctx context.Context, opts SearchOptions) (LLMResult, err
 		fn   func() ([]LLMEvidence, error)
 	}
 	searchers := []searcher{
-		{"object", func() ([]LLMEvidence, error) { return db.searchObjects(ctx, query, prefix, opts, fetchLimit) }},
-		{"reference", func() ([]LLMEvidence, error) { return db.searchRefs(ctx, query, prefix, opts, fetchLimit) }},
-		{"localization", func() ([]LLMEvidence, error) { return db.searchLocalizationKeys(ctx, query, prefix, opts, fetchLimit) }},
-		{"resource", func() ([]LLMEvidence, error) { return db.searchResources(ctx, query, prefix, opts, fetchLimit) }},
-		{"diagnostic", func() ([]LLMEvidence, error) { return db.searchDiagnostics(ctx, query, prefix, opts, fetchLimit) }},
-		{"script_key", func() ([]LLMEvidence, error) { return db.searchScriptKeys(ctx, query, prefix, opts, fetchLimit) }},
-		{"datatype", func() ([]LLMEvidence, error) { return db.searchDatatypes(ctx, query, prefix, opts, fetchLimit) }},
+		{"object", func() ([]LLMEvidence, error) { return db.searchObjects(ctx, query, prefix, opts, searcherLimit) }},
+		{"reference", func() ([]LLMEvidence, error) { return db.searchRefs(ctx, query, prefix, opts, searcherLimit) }},
+		{"localization", func() ([]LLMEvidence, error) {
+			return db.searchLocalizationKeys(ctx, query, prefix, opts, searcherLimit)
+		}},
+		{"resource", func() ([]LLMEvidence, error) { return db.searchResources(ctx, query, prefix, opts, searcherLimit) }},
+		{"diagnostic", func() ([]LLMEvidence, error) { return db.searchDiagnostics(ctx, query, prefix, opts, searcherLimit) }},
+		{"script_key", func() ([]LLMEvidence, error) { return db.searchScriptKeys(ctx, query, prefix, opts, searcherLimit) }},
+		{"datatype", func() ([]LLMEvidence, error) { return db.searchDatatypes(ctx, query, prefix, opts, searcherLimit) }},
 	}
 	for _, search := range searchers {
 		if opts.Kind != "" && opts.Kind != search.kind {
@@ -133,6 +146,7 @@ func (db *DB) LLMSearch(ctx context.Context, opts SearchOptions) (LLMResult, err
 		if err != nil {
 			return LLMResult{}, err
 		}
+		evidence = filterSearchEvidenceBeforeCapacity(evidence, opts.LLMOptions)
 		result.Counts[search.kind] = len(evidence)
 		result.Evidence = append(result.Evidence, evidence...)
 	}
@@ -156,19 +170,38 @@ func (db *DB) LLMSearch(ctx context.Context, opts SearchOptions) (LLMResult, err
 	if len(result.Evidence) > fetchLimit {
 		result.Evidence = result.Evidence[:fetchLimit]
 	}
-	if len(result.Evidence) < fetchLimit {
-		fts, err := db.searchFTS(ctx, query, opts, fetchLimit-len(result.Evidence))
+	if len(result.Evidence) < fetchLimit && opts.Kind != "script_text" {
+		remaining := fetchLimit - len(result.Evidence)
+		ftsLimit := remaining
+		if opts.publicMode() {
+			ftsLimit = expandedSearchCandidateLimit(remaining)
+		}
+		fts, err := db.searchFTS(ctx, query, opts, ftsLimit)
 		if err != nil {
 			return LLMResult{}, err
 		}
+		fts = filterSearchEvidenceBeforeCapacity(fts, opts.LLMOptions)
 		result.Counts["fts"] = len(fts)
 		result.Evidence = appendUniqueEvidence(result.Evidence, fts, fetchLimit)
 	}
-	if len(result.Evidence) == 0 {
-		contains, err := db.searchContains(ctx, query, opts, fetchLimit-len(result.Evidence))
+	if len(result.Evidence) < fetchLimit && (opts.Kind == "" || opts.Kind == "script_text") {
+		scriptText, err := db.searchScriptText(ctx, query, opts, fetchLimit-len(result.Evidence))
 		if err != nil {
 			return LLMResult{}, err
 		}
+		result.Counts["script_text"] = len(scriptText)
+		result.Evidence = appendUniqueEvidence(result.Evidence, scriptText, fetchLimit)
+	}
+	if len(result.Evidence) == 0 && opts.Kind != "script_text" {
+		containsLimit := fetchLimit - len(result.Evidence)
+		if opts.publicMode() {
+			containsLimit = expandedSearchCandidateLimit(containsLimit)
+		}
+		contains, err := db.searchContains(ctx, query, opts, containsLimit)
+		if err != nil {
+			return LLMResult{}, err
+		}
+		contains = filterSearchEvidenceBeforeCapacity(contains, opts.LLMOptions)
 		result.Counts["contains"] = len(contains)
 		result.Evidence = appendUniqueEvidence(result.Evidence, contains, fetchLimit)
 	}
@@ -184,6 +217,30 @@ func (db *DB) LLMSearch(ctx context.Context, opts SearchOptions) (LLMResult, err
 		result.NextQueries = []LLMNextQuery{{Tool: "ck3_inspect", ID: id, Reason: "inspect the highest-ranked semantic match"}}
 	}
 	return result, nil
+}
+
+func expandedSearchCandidateLimit(limit int) int {
+	if limit <= 0 {
+		return 0
+	}
+	expanded := limit * 8
+	if expanded < limit || expanded > 501 {
+		return 501
+	}
+	return expanded
+}
+
+func filterSearchEvidenceBeforeCapacity(in []LLMEvidence, opts LLMOptions) []LLMEvidence {
+	if !opts.publicMode() {
+		return in
+	}
+	out := make([]LLMEvidence, 0, len(in))
+	for _, evidence := range in {
+		if !opts.sourceIsPrivate(evidence.Source) {
+			out = append(out, evidence)
+		}
+	}
+	return out
 }
 
 func dedupeSearchEvidence(in []LLMEvidence) []LLMEvidence {
@@ -237,7 +294,7 @@ func (db *DB) searchFTS(ctx context.Context, query string, opts SearchOptions, l
 		return nil, nil
 	}
 	match := `"` + strings.ReplaceAll(query, `"`, `""`) + `"`
-	rows, err := db.sql.QueryContext(ctx, `SELECT kind,name,text,source,path,bm25(search_fts) FROM search_fts WHERE search_fts MATCH ? AND (?='' OR kind=?) AND (?='' OR source=?) AND (?='' OR path LIKE ?) ORDER BY bm25(search_fts),name LIMIT ?`, match, opts.Kind, opts.Kind, opts.Source, opts.Source, opts.PathPrefix, escapeLike(opts.PathPrefix)+"%", limit)
+	rows, err := db.sql.QueryContext(ctx, `SELECT kind,name,text,source,path,bm25(search_fts) FROM search_fts WHERE search_fts MATCH ? AND kind<>'script_text' AND (?='' OR kind=?) AND (?='' OR source=?) AND (?='' OR path LIKE ?) ORDER BY bm25(search_fts),name LIMIT ?`, match, opts.Kind, opts.Kind, opts.Source, opts.Source, opts.PathPrefix, escapeLike(opts.PathPrefix)+"%", limit)
 	if err != nil {
 		return nil, fmt.Errorf("FTS5 query failed: %w", err)
 	}
@@ -254,6 +311,125 @@ func (db *DB) searchFTS(ctx context.Context, query string, opts SearchOptions, l
 		out = append(out, ev)
 	}
 	return out, rows.Err()
+}
+
+// searchScriptText is intentionally separate from ordinary semantic FTS.
+// File-wide matches are lower-confidence discovery evidence and therefore run
+// only after structured ids/refs/fields and the existing semantic FTS rows.
+// Public calls filter source policy in SQL and again before touching files, so
+// a private candidate can never trigger a source read or snippet generation.
+func (db *DB) searchScriptText(ctx context.Context, query string, opts SearchOptions, limit int) ([]LLMEvidence, error) {
+	if limit <= 0 || len([]rune(query)) < 2 {
+		return nil, nil
+	}
+	// Restrict MATCH to the compact AST document. The row's kind, source, and
+	// relative path are indexed for the shared table's legacy consumers, but a
+	// hit in that metadata cannot be resolved to a script-token location.
+	match := `text : "` + strings.ReplaceAll(query, `"`, `""`) + `"`
+	queryText := `SELECT s.source,s.path,s.file_id,f.id,f.source_name,f.rel_path,f.path,f.file_size,f.sha256,bm25(search_fts)
+		FROM search_fts s
+		JOIN files f ON CAST(s.file_id AS INTEGER)=f.id
+			AND s.source=f.source_name AND s.path=f.rel_path`
+	args := []any{match, opts.Source, opts.Source, opts.PathPrefix, escapeLike(opts.PathPrefix) + "%"}
+	if opts.publicMode() {
+		queryText += ` JOIN source_layers sl ON lower(sl.name)=lower(f.source_name) AND sl.private=0`
+	}
+	queryText += ` WHERE search_fts MATCH ? AND s.kind='script_text' AND f.overridden=0
+		AND (?='' OR f.source_name=?) AND (?='' OR f.rel_path LIKE ? ESCAPE '\')
+		ORDER BY bm25(search_fts),f.source_rank,f.rel_path LIMIT ?`
+	args = append(args, expandedSearchCandidateLimit(limit))
+	rows, err := db.sql.QueryContext(ctx, queryText, args...)
+	if err != nil {
+		return nil, fmt.Errorf("script-text FTS5 query failed: %w", err)
+	}
+	defer rows.Close()
+	var out []LLMEvidence
+	for rows.Next() {
+		var ftsSource, ftsPath, ftsFileID string
+		var fileID int64
+		var source, relPath, absolutePath, fileSHA string
+		var fileSize int64
+		var score float64
+		if err := rows.Scan(&ftsSource, &ftsPath, &ftsFileID, &fileID, &source, &relPath, &absolutePath, &fileSize, &fileSHA, &score); err != nil {
+			return nil, err
+		}
+		if ftsSource != source || ftsPath != relPath || ftsFileID != fmt.Sprint(fileID) {
+			continue
+		}
+		if opts.publicMode() && opts.sourceIsPrivate(source) {
+			continue
+		}
+		data, ok := readVerifiedIndexedScript(absolutePath, relPath, fileSize, fileSHA)
+		if !ok {
+			continue
+		}
+		location, ok := locateScriptText(data, query)
+		if !ok {
+			continue
+		}
+		evidence := LLMEvidence{
+			Kind:    "script_text",
+			Name:    query,
+			Source:  source,
+			Path:    evidencePath(relPath),
+			Detail:  "verified indexed full-script token match",
+			Line:    location.Line,
+			Column:  location.Column,
+			Snippet: location.Snippet,
+		}
+		out = append(out, evidence)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, rows.Err()
+}
+
+func readVerifiedIndexedScript(indexedPath, relPath string, indexedSize int64, indexedSHA string) ([]byte, bool) {
+	root, err := indexedSourceRoot(indexedPath, relPath)
+	if err != nil {
+		return nil, false
+	}
+	if err := validateSourceRoots([]Source{{Name: "indexed", Path: root}}); err != nil {
+		return nil, false
+	}
+	safePath, info, err := sourceRegularFileAt(root, relPath)
+	if err != nil || filepath.Clean(safePath) != filepath.Clean(indexedPath) {
+		return nil, false
+	}
+	if indexedSize >= 0 && info.Size() != indexedSize {
+		return nil, false
+	}
+	data, err := os.ReadFile(safePath)
+	if err != nil {
+		return nil, false
+	}
+	digest := sha256.Sum256(data)
+	if indexedSHA == "" || !strings.EqualFold(hex.EncodeToString(digest[:]), indexedSHA) {
+		return nil, false
+	}
+	return data, true
+}
+
+func indexedSourceRoot(indexedPath, relPath string) (string, error) {
+	if !filepath.IsAbs(indexedPath) || filepath.IsAbs(relPath) || filepath.VolumeName(relPath) != "" {
+		return "", fmt.Errorf("indexed script path is not source-root relative")
+	}
+	cleanRel := filepath.Clean(filepath.FromSlash(relPath))
+	if cleanRel == "." || cleanRel == ".." || strings.HasPrefix(cleanRel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("indexed script path escapes its source root")
+	}
+	root := filepath.Clean(indexedPath)
+	for _, component := range strings.Split(cleanRel, string(filepath.Separator)) {
+		if component == "" || component == "." || component == ".." {
+			return "", fmt.Errorf("indexed script path has an invalid component")
+		}
+		root = filepath.Dir(root)
+	}
+	if filepath.Clean(filepath.Join(root, cleanRel)) != filepath.Clean(indexedPath) {
+		return "", fmt.Errorf("indexed script path does not match its relative path")
+	}
+	return root, nil
 }
 
 func (db *DB) searchContains(ctx context.Context, query string, opts SearchOptions, limit int) ([]LLMEvidence, error) {

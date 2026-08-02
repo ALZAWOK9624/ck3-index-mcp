@@ -580,8 +580,8 @@ func prepareScanWriter(ctx context.Context, tx *sql.Tx) (scanWriter, func(), err
 			_ = stmt.Close()
 		}
 	}
-	fileStmt, err := prep(`INSERT INTO files(source_name,source_rank,path,rel_path,kind,mtime,file_size,sha256,overridden,
-		override_reason,override_by_source,override_by_rank,override_rule) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+	fileStmt, err := prep(`INSERT INTO files(source_name,source_rank,path,rel_path,kind,mtime,file_size,sha256,search_text,overridden,
+		override_reason,override_by_source,override_by_rank,override_rule) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		closeFn()
 		return scanWriter{}, nil, err

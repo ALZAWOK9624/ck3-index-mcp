@@ -1,0 +1,18 @@
+# Generic Clausewitz plaintext shared by the differential subset.
+realm = {
+    id = example.realm:alpha
+    name = "检索测试"
+    tooltip = "quoted \"value\" with a backslash: \\"
+    enabled = yes
+    weight = -12.5
+    aliases = { first second third }
+    threshold >= 10
+    tint = rgb { 10 20 30 }
+    mixed = { head field = value tail }
+    nested = {
+        child = {
+            value = @shared_value
+        }
+    }
+}
+

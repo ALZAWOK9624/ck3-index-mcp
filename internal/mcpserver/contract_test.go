@@ -191,6 +191,18 @@ func TestCanonicalLimitSchemasAreUniform(t *testing.T) {
 	assertLimit("map_render.layers[].limit", layerLimit)
 }
 
+func TestSearchSchemaAdvertisesFullScriptTokens(t *testing.T) {
+	search, ok := findCanonicalTool("ck3_search")
+	if !ok {
+		t.Fatal("ck3_search is missing")
+	}
+	kind := search.InputSchema["properties"].(map[string]any)["kind"].(map[string]any)
+	values := kind["enum"].([]string)
+	if !slices.Contains(values, "script_text") {
+		t.Fatalf("ck3_search kind enum does not expose script_text: %+v", values)
+	}
+}
+
 func TestPhysicalContextSchemaExposesSurfaceMaterials(t *testing.T) {
 	tool, ok := findCanonicalTool("map_physical_context")
 	if !ok {

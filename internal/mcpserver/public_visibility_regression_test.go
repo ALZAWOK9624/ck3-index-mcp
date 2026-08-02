@@ -26,8 +26,8 @@ func TestPublicSearchDoesNotLeakPrivateCountsOrNextActions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write(project, "common/traits/hidden.txt", "hidden_search_target = {}\n")
-	write(game, "common/traits/visible.txt", "visible_search_target = {}\n")
+	write(project, "common/traits/hidden.txt", "hidden_search_target = { value = search_target }\n")
+	write(game, "common/traits/visible.txt", "visible_search_target = { value = search_target }\n")
 	cfg := indexer.Config{
 		ConfigPath: filepath.Join(dir, "ck3-index.toml"),
 		Database:   "cache/test.sqlite",
@@ -67,7 +67,23 @@ func TestPublicSearchDoesNotLeakPrivateCountsOrNextActions(t *testing.T) {
 		t.Fatalf("public search retained follow-up actions: %+v", body)
 	}
 	evidence := body["evidence"].([]any)
-	if len(evidence) != 1 || evidence[0].(map[string]any)["source"] != "public-game" {
+	if len(evidence) == 0 {
 		t.Fatalf("public search did not retain only public evidence: %+v", body)
+	}
+	foundObject, foundScriptText := false, false
+	for _, raw := range evidence {
+		item := raw.(map[string]any)
+		if item["source"] != "public-game" {
+			t.Fatalf("public search retained non-public evidence: %+v", body)
+		}
+		if item["kind"] == "object" {
+			foundObject = true
+		}
+		if item["kind"] == "script_text" {
+			foundScriptText = true
+		}
+	}
+	if !foundObject || !foundScriptText {
+		t.Fatalf("public search lost structured or full-script public evidence: %+v", body)
 	}
 }

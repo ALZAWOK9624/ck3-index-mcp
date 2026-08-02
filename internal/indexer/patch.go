@@ -327,9 +327,18 @@ func (db *DB) LLMPreflightPatch(ctx context.Context, files []PatchFileInput, opt
 			symbols.resources[res] = true
 		}
 	}
-	activeTitles, err := collectActiveTitleOccurrences(ctx, db.sql)
-	if err != nil {
-		return LLMResult{}, err
+	// collectActiveTitleOccurrences reads and fully parses every active
+	// landed_titles file in the workspace. That is the most expensive thing in
+	// a preflight by a wide margin, and its only consumer is the duplicate
+	// barony-province check below, which cannot fire unless the patch itself
+	// declares a barony. Patches that touch no titles used to pay for it
+	// anyway, on every ck3_impact, ck3_review and ck3_preflight.
+	var activeTitles []titleOccurrence
+	if patchDeclaresBarony(analyses) {
+		activeTitles, err = collectActiveTitleOccurrences(ctx, db.sql)
+		if err != nil {
+			return LLMResult{}, err
+		}
 	}
 	bestRank := map[string]int{}
 	for _, item := range activeTitles {
@@ -830,6 +839,21 @@ func (db *DB) objectsForRelPath(ctx context.Context, rel string) ([]objectRow, e
 		out = append(out, obj)
 	}
 	return out, rows.Err()
+}
+
+// patchDeclaresBarony reports whether any analysed file declares a barony
+// title. It mirrors exactly the filter the duplicate-province check applies, so
+// skipping the workspace title scan cannot change a result: with no barony in
+// the patch that check has nothing to compare against.
+func patchDeclaresBarony(analyses []VirtualFileAnalysis) bool {
+	for _, analysis := range analyses {
+		for _, obj := range analysis.Objects {
+			if obj.Type == "title" && strings.HasPrefix(obj.Name, "b_") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (db *DB) refCountForName(ctx context.Context, name string) (int, error) {

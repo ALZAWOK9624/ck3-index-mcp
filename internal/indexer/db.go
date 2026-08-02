@@ -712,6 +712,11 @@ var indexStmts = []string{
 	`CREATE INDEX IF NOT EXISTS idx_object_fields_file_id ON object_fields(file_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_diag_code ON diagnostics(code)`,
 	`CREATE INDEX IF NOT EXISTS idx_diag_file_id ON diagnostics(file_id)`,
+	// Lookups keyed on rel_path alone are common — resolving one definition's
+	// override chain, and finding the objects declared by a patched file. The
+	// two indexes below lead with overridden and source_name, so neither can
+	// serve those, and they were reaching rel_path only by scanning files.
+	`CREATE INDEX IF NOT EXISTS idx_files_rel_path ON files(rel_path, source_rank)`,
 	`CREATE INDEX IF NOT EXISTS idx_files_overridden ON files(overridden, rel_path)`,
 	`CREATE INDEX IF NOT EXISTS idx_files_source_active_rel ON files(source_name, overridden, rel_path)`,
 	`CREATE INDEX IF NOT EXISTS idx_files_override_by ON files(override_by_rank, override_reason)`,
@@ -760,6 +765,22 @@ func (db *DB) CreateIndexes(ctx context.Context) error {
 		if _, err := db.sql.ExecContext(ctx, stmt); err != nil {
 			return err
 		}
+	}
+	return db.analyzeForPlanner(ctx)
+}
+
+// analyzeForPlanner records index selectivity statistics. Without them SQLite
+// plans from built-in guesses, which is why several hot queries had to name
+// their index with INDEXED BY to get a sane plan at all. Statistics are cheap
+// to gather once at the end of a scan and are read from the database on every
+// later connection.
+//
+// A failure here is not fatal. ANALYZE is an optimisation: every query still
+// returns the same rows without it, so a database that cannot be analysed is
+// better published slow than not published.
+func (db *DB) analyzeForPlanner(ctx context.Context) error {
+	if _, err := db.sql.ExecContext(ctx, `ANALYZE`); err != nil {
+		return nil
 	}
 	return nil
 }

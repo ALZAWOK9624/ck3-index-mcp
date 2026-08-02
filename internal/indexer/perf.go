@@ -435,6 +435,19 @@ func (db *DB) firstScalar(ctx context.Context, query string, args ...any) (strin
 	return s.String, nil
 }
 
+// indexedByDependencies lists every index named in an INDEXED BY clause. Those
+// are load-bearing rather than advisory: SQLite fails the statement outright
+// when the index does not exist. TestIndexedByDependenciesAreDeclaredAndChecked
+// scans the package source and fails if this list ever falls behind the
+// queries, which is how idx_object_fields_field came to be missing.
+var indexedByDependencies = []string{
+	"idx_loc_key",
+	"idx_object_fields_field",
+	"idx_objects_name",
+	"idx_refs_name",
+	"idx_res_path",
+}
+
 func (db *DB) missingPerformanceIndexes(ctx context.Context) ([]string, error) {
 	rows, err := db.sql.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type='index'`)
 	if err != nil {
@@ -456,7 +469,14 @@ func (db *DB) missingPerformanceIndexes(ctx context.Context) ([]string, error) {
 		"idx_res_path", "idx_res_path_rank", "idx_res_file_id",
 		"idx_schema_file_id", "idx_object_fields_file_id", "idx_diag_file_id",
 		"idx_scope_file_id", "idx_var_file_id",
+		"idx_files_rel_path",
 	}
+	// Anything a query names in an INDEXED BY clause is not a performance
+	// preference but a hard dependency: SQLite refuses to plan the statement at
+	// all if the index is absent. idx_object_fields_field was missing from the
+	// list above, so a database without it failed ck3_search outright while
+	// ck3_health went on reporting the index as healthy.
+	required = append(required, indexedByDependencies...)
 	var missing []string
 	for _, name := range required {
 		if !have[name] {
@@ -501,8 +521,8 @@ func (db *DB) queryPlanRisks(ctx context.Context, sample string) ([]string, erro
 				rows.Close()
 				return nil, err
 			}
-			if strings.Contains(detail, "SCAN r") || strings.Contains(detail, "SCAN o") {
-				risks = append(risks, check.name+": "+detail)
+			if risk := queryPlanRisk(detail); risk != "" {
+				risks = append(risks, check.name+": "+risk)
 			}
 		}
 		if err := rows.Close(); err != nil {
@@ -510,6 +530,28 @@ func (db *DB) queryPlanRisks(ctx context.Context, sample string) ([]string, erro
 		}
 	}
 	return risks, nil
+}
+
+// queryPlanRisk classifies one EXPLAIN QUERY PLAN line, returning an empty
+// string when the step is fine.
+//
+// Table scans were the only thing reported before, which missed the cost that
+// actually dominated the read path: a query can seek perfectly through an index
+// and still materialise and sort every row in the range because it orders by a
+// column the index does not cover. That step is reported as a full temporary
+// b-tree and is worth flagging.
+//
+// A partial sort is not. "USE TEMP B-TREE FOR LAST TERM OF ORDER BY" means the
+// index supplied the leading terms and only ties are being ordered, which is
+// bounded by the size of one equal-key group.
+func queryPlanRisk(detail string) string {
+	if strings.Contains(detail, "USE TEMP B-TREE FOR ORDER BY") {
+		return detail + " (the whole result range is materialised and sorted before LIMIT applies)"
+	}
+	if strings.Contains(detail, "SCAN r") || strings.Contains(detail, "SCAN o") {
+		return detail
+	}
+	return ""
 }
 
 func fileExists(path string) bool {

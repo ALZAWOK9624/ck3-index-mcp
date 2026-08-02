@@ -653,8 +653,14 @@ func TestNextActionsUseCanonicalToolsAndExplicitArguments(t *testing.T) {
 	if _, legacyID := first["id"]; legacyID {
 		t.Fatalf("canonical next action retained legacy top-level id: %+v", first)
 	}
-	if first["priority"] != "normal" || first["confidence"] != "medium" {
-		t.Fatalf("next action omitted stable planning defaults: %+v", first)
+	// priority and confidence used to be emitted here as the constants "normal"
+	// and "medium" on every action, which told the caller nothing and cost it
+	// bytes on every response. An action now carries only what varies.
+	if _, exists := first["priority"]; exists {
+		t.Fatalf("next action still carries a constant priority: %+v", first)
+	}
+	if _, exists := first["confidence"]; exists {
+		t.Fatalf("next action still carries a constant confidence: %+v", first)
 	}
 	second := actions[1]
 	secondArgs := second["arguments"].(map[string]any)

@@ -29,11 +29,11 @@ func (db *DB) LLMArchitectureOverview(ctx context.Context, opts LLMOptions) (LLM
 		Guidance: []string{
 			"Use this as the first map of the indexed workspace before picking a narrower object or reference query.",
 			"High unresolved-ref or diagnostic hotspots are better next targets than randomly opening large files.",
-			"Use dependency_graph for object-centered impact once a concrete id is known.",
+			"Use ck3_dependencies for object-centered impact once a concrete id is known.",
 		},
 		NextQueries: []LLMNextQuery{
-			{Tool: "query_object_types", Reason: "inspect the full object type distribution"},
-			{Tool: "validate_project", Reason: "inspect cached diagnostics before edits"},
+			{Tool: ToolWorkspace, Arguments: map[string]any{"operation": "object_types"}, Reason: "inspect the full object type distribution"},
+			{Tool: ToolDiagnostics, Arguments: map[string]any{"operation": "summary"}, Reason: "inspect cached diagnostics before edits"},
 		},
 	}
 
@@ -361,7 +361,7 @@ func diagnosticNextStep(code string) string {
 	if suggestion != "" {
 		return suggestion
 	}
-	return "Use explain_diagnostic for examples, then narrow to the affected object or file."
+	return "Use ck3_diagnostics with operation=explain for examples, then narrow to the affected object or file."
 }
 
 // LLMDependencyGraph returns a small object-centered graph. It mirrors the
@@ -395,8 +395,8 @@ func (db *DB) LLMDependencyGraph(ctx context.Context, id string, opts LLMOptions
 			"Semantic edges are derived from CK3 script shape such as parameters, localization, resources, and scripted trigger/effect consumers.",
 		},
 		NextQueries: []LLMNextQuery{
-			{Tool: "inspect_object", ID: id, Reason: "inspect definition, localization, and diagnostics for the center node"},
-			{Tool: "preflight_code", ID: id, Reason: "check blockers before editing; use patch impact analysis once complete patch files exist"},
+			{Tool: ToolInspect, Arguments: map[string]any{"operation": "context"}, ID: id, Reason: "inspect definition, localization, and diagnostics for the center node"},
+			{Tool: ToolPreflight, Arguments: map[string]any{"operation": "subject"}, ID: id, Reason: "check blockers before editing; use patch impact analysis once complete patch files exist"},
 		},
 	}
 	for i, d := range obj.Definitions {

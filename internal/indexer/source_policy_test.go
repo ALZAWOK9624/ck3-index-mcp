@@ -333,7 +333,7 @@ func TestPublicFilterClearsAggregateAndFollowupSideChannels(t *testing.T) {
 		MissingLocKeys:   []string{"private_key"},
 		MissingResources: []string{"gfx/private.dds"},
 		ScopeFixHints:    []string{"private scope hint"},
-		NextQueries:      []LLMNextQuery{{Tool: "inspect_object", ID: "private_event"}},
+		NextQueries:      []LLMNextQuery{{Tool: ToolInspect, Arguments: map[string]any{"operation": "context"}, ID: "private_event"}},
 		Hotspots:         map[string][]LLMEvidence{"private_event": {{Kind: "definition", Source: "project"}}},
 		Evidence:         []LLMEvidence{{Kind: "definition", Source: "game"}, {Kind: "definition", Source: "project"}},
 		Redacted:         1,

@@ -1,58 +1,58 @@
 [
   {
     "name": "search/prefix",
-    "wire_bytes": 4341,
-    "content_bytes": 1926,
-    "structured_bytes": 1926,
+    "wire_bytes": 4249,
+    "content_bytes": 1884,
+    "structured_bytes": 1884,
     "evidence_items": 8
   },
   {
     "name": "search/prefix_limit20",
-    "wire_bytes": 9421,
-    "content_bytes": 4298,
-    "structured_bytes": 4298,
+    "wire_bytes": 9329,
+    "content_bytes": 4256,
+    "structured_bytes": 4256,
     "evidence_items": 20
   },
   {
     "name": "search/exact",
-    "wire_bytes": 4965,
-    "content_bytes": 2237,
-    "structured_bytes": 2237,
+    "wire_bytes": 4873,
+    "content_bytes": 2195,
+    "structured_bytes": 2195,
     "evidence_items": 8
   },
   {
     "name": "inspect/aggregate",
-    "wire_bytes": 14353,
-    "content_bytes": 6731,
-    "structured_bytes": 6731,
+    "wire_bytes": 14975,
+    "content_bytes": 7025,
+    "structured_bytes": 7025,
     "evidence_items": 24
   },
   {
     "name": "inspect/aggregate_limit20",
-    "wire_bytes": 15477,
-    "content_bytes": 7265,
-    "structured_bytes": 7265,
+    "wire_bytes": 16099,
+    "content_bytes": 7559,
+    "structured_bytes": 7559,
     "evidence_items": 26
   },
   {
     "name": "inspect/references",
-    "wire_bytes": 7235,
-    "content_bytes": 3337,
-    "structured_bytes": 3337,
+    "wire_bytes": 7571,
+    "content_bytes": 3495,
+    "structured_bytes": 3495,
     "evidence_items": 11
   },
   {
     "name": "inspect/definition",
-    "wire_bytes": 3253,
-    "content_bytes": 1457,
-    "structured_bytes": 1457,
+    "wire_bytes": 4487,
+    "content_bytes": 2037,
+    "structured_bytes": 2037,
     "evidence_items": 4
   },
   {
     "name": "dependencies/neighborhood",
-    "wire_bytes": 32681,
-    "content_bytes": 15197,
-    "structured_bytes": 15197,
+    "wire_bytes": 33475,
+    "content_bytes": 15575,
+    "structured_bytes": 15575,
     "evidence_items": 80
   }
 ]

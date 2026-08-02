@@ -40,11 +40,19 @@ func (db *DB) LLMInspectSmart(ctx context.Context, id string, opts LLMOptions) (
 	result.Guidance = append([]string{
 		"Use this aggregate result before choosing a specialized query tool.",
 	}, result.Guidance...)
+	// The aggregate view already contains the object-centred context, so
+	// suggesting it again is a loop. Point at the edit flow instead, which is
+	// where a caller who has finished inspecting actually goes next.
 	for i := range result.NextQueries {
-		if result.NextQueries[i].Tool == "inspect_object" {
-			result.NextQueries[i].Tool = "prepare_edit"
-			result.NextQueries[i].Reason = "load edit-specific examples and schema when a change is planned"
+		if result.NextQueries[i].Tool != ToolInspect {
+			continue
 		}
+		if operation, _ := result.NextQueries[i].Arguments["operation"].(string); operation != "context" {
+			continue
+		}
+		result.NextQueries[i].Tool = ToolPrepareEdit
+		result.NextQueries[i].Arguments = map[string]any{"operation": "context"}
+		result.NextQueries[i].Reason = "load edit-specific examples and schema when a change is planned"
 	}
 	return result, nil
 }

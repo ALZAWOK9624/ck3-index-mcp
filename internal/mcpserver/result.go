@@ -201,11 +201,12 @@ func canonicalizeNextActions(structured map[string]any) {
 			continue
 		}
 		seen[key] = true
+		// Only what varies. priority and confidence were emitted here as the
+		// fixed strings "normal" and "medium" on every action ever produced,
+		// costing the caller bytes to be told nothing.
 		action := map[string]any{
-			"tool":       tool,
-			"arguments":  arguments,
-			"priority":   "normal",
-			"confidence": "medium",
+			"tool":      tool,
+			"arguments": arguments,
 		}
 		if reason, ok := query["reason"].(string); ok && strings.TrimSpace(reason) != "" {
 			action["reason"] = reason

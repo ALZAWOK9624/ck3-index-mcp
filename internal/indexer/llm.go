@@ -118,10 +118,35 @@ type LLMEvidence struct {
 }
 
 type LLMNextQuery struct {
-	Tool   string `json:"tool"`
-	ID     string `json:"id,omitempty"`
-	Reason string `json:"reason,omitempty"`
+	Tool string `json:"tool"`
+	ID   string `json:"id,omitempty"`
+	// Arguments carries the rest of the canonical call, above all the
+	// operation. Most canonical tools are multi-mode, so a suggestion naming
+	// only a tool cannot say what to do with it.
+	Arguments map[string]any `json:"arguments,omitempty"`
+	Reason    string         `json:"reason,omitempty"`
 }
+
+// Canonical MCP tool names. Suggestions are only delivered to the caller if the
+// name matches a registered tool and the arguments validate against its real
+// schema, so a typo or a stale name silently produces no suggestion at all.
+// That is what happened when the 0.5.0 consolidation removed the old
+// single-purpose tools: every producer here kept emitting the old names and
+// every suggestion was dropped.
+//
+// indexer cannot import the MCP registry — the dependency runs the other way —
+// so these constants are verified against it from the mcpserver package by
+// TestIndexerNextQueryToolsAreRegistered.
+const (
+	ToolSearch          = "ck3_search"
+	ToolInspect         = "ck3_inspect"
+	ToolDependencies    = "ck3_dependencies"
+	ToolPrepareEdit     = "ck3_prepare_edit"
+	ToolPreflight       = "ck3_preflight"
+	ToolDiagnostics     = "ck3_diagnostics"
+	ToolScriptReference = "ck3_script_reference"
+	ToolWorkspace       = "ck3_workspace"
+)
 
 func (o LLMOptions) normalizedLimit() int {
 	if o.Limit <= 0 {
@@ -378,7 +403,7 @@ func (db *DB) LLMQueryObject(ctx context.Context, id string, opts LLMOptions) (L
 	if len(obj.Definitions) == 0 {
 		r.Summary = fmt.Sprintf("No indexed object definition matched %q.", id)
 		r.NeedsRefresh = true
-		r.NextQueries = []LLMNextQuery{{Tool: "find_refs", ID: id, Reason: "check whether the id is referenced under another object type"}}
+		r.NextQueries = []LLMNextQuery{{Tool: ToolInspect, Arguments: map[string]any{"operation": "references"}, ID: id, Reason: "check whether the id is referenced under another object type"}}
 		return r.withPublicFilter(opts), nil
 	}
 	for i, d := range obj.Definitions {
@@ -435,10 +460,10 @@ func (db *DB) LLMQueryObject(ctx context.Context, id string, opts LLMOptions) (L
 		"Before editing, inspect refs, localization, examples, and rules for this object type.",
 	}
 	r.NextQueries = []LLMNextQuery{
-		{Tool: "find_refs", ID: first.Name, Reason: "inspect incoming and outgoing dependency edges"},
-		{Tool: "query_loc", ID: first.Name, Reason: "check direct localization key"},
-		{Tool: "query_examples", ID: first.Type + ":" + first.Name, Reason: "find similar indexed script examples"},
-		{Tool: "query_rules", ID: first.Type, Reason: "inspect known schema fields before editing"},
+		{Tool: ToolInspect, Arguments: map[string]any{"operation": "references"}, ID: first.Name, Reason: "inspect incoming and outgoing dependency edges"},
+		{Tool: ToolInspect, Arguments: map[string]any{"operation": "localization"}, ID: first.Name, Reason: "check direct localization key"},
+		{Tool: ToolPrepareEdit, Arguments: map[string]any{"operation": "examples"}, ID: first.Type + ":" + first.Name, Reason: "find similar indexed script examples"},
+		{Tool: ToolPrepareEdit, Arguments: map[string]any{"operation": "rules"}, ID: first.Type, Reason: "inspect known schema fields before editing"},
 	}
 	return r.withPublicFilter(opts), nil
 }
@@ -579,8 +604,8 @@ func (db *DB) LLMQueryObjectTypes(ctx context.Context, opts LLMOptions) (LLMResu
 		},
 		Summary: fmt.Sprintf("Found %d indexed object type(s); returning top %d by object count.", len(types), minInt(limit, len(types))),
 		Guidance: []string{
-			"Use this only to choose a likely object type before calling prepare_edit or query_examples.",
-			"Unusual low-count types may be extraction artifacts; confirm with query_object or examples before generating.",
+			"Use this only to choose a likely object type before calling ck3_prepare_edit.",
+			"Unusual low-count types may be extraction artifacts; confirm with ck3_inspect operation=definition before generating.",
 		},
 	}
 	for i, item := range types {
@@ -677,7 +702,7 @@ func llmFindRefsResult(id string, refs RefQuery, opts LLMOptions) LLMResult {
 	if refs.IncomingTruncated || refs.OutgoingTruncated {
 		r.Guidance = append(r.Guidance, "Reference totals are exact; evidence is capped. Narrow with a typed id or inspect matching files when more evidence is needed.")
 	}
-	r.NextQueries = []LLMNextQuery{{Tool: "query_object", ID: id, Reason: "confirm definition and override chain"}}
+	r.NextQueries = []LLMNextQuery{{Tool: ToolInspect, Arguments: map[string]any{"operation": "definition"}, ID: id, Reason: "confirm definition and override chain"}}
 	return r.withPublicFilter(opts)
 }
 
@@ -706,7 +731,7 @@ func (db *DB) LLMQueryLocalization(ctx context.Context, key string, opts LLMOpti
 		r.Summary = fmt.Sprintf("Found %d localization value(s) for %q.", len(loc.Values), key)
 		r.Guidance = []string{"Use localization as display text evidence only; do not infer mechanics from it."}
 	}
-	r.NextQueries = []LLMNextQuery{{Tool: "find_refs", ID: key, Reason: "find scripts referencing this localization key"}}
+	r.NextQueries = []LLMNextQuery{{Tool: ToolInspect, Arguments: map[string]any{"operation": "references"}, ID: key, Reason: "find scripts referencing this localization key"}}
 	return r.withPublicFilter(opts), nil
 }
 
@@ -751,7 +776,7 @@ func (db *DB) llmQueryResourceWithRefs(ctx context.Context, id string, opts LLMO
 		r.Summary = fmt.Sprintf("Found %d resource file(s) and %d reference(s) for %q.", len(res.Resources), len(res.References), id)
 		r.Guidance = []string{"Prefer existing indexed resources over inventing paths."}
 	}
-	r.NextQueries = []LLMNextQuery{{Tool: "find_refs", ID: id, Reason: "inspect all references to this resource path or id"}}
+	r.NextQueries = []LLMNextQuery{{Tool: ToolInspect, Arguments: map[string]any{"operation": "references"}, ID: id, Reason: "inspect all references to this resource path or id"}}
 	return r.withPublicFilter(opts), nil
 }
 
@@ -787,7 +812,7 @@ func (db *DB) LLMQueryExamples(ctx context.Context, typ, contains string, opts L
 		"Copy structure, not names or flavor text.",
 		"If the requested term appears in a snippet, prefer that syntax over memory.",
 	}
-	r.NextQueries = []LLMNextQuery{{Tool: "query_rules", ID: typ, Reason: "check schema fields used by this object type"}}
+	r.NextQueries = []LLMNextQuery{{Tool: ToolPrepareEdit, Arguments: map[string]any{"operation": "rules"}, ID: typ, Reason: "check schema fields used by this object type"}}
 	return r.withPublicFilter(opts), nil
 }
 
@@ -807,9 +832,9 @@ func (db *DB) LLMQueryRules(ctx context.Context, typ string, opts LLMOptions) (L
 	r.Summary = fmt.Sprintf("Found %d indexed schema field example(s) for object type %q.", len(rules.Fields), typ)
 	r.Guidance = []string{
 		"Fields listed here are allowed top-level schema hints, not full trigger/effect validity proofs.",
-		"Use lookup_scope, lookup_shape, lookup_example, and query_examples for nested script syntax.",
+		"Use ck3_script_reference for scope, shape and example lookups, and ck3_prepare_edit operation=examples for nested script syntax.",
 	}
-	r.NextQueries = []LLMNextQuery{{Tool: "query_examples", ID: typ, Reason: "compare schema fields against vanilla script examples"}}
+	r.NextQueries = []LLMNextQuery{{Tool: ToolPrepareEdit, Arguments: map[string]any{"operation": "examples"}, ID: typ, Reason: "compare schema fields against vanilla script examples"}}
 	return r.withPublicFilter(opts), nil
 }
 
@@ -833,8 +858,8 @@ func (db *DB) LLMQueryPatterns(ctx context.Context, typ string, opts LLMOptions)
 		"High-count patterns are good generation defaults; low-count patterns should be confirmed with query_examples.",
 	}
 	r.NextQueries = []LLMNextQuery{
-		{Tool: "query_examples", ID: typ, Reason: "inspect concrete vanilla-first object bodies"},
-		{Tool: "query_rules", ID: typ, Reason: "compare empirical usage with .info schema hints"},
+		{Tool: ToolPrepareEdit, Arguments: map[string]any{"operation": "examples"}, ID: typ, Reason: "inspect concrete vanilla-first object bodies"},
+		{Tool: ToolPrepareEdit, Arguments: map[string]any{"operation": "rules"}, ID: typ, Reason: "compare empirical usage with .info schema hints"},
 	}
 	return r.withPublicFilter(opts), nil
 }
@@ -867,10 +892,10 @@ func (db *DB) LLMValidate(ctx context.Context, opts LLMOptions) (LLMResult, erro
 	r.Guidance = []string{
 		"This summary is limited to the current project source plus global diagnostics; upstream game and Godherja files remain searchable as reference evidence.",
 		"This MCP tool reads diagnostics refreshed by full or incremental scan; ambiguous title definitions are also synthesized live by ck3_inspect.",
-		"After editing files, run ck3-index scan --files for small changes or ck3-index scan for a full refresh before trusting a clean result.",
+		"After editing files, call ck3_refresh with operation=files for small changes or operation=full for a full rebuild before trusting a clean result.",
 	}
 	if len(rep.Diagnostics) > 0 {
-		r.NextQueries = []LLMNextQuery{{Tool: "explain_diagnostic", ID: rep.Diagnostics[0].Code, Reason: "inspect the most severe diagnostic class"}}
+		r.NextQueries = []LLMNextQuery{{Tool: ToolDiagnostics, Arguments: map[string]any{"operation": "explain"}, ID: rep.Diagnostics[0].Code, Reason: "inspect the most severe diagnostic class"}}
 	}
 	return r.withPublicFilter(opts), nil
 }
@@ -991,8 +1016,8 @@ func (db *DB) LLMInspectObject(ctx context.Context, id string, opts LLMOptions) 
 	if len(obj.Definitions) > 0 {
 		typ := obj.Definitions[0].Type
 		r.NextQueries = []LLMNextQuery{
-			{Tool: "query_examples", ID: typ + ":" + obj.Definitions[0].Name, Reason: "find similar scripts before editing"},
-			{Tool: "query_rules", ID: typ, Reason: "inspect schema fields before editing"},
+			{Tool: ToolPrepareEdit, Arguments: map[string]any{"operation": "examples"}, ID: typ + ":" + obj.Definitions[0].Name, Reason: "find similar scripts before editing"},
+			{Tool: ToolPrepareEdit, Arguments: map[string]any{"operation": "rules"}, ID: typ, Reason: "inspect schema fields before editing"},
 		}
 	}
 	return r.withPublicFilter(opts), nil
@@ -1074,16 +1099,16 @@ func (db *DB) LLMPrepareEdit(ctx context.Context, id string, opts LLMOptions) (L
 	}
 	r.Summary = fmt.Sprintf("Edit prep for %q: object type %q, %d definition(s), %d example(s), %d schema field(s), %d empirical pattern(s), %d related ref(s).", id, typ, r.Counts["definitions"], len(ex.Examples), len(rules.Fields), len(patterns.Fields), refs.IncomingTotal+refs.OutgoingTotal)
 	r.Guidance = []string{
-		"Generation workflow: follow vanilla-first examples, empirical field patterns, then schema fields; use lookup_scope/lookup_shape for every unfamiliar trigger or effect.",
-		"Use existing scripted triggers/effects and modifiers when indexed; invent new ids only after diagnose_key returns no definition/ref conflict.",
+		"Generation workflow: follow vanilla-first examples, empirical field patterns, then schema fields; use ck3_script_reference for every unfamiliar trigger or effect.",
+		"Use existing scripted triggers/effects and modifiers when indexed; invent new ids only after ck3_inspect operation=diagnose returns no definition/ref conflict.",
 		"Generated code must include matching localization and must be refreshed with scan or CLI validate before use.",
 	}
 	if typ == "casus_belli_type" {
 		r.Guidance = append(r.Guidance, "For casus belli ai_score and ai_score_mult blocks, initialize with value = ... and then use add/multiply operations; base = ... is not a valid current CK3 script-value field.")
 	}
 	r.NextQueries = []LLMNextQuery{
-		{Tool: "query_patterns", ID: typ, Reason: "inspect empirical field shapes and sample locations"},
-		{Tool: "validate_project", Reason: "run after script, localization, GUI, or resource changes"},
+		{Tool: ToolPrepareEdit, Arguments: map[string]any{"operation": "patterns"}, ID: typ, Reason: "inspect empirical field shapes and sample locations"},
+		{Tool: ToolDiagnostics, Arguments: map[string]any{"operation": "summary"}, Reason: "run after script, localization, GUI, or resource changes"},
 	}
 	return r.withPublicFilter(opts), nil
 }
@@ -1189,12 +1214,12 @@ func (db *DB) LLMPreflight(ctx context.Context, id string, opts LLMOptions) (LLM
 	r.Guidance = []string{
 		"Use preflight before generating or editing code; fix blocking risks before trusting generated CK3 script.",
 		"Missing object/resource/sound refs are stronger evidence than missing localization; localization is still required for player-facing content.",
-		"After edits, refresh the index with ck3-index scan and re-run preflight or validate_project.",
+		"After edits, call ck3_refresh, then re-run ck3_preflight or ck3_diagnostics.",
 	}
 	r.NextQueries = []LLMNextQuery{
-		{Tool: "prepare_edit", ID: preflightPrepareID(typ, name), Reason: "get vanilla-first examples and schema hints before writing code"},
-		{Tool: "find_refs", ID: name, Reason: "inspect dependency edges in more detail"},
-		{Tool: "validate_project", Reason: "check cached project diagnostics"},
+		{Tool: ToolPrepareEdit, Arguments: map[string]any{"operation": "context"}, ID: preflightPrepareID(typ, name), Reason: "get vanilla-first examples and schema hints before writing code"},
+		{Tool: ToolInspect, Arguments: map[string]any{"operation": "references"}, ID: name, Reason: "inspect dependency edges in more detail"},
+		{Tool: ToolDiagnostics, Arguments: map[string]any{"operation": "summary"}, Reason: "check cached project diagnostics"},
 	}
 	return r.withPublicFilter(opts), nil
 }
@@ -1362,8 +1387,8 @@ func (db *DB) LLMDiagnoseKey(ctx context.Context, id string, opts LLMOptions) (L
 		r.Guidance = []string{"This id is a known sound event from compiled CK3 sound-event evidence; it is not expected to appear as a filesystem resource."}
 	}
 	r.NextQueries = []LLMNextQuery{
-		{Tool: "inspect_object", ID: id, Reason: "get object-centered context if this is a script object"},
-		{Tool: "validate_project", Reason: "check current project diagnostics"},
+		{Tool: ToolInspect, Arguments: map[string]any{"operation": "context"}, ID: id, Reason: "get object-centered context if this is a script object"},
+		{Tool: ToolDiagnostics, Arguments: map[string]any{"operation": "summary"}, Reason: "check current project diagnostics"},
 	}
 	return r.withPublicFilter(opts), nil
 }

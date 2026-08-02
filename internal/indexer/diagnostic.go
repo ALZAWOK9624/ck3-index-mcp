@@ -385,7 +385,7 @@ func refHint(kind string) (string, string) {
 		return "Dynamic flags and variables normally do not require object definitions; if this appears unresolved, check extractor context before changing script.", "ck3-index:dynamic_state_refs"
 	default:
 		if isObjectRefKind(kind) {
-			return "Define the referenced object or change the ref kind/name to an active indexed object; check query_object and find_refs before editing.", "ck3-index:object_refs"
+			return "Define the referenced object or change the ref kind/name to an active indexed object; check ck3_inspect with operation=definition and operation=references before editing.", "ck3-index:object_refs"
 		}
 	}
 	return "", ""

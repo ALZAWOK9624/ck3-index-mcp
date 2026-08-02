@@ -452,10 +452,10 @@ func (db *DB) LLMPreflightPatch(ctx context.Context, files []PatchFileInput, opt
 		Guidance: []string{
 			"This is a temporary patch preflight; it does not refresh SQLite.",
 			"Patch-defined objects, localization keys, and resources are used as an in-memory overlay for this check only.",
-			"After writing files to disk, run ck3-index scan --files (or a full scan) and then diag_stats before treating the project as clean.",
+			"After writing files to disk, call ck3_refresh with operation=files (or operation=full) and then ck3_diagnostics before treating the project as clean.",
 		},
 		NextQueries: []LLMNextQuery{
-			{Tool: "validate_project", Reason: "after writing and scanning, confirm cached diagnostics"},
+			{Tool: ToolDiagnostics, Arguments: map[string]any{"operation": "summary"}, Reason: "after writing and scanning, confirm cached diagnostics"},
 		},
 	}
 	if counts["blocking_risks"] == 0 && counts["nonblocking_risks"] == 0 {
@@ -509,12 +509,12 @@ func (db *DB) LLMPreflightPatch(ctx context.Context, files []PatchFileInput, opt
 	}
 	if len(unresolved) > 0 {
 		first := unresolved[0].ref
-		r.NextQueries = append([]LLMNextQuery{{Tool: "diagnose_key", ID: refQueryID(first), Reason: "inspect the first unresolved patch reference against the current index"}}, r.NextQueries...)
+		r.NextQueries = append([]LLMNextQuery{{Tool: ToolInspect, Arguments: map[string]any{"operation": "diagnose"}, ID: refQueryID(first), Reason: "inspect the first unresolved patch reference against the current index"}}, r.NextQueries...)
 	}
 	for _, a := range analyses {
 		if len(a.Objects) > 0 {
 			obj := a.Objects[0]
-			r.NextQueries = append([]LLMNextQuery{{Tool: "prepare_edit", ID: obj.Type + ":" + obj.Name, Reason: "compare this generated object with indexed examples and rules"}}, r.NextQueries...)
+			r.NextQueries = append([]LLMNextQuery{{Tool: ToolPrepareEdit, Arguments: map[string]any{"operation": "context"}, ID: obj.Type + ":" + obj.Name, Reason: "compare this generated object with indexed examples and rules"}}, r.NextQueries...)
 			break
 		}
 	}

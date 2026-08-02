@@ -120,12 +120,10 @@ func llmResultOutputSchema() map[string]any {
 			"tool":            map[string]any{"type": "string"},
 			"arguments":       map[string]any{"type": "object", "additionalProperties": true},
 			"reason":          map[string]any{"type": "string"},
-			"priority":        map[string]any{"type": "string"},
-			"confidence":      map[string]any{"type": "string"},
 			"condition":       map[string]any{},
 			"expected_result": map[string]any{},
 			"stop_if":         map[string]any{},
-		}, "tool", "arguments", "priority", "confidence")),
+		}, "tool", "arguments")),
 	}, "intent", "summary")
 }
 

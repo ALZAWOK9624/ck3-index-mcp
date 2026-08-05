@@ -72,10 +72,22 @@ fn common_fixtures_match_reviewed_jomini_goldens() {
             .output()
             .expect("oracle should read a common fixture");
         assert!(output.status.success(), "{name}: {output:?}");
-        assert_eq!(
-            output.stdout,
-            fs::read(expected).expect("golden should be readable"),
-            "{name}"
-        );
+        let expected = canonical_lf(fs::read(expected).expect("golden should be readable"));
+        assert_eq!(output.stdout, expected, "{name}");
     }
+}
+
+fn canonical_lf(input: Vec<u8>) -> Vec<u8> {
+    let mut output = Vec::with_capacity(input.len());
+    let mut index = 0usize;
+    while index < input.len() {
+        if input.get(index..index + 2) == Some(b"\r\n") {
+            output.push(b'\n');
+            index += 2;
+        } else {
+            output.push(input[index]);
+            index += 1;
+        }
+    }
+    output
 }

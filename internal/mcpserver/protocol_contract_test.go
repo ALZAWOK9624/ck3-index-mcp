@@ -77,8 +77,8 @@ func TestServeMCPProtocolContract(t *testing.T) {
 		t.Fatalf("ping did not return an empty object: %+v", ping)
 	}
 	listed := responseByID(t, responses, "3")["result"].(map[string]any)["tools"].([]any)
-	if len(listed) != 34 {
-		t.Fatalf("standard tools/list count = %d, want 34", len(listed))
+	if len(listed) != 35 {
+		t.Fatalf("standard tools/list count = %d, want 35", len(listed))
 	}
 	first := listed[0].(map[string]any)
 	for _, field := range []string{"title", "description", "inputSchema", "outputSchema", "annotations"} {

@@ -2,7 +2,7 @@
 
 > 本文档由 `go run ./cmd/mcp-docgen` 根据 `internal/mcpserver` 自动生成，请勿手工修改。
 
-ck3-index 公开 34 个规范工具。细分能力由各工具的受限 operation 参数表达，不再提供旧版专用工具别名。
+ck3-index 公开 35 个规范工具。细分能力由各工具的受限 operation 参数表达，不再提供旧版专用工具别名。
 
 ## `ck3_search` — 搜索 CK3 索引
 
@@ -139,6 +139,20 @@ ck3-index 公开 34 个规范工具。细分能力由各工具的受限 operatio
 | `path_prefix` | 否 | 字符串 |  | 可选的来源根目录相对路径前缀。 |
 | `source` | 否 | 字符串 |  | 可选的诊断来源。 |
 | `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | 设为 public 时仅返回已配置的非私有来源证据；聚合计数和需要私有工作区证据的操作不可用。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `ck3_save` — 读取 CK3 存档元数据
+
+读取单个 CK3 存档文件。card 报告存档身份：版本、游戏内日期、玩家角色、主头衔、家族、政体与玩家人数。compatibility 报告存档声明的 mod、DLC 与游戏规则，供调用方与自己的配置比对。audit 流式扫描 gamestate，列出存档携带但已索引来源不再定义的 ID。character 提取单个角色的属性、特质、家族与头衔。工具只陈述事实，不判断存档能否载入，也不生成文本。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `character` | 否 | 字符串 |  | 要提取档案的角色存档 ID，operation=character 时必填。 |
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `max_response_bytes` | 否 | 整数 | 最小值=16384; 最大值=8.388608e+06; 默认值=2.097152e+06 | MCP 工具结果编码后的最大字节数；应先用 limit/page 缩小语义证据，此项是硬响应安全上限。 |
+| `operation` | 否 | 字符串 | 可选值=[card compatibility audit character]; 默认值=card | 存档视图。card 为默认值，用于识别存档；compatibility 列出存档声明的内容；audit 把存档携带的每个 ID 与已索引来源核对；character 从 gamestate 中提取单个角色的档案。 |
+| `path` | 是 | 字符串 |  | 位于已配置存档根目录内的存档文件，按相对该根目录的路径给出。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
 

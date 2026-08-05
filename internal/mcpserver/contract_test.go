@@ -19,11 +19,11 @@ import (
 
 func TestToolRegistryContract(t *testing.T) {
 	definitions := registry()
-	if len(definitions) != 34 {
-		t.Fatalf("standard registry count = %d, want 34", len(definitions))
+	if len(definitions) != 35 {
+		t.Fatalf("standard registry count = %d, want 35", len(definitions))
 	}
-	if got := len(mcpTools()); got != 34 {
-		t.Fatalf("tools/list count = %d, want 34", got)
+	if got := len(mcpTools()); got != 35 {
+		t.Fatalf("tools/list count = %d, want 35", got)
 	}
 
 	seen := make(map[string]struct{}, len(definitions))
@@ -349,6 +349,7 @@ func TestCanonicalSchemasMatchTypedArguments(t *testing.T) {
 		"ck3_review":              reflect.TypeOf(ck3ReviewArgs{}),
 		"ck3_workspace":           reflect.TypeOf(ck3WorkspaceArgs{}),
 		"ck3_refresh":             reflect.TypeOf(ck3RefreshArgs{}),
+		"ck3_save":                reflect.TypeOf(ck3SaveArgs{}),
 		"ck3_dependencies":        reflect.TypeOf(ck3DependenciesArgs{}),
 		"ck3_prepare_edit":        reflect.TypeOf(ck3PrepareEditArgs{}),
 		"ck3_preflight":           reflect.TypeOf(ck3PreflightArgs{}),
@@ -645,9 +646,10 @@ func TestEveryCallableToolHasSuccessAndMalformedArgumentCases(t *testing.T) {
 		"map_build_metric":        {"recipe": "development_network", "target": "k_k11", "year": 6253, "limit": 2},
 		"map_route":               {"from": "1", "to": "2", "mode": "land", "year": 6253, "limit": 2},
 		"map_render":              {"target": "k_k11", "year": 6253, "width": 400, "layers": []map[string]any{{"type": "borders", "level": "county"}}},
+		"ck3_save":                {"path": "fixture.ck3", "operation": "card"},
 	}
-	if len(successArguments) != 34 {
-		t.Fatalf("success case count = %d, want 34 canonical names", len(successArguments))
+	if len(successArguments) != 35 {
+		t.Fatalf("success case count = %d, want 35 canonical names", len(successArguments))
 	}
 	for name, args := range successArguments {
 		name, args := name, args

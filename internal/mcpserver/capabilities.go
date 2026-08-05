@@ -77,6 +77,17 @@ func workspaceCapabilities(ctx context.Context, runtime *Runtime, requestedDomai
 	if !gisAvailable {
 		gisReason = "a published map database with verified GIS analysis is required"
 	}
+	// Reading saves needs no index at all, only the two explicit settings
+	// that say which files may be read and how to name their fields.
+	saveAvailable := len(runtime.Config.SaveRoots) > 0
+	saveReason := ""
+	switch {
+	case !saveAvailable:
+		saveReason = "no save_roots are configured"
+	case strings.TrimSpace(runtime.Config.SaveTokenMapRoot) == "":
+		saveAvailable = false
+		saveReason = "no save_token_map_root is configured, so binary save fields cannot be named"
+	}
 	filesAvailable := true
 	filesReason := ""
 	switch {
@@ -120,6 +131,7 @@ func workspaceCapabilities(ctx context.Context, runtime *Runtime, requestedDomai
 		// workflow: both propose a change to the map rasters, and both leave the
 		// Mod untouched until a human copies the artifact in.
 		{ID: "map_authoring", Domain: "map", Source: "map_cache_and_source_rasters", Tools: []string{"map_split_province", "map_apply_split", "map_terrain_edit"}, Modes: []string{"split_province", "apply_split", "compose", "large_rivers", "small_rivers"}, Inputs: []string{"province seeds, or ordered physical-landform and hydrology settings"}, Outputs: []string{"a reviewable preview, or verified raw rasters in an immutable artifact"}, Maturity: "experimental", RequiresReadyIndex: true, SideEffect: "confirm=true writes generated rasters to the artifact area only", Cost: "high", Profile: "experimental", Available: mapAvailable, Reason: mapReason},
+		{ID: "save_metadata", Domain: "save", Source: "save_file", Tools: []string{"ck3_save"}, Modes: []string{"card", "compatibility", "audit", "character"}, Inputs: []string{"a save file inside a configured save root"}, Outputs: []string{"save identity and declared content, undefined ids, and one character's profile"}, Maturity: "beta", RequiresReadyIndex: false, SideEffect: "none", Cost: "low", Profile: "default", Available: saveAvailable, Reason: saveReason},
 		{ID: "packaging", Domain: "packaging", Source: "artifact_builder", Tools: []string{"ck3_package"}, Inputs: []string{"metadata and complete file contents"}, Outputs: []string{"validated portable artifact"}, Maturity: "stable", RequiresReadyIndex: false, SideEffect: "temporary artifact only", Cost: "medium", Profile: "default", Available: true},
 		{ID: "index_refresh", Domain: "workspace", Source: "transactional_indexer", Tools: []string{"ck3_refresh"}, Modes: []string{"status", "files", "full"}, Inputs: []string{"optional project-relative paths"}, Outputs: []string{"index readiness and refresh deltas"}, Maturity: "beta", RequiresReadyIndex: false, SideEffect: "updates rebuildable index cache only", Cost: "high", SupportsCancellation: true, Profile: "default", Available: true, ModeDetails: []workspaceCapabilityMode{
 			{ID: "status", Available: true},

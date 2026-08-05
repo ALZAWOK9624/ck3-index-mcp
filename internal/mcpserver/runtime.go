@@ -171,7 +171,9 @@ func indexStatePublishing(state indexer.IndexState) bool {
 // behavior; it has no previously published rows to accidentally expose.
 func indexStateIndependentTool(name string) bool {
 	switch name {
-	case "ck3_script_reference", "ck3_health", "ck3_refresh":
+	// ck3_save reads an external file and never consults the index, so a
+	// stale or missing index is no reason to refuse it.
+	case "ck3_script_reference", "ck3_health", "ck3_refresh", "ck3_save":
 		return true
 	default:
 		return false

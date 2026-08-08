@@ -179,7 +179,65 @@ rank = 3
 	if err != nil {
 		t.Fatal(err)
 	}
+	writeMCPSaveFixture(t, dir, &cfg)
 	return cfg
+}
+
+// writeMCPSaveFixture gives the fixture workspace one readable save and a
+// token map that covers it, so ck3_save has a success path like every other
+// canonical tool.
+func writeMCPSaveFixture(t *testing.T, dir string, cfg *indexer.Config) {
+	t.Helper()
+	saves := filepath.Join(dir, "saves")
+	maps := filepath.Join(dir, "save-token-maps")
+	for _, path := range []string{saves, maps} {
+		if err := os.MkdirAll(path, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(maps, "fixture.tokens.txt"),
+		[]byte("0x3155 meta_data\n0x00ee version\n0x3157 meta_date\n0x29e6 meta_player_name\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(saves, "fixture.ck3"), fixtureBinarySave(), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg.SaveRoots = []string{saves}
+	cfg.SaveTokenMapRoot = maps
+}
+
+// fixtureBinarySave builds the smallest uncompressed binary save that decodes
+// to a usable card: a meta_data container with a version, a date, and a name.
+func fixtureBinarySave() []byte {
+	le := func(value uint16) []byte { return []byte{byte(value), byte(value >> 8)} }
+	quoted := func(text string) []byte {
+		out := append(le(0x000f), le(uint16(len(text)))...)
+		return append(out, text...)
+	}
+	i32 := func(value int32) []byte {
+		return append(le(0x000c), byte(value), byte(value>>8), byte(value>>16), byte(value>>24))
+	}
+	field := func(id uint16, value []byte) []byte {
+		return append(append(le(id), le(0x0001)...), value...)
+	}
+
+	var body []byte
+	body = append(body, field(0x00ee, quoted("1.19.0.6"))...)
+	body = append(body, field(0x3157, i32(53144712))...)
+	body = append(body, field(0x29e6, quoted("fixture-player"))...)
+
+	var metadata []byte
+	metadata = append(metadata, le(0x3155)...)
+	metadata = append(metadata, le(0x0001)...)
+	metadata = append(metadata, le(0x0003)...)
+	metadata = append(metadata, body...)
+	metadata = append(metadata, le(0x0004)...)
+
+	header := fmt.Sprintf("SAV0101deadbeef%08x\n", len(metadata))
+	save := append([]byte(header), metadata...)
+	// An uncompressed save must carry a gamestate after its metadata, even
+	// though a card never reads it.
+	return append(save, field(0x00ee, quoted("gamestate"))...)
 }
 
 func TestMCPGUIUsesIndexPrivacyBoundary(t *testing.T) {
@@ -471,7 +529,7 @@ func TestMCPMapToolsRegisteredAndCallable(t *testing.T) {
 	}
 	expectedTools := []string{
 		"ck3_search", "ck3_inspect", "ck3_review", "ck3_workspace", "ck3_dependencies", "ck3_prepare_edit", "ck3_preflight", "ck3_impact",
-		"ck3_diagnostics", "ck3_refresh", "ck3_script_reference", "ck3_health", "ck3_package", "ck3_gui", "map_migration_snapshot", "map_province_migration", "map_asset_audit", "map_province_mapping", "map_province_info", "map_split_province", "map_apply_split", "map_terrain_edit", "map_artifact", "map_physical_context", "map_neighbors", "map_spatial_relation", "map_strategic_passages",
+		"ck3_diagnostics", "ck3_refresh", "ck3_save", "ck3_script_reference", "ck3_health", "ck3_package", "ck3_gui", "map_migration_snapshot", "map_province_migration", "map_asset_audit", "map_province_mapping", "map_province_info", "map_split_province", "map_apply_split", "map_terrain_edit", "map_artifact", "map_physical_context", "map_neighbors", "map_spatial_relation", "map_strategic_passages",
 		"map_title_context", "map_assignment_plan", "map_building_candidates", "map_recipe_catalog", "map_build_metric", "map_route", "map_render",
 	}
 	if len(tools) != len(expectedTools) {

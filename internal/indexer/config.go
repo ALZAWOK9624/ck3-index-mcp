@@ -36,8 +36,17 @@ type Config struct {
 	GISTimeoutSeconds      int
 	GISSidecarPath         string
 	GISSidecarSHA256       string
-	Sources                []Source
-	ForceClean             bool
+	// SaveRoots are the only directories a save-reading tool may read from.
+	// Saves arrive from untrusted uploads and never live under a source
+	// root, so they get their own explicitly configured boundary.
+	SaveRoots []string
+	// SaveTokenMapRoot holds the version-matched *.tokens.txt maps that name
+	// a binary save's fields.
+	SaveTokenMapRoot string
+	// SaveMaxBytes caps one save file.
+	SaveMaxBytes int64
+	Sources      []Source
+	ForceClean   bool
 }
 
 // SourceRole identifies why a configured source exists. Rank remains solely
@@ -362,6 +371,9 @@ type configTOML struct {
 	GISTimeoutSeconds      *int         `toml:"gis_timeout_seconds"`
 	GISSidecarPath         string       `toml:"gis_sidecar_path"`
 	GISSidecarSHA256       string       `toml:"gis_sidecar_sha256"`
+	SaveRoots              []string     `toml:"save_roots"`
+	SaveTokenMapRoot       string       `toml:"save_token_map_root"`
+	SaveMaxBytes           *int64       `toml:"save_max_bytes"`
 	Sources                []sourceTOML `toml:"source"`
 }
 
@@ -373,6 +385,11 @@ type sourceTOML struct {
 	Private      *bool  `toml:"private"`
 	ResourceOnly bool   `toml:"resource_only"`
 }
+
+// defaultSaveMaxBytes is generous for a real CK3 save (a 1066 start is under
+// 1 MiB, a late megacampaign tens of MiB) while still refusing an upload that
+// is obviously not a save.
+const defaultSaveMaxBytes int64 = 512 << 20
 
 func LoadConfig(path string) (Config, error) {
 	absPath, err := filepath.Abs(path)
@@ -438,6 +455,27 @@ func LoadConfig(path string) (Config, error) {
 			return Config{}, fmt.Errorf("gis_timeout_seconds must be a positive integer")
 		}
 		cfg.GISTimeoutSeconds = *decoded.GISTimeoutSeconds
+	}
+	cfg.SaveTokenMapRoot = resolveOptionalConfigPath(baseDir, decoded.SaveTokenMapRoot)
+	cfg.SaveMaxBytes = defaultSaveMaxBytes
+	if decoded.SaveMaxBytes != nil {
+		if *decoded.SaveMaxBytes <= 0 {
+			return Config{}, fmt.Errorf("save_max_bytes must be a positive integer")
+		}
+		cfg.SaveMaxBytes = *decoded.SaveMaxBytes
+	}
+	seenSaveRoots := make(map[string]struct{}, len(decoded.SaveRoots))
+	for _, root := range decoded.SaveRoots {
+		trimmed := strings.TrimSpace(root)
+		if trimmed == "" {
+			return Config{}, fmt.Errorf("save_roots must not contain an empty path")
+		}
+		resolved := resolveOptionalConfigPath(baseDir, trimmed)
+		if _, duplicate := seenSaveRoots[resolved]; duplicate {
+			return Config{}, fmt.Errorf("save_roots lists %q more than once", root)
+		}
+		seenSaveRoots[resolved] = struct{}{}
+		cfg.SaveRoots = append(cfg.SaveRoots, resolved)
 	}
 	cfg.Sources = make([]Source, 0, len(decoded.Sources))
 	for _, input := range decoded.Sources {

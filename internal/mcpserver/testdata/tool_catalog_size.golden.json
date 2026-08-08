@@ -1,11 +1,11 @@
 {
-  "tools": 34,
-  "total_bytes": 79490,
-  "description_bytes": 16991,
-  "input_schema_bytes": 56588,
+  "tools": 35,
+  "total_bytes": 81102,
+  "description_bytes": 17669,
+  "input_schema_bytes": 57355,
   "output_schema_bytes": 0,
-  "name_and_title_bytes": 1245,
-  "annotation_bytes": 2285,
+  "name_and_title_bytes": 1275,
+  "annotation_bytes": 2352,
   "largest_tool_name": "map_render",
   "largest_tool_bytes": 12494
 }

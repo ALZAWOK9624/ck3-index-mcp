@@ -120,6 +120,13 @@ type ck3RefreshArgs struct {
 	Paths     []string `json:"paths,omitempty"`
 }
 
+type ck3SaveArgs struct {
+	Path      string `json:"path"`
+	Operation string `json:"operation,omitempty"`
+	Character string `json:"character,omitempty"`
+	Limit     int    `json:"limit,omitempty"`
+}
+
 type ck3DependenciesArgs struct {
 	visibilityArgs
 	ID               string `json:"id"`

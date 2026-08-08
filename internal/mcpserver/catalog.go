@@ -147,6 +147,18 @@ func buildCanonicalTools() []ToolDefinition {
 			CompatibilityProperties: legacyPrivacyProperties,
 		},
 		{
+			Name:  "ck3_save",
+			Title: "Read CK3 Save Metadata",
+			Description: "Read one CK3 save file's metadata section. card reports the save's identity: version, in-game date, player character, primary title, house, government, and player count. compatibility reports the mods, DLCs, and game rules the save declares, so a caller can compare them against its own configuration.",
+			InputSchema: objectSchema(map[string]any{
+				"path":      stringProperty("Save file inside a configured save root, named relative to that root."),
+				"operation": saveOperationProperty(),
+				"character": stringProperty("Save id of the character to profile, required by operation=character."),
+				"limit":     limitProperty(),
+			}, "path"),
+			OutputSchema: genericOutputSchema(), Annotations: annotations, Handler: handleSave,
+		},
+		{
 			Name:         "ck3_refresh",
 			Title:        "Refresh CK3 Index",
 			Description:  "Refresh the configured project source after source files change. status reports index readiness without mutation; files incrementally updates explicitly named source-root-relative project files; full rebuilds in a staged cache and atomically publishes only after it is ready, never silently substituting for files.",
@@ -209,6 +221,12 @@ func buildCanonicalTools() []ToolDefinition {
 	definitions = append(definitions, buildCanonicalMapTools(annotations, output)...)
 	definitions = addResponseBudgetProperty(definitions)
 	return standardizeCanonicalToolDescriptions(definitions)
+}
+
+func saveOperationProperty() map[string]any {
+	operation := stringProperty("Save view. card is the default and identifies the save; compatibility lists the content the save declares; audit checks every id the save carries against the indexed sources; character profiles one character from the gamestate.", "card", "compatibility", "audit", "character")
+	operation["default"] = "card"
+	return operation
 }
 
 func refreshInputSchema() map[string]any {
@@ -278,6 +296,11 @@ func standardizeCanonicalToolDescriptions(definitions []ToolDefinition) []ToolDe
 			When:     "reading diagnostics already produced by the current index generation",
 			DoNotUse: "project source files changed since the last scan; use ck3_refresh first",
 			Unlike:   "ck3_review, it does not parse new proposed content",
+		},
+		"ck3_save": {
+			When:     "a CK3 save file must be identified, its declared content listed, its ids checked against the Mod, or one character profiled",
+			DoNotUse: "questions about Mod source content; a save records a played game, not the scripts that define it",
+			Unlike:   "every other tool, it reads an external save file instead of the indexed sources, and it never judges whether a save will load",
 		},
 		"ck3_refresh": {
 			When:     "configured project source files changed and the index must reflect them",

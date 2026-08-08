@@ -188,6 +188,10 @@ func classifyMCPTask(raw json.RawMessage) mcpTaskClass {
 	switch strings.ToLower(strings.TrimSpace(call.Name)) {
 	case "map_render", "map_terrain_edit", "map_split_province", "map_apply_split":
 		return mcpTaskRaster
+	case "ck3_save":
+		// card and compatibility read only the header and metadata; audit
+		// and character stream the whole gamestate.
+		return saveTaskClass(call.Arguments)
 	case "ck3_refresh", "ck3_package", "ck3_gui",
 		"map_build_metric", "map_physical_context",
 		"map_migration_snapshot", "map_province_migration":
@@ -508,4 +512,21 @@ func runMCPToolTask(ctx, sessionCtx context.Context, caller mcpToolCaller, db *i
 
 func jsonNullID() []byte {
 	return []byte("null")
+}
+
+// saveTaskClass grades ck3_save by operation rather than by name: reading a
+// header is trivial, streaming a whole gamestate is not.
+func saveTaskClass(arguments json.RawMessage) mcpTaskClass {
+	var args struct {
+		Operation string `json:"operation"`
+	}
+	if err := json.Unmarshal(arguments, &args); err != nil {
+		return mcpTaskHeavy
+	}
+	switch strings.ToLower(strings.TrimSpace(args.Operation)) {
+	case "audit", "character":
+		return mcpTaskHeavy
+	default:
+		return mcpTaskRead
+	}
 }

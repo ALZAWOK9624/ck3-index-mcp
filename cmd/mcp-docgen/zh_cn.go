@@ -49,6 +49,10 @@ var chineseToolTexts = map[string]chineseToolText{
 		Title:       "检查 CK3 诊断",
 		Description: "无需重新扫描即可检查已缓存的工程诊断。默认返回摘要；explain 可按诊断代码和可选来源字段筛选。",
 	},
+	"ck3_save": {
+		Title:       "读取 CK3 存档元数据",
+		Description: "读取单个 CK3 存档文件。card 报告存档身份：版本、游戏内日期、玩家角色、主头衔、家族、政体与玩家人数。compatibility 报告存档声明的 mod、DLC 与游戏规则，供调用方与自己的配置比对。audit 流式扫描 gamestate，列出存档携带但已索引来源不再定义的 ID。character 提取单个角色的属性、特质、家族与头衔。工具只陈述事实，不判断存档能否载入，也不生成文本。",
+	},
 	"ck3_refresh": {
 		Title:       "刷新 CK3 索引",
 		Description: "在 Mod 源文件变动后刷新已配置工程层的索引。status 只报告就绪状态；files 只增量更新显式给出的相对路径；full 通过旁路扫描和事务发布完整重建，不会悄悄降级。",
@@ -152,6 +156,9 @@ var chineseToolTexts = map[string]chineseToolText{
 }
 
 var chineseFieldDescriptions = map[string]string{
+	"Save file inside a configured save root, named relative to that root.": "位于已配置存档根目录内的存档文件，按相对该根目录的路径给出。",
+	"Save view. card is the default and identifies the save; compatibility lists the content the save declares; audit checks every id the save carries against the indexed sources; character profiles one character from the gamestate.": "存档视图。card 为默认值，用于识别存档；compatibility 列出存档声明的内容；audit 把存档携带的每个 ID 与已索引来源核对；character 从 gamestate 中提取单个角色的档案。",
+	"Save id of the character to profile, required by operation=character.": "要提取档案的角色存档 ID，operation=character 时必填。",
 	"Optional zero-based seed index whose part must keep the original province id, colour, history, and title. Without it the indexed holding locator is preferred, then the largest part.": "可选的零基种子索引；对应分区必须保留原省份 ID、颜色、历史与头衔。省略时优先采用已索引地产定位点所在分区，最后才回退到面积最大的分区。",
 	"Immutable plan id returned by map_split_province.":         "map_split_province 返回的不可变方案 ID。",
 	"Exact immutable plan hash returned by map_split_province.": "map_split_province 返回的精确不可变方案哈希。",

@@ -19,6 +19,16 @@ gis_timeout_seconds = 900
 # gis_sidecar_path = "sidecar/whitebox_tools.exe"
 # gis_sidecar_sha256 = "<release-manifest-sha256>"
 
+# Reading CK3 save files is off until at least one save root is configured.
+# Saves usually arrive from an untrusted upload, so `ck3_save` may only read
+# regular files inside these directories, reached without following symlinks.
+# `save_token_map_root` holds the version-matched `*.tokens.txt` maps that name
+# a binary save's fields; without a map that covers a save, `ck3_save` reports
+# that it cannot name the fields rather than guessing.
+# save_roots = ["cache/saves"]
+# save_token_map_root = "cache/save-token-maps"
+# save_max_bytes = 536870912
+
 [[source]]
 name = "mod"
 path = "../my-ck3-mod"

@@ -72,14 +72,20 @@ func buildAdvertisedTools() []map[string]any {
 	return tools
 }
 
+// advertisedCanonicalTool deliberately omits outputSchema. MCP treats it as
+// optional, and a caller gains nothing from it here: every tool already returns
+// structuredContent, and the precise unions are supersets no client rejects. It
+// was 24 KB of the 120 KB catalog — a fifth of the context every session paid
+// before asking anything. ToolDefinition.OutputSchema is retained because
+// contract_test asserts real handler output against it; that check is the
+// schema's actual value, and it does not require publishing it.
 func advertisedCanonicalTool(definition ToolDefinition) map[string]any {
 	return map[string]any{
-		"name":         definition.Name,
-		"title":        definition.Title,
-		"description":  definition.Description,
-		"inputSchema":  definition.InputSchema,
-		"outputSchema": definition.OutputSchema,
-		"annotations":  definition.Annotations,
+		"name":        definition.Name,
+		"title":       definition.Title,
+		"description": definition.Description,
+		"inputSchema": definition.InputSchema,
+		"annotations": definition.Annotations,
 	}
 }
 

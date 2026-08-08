@@ -66,12 +66,15 @@ func arrayProperty(description string, items map[string]any) map[string]any {
 	return property
 }
 
+// visibilityProperty is repeated on roughly thirty tools, so its description is
+// deliberately terse: the long form cost more catalog bytes than the argument
+// is worth to a caller who leaves it at the default.
 func visibilityProperty() map[string]any {
 	return map[string]any{
 		"type":        "string",
 		"enum":        []string{"private", "public"},
 		"default":     "private",
-		"description": "Use public to return only configured non-private source evidence; aggregate counts and operations requiring private workspace evidence are unavailable.",
+		"description": "public limits evidence to non-private sources.",
 	}
 }
 
@@ -80,7 +83,7 @@ func limitProperty() map[string]any {
 }
 
 func pageProperty() map[string]any {
-	return integerProperty("One-based evidence page. Pages are stable only for the published scan generation returned with the tool result.", 1, 25, 1)
+	return integerProperty("One-based evidence page, stable only within the returned scan generation.", 1, 25, 1)
 }
 
 func genericOutputSchema() map[string]any {

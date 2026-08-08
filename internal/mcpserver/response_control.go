@@ -23,16 +23,36 @@ func responseBudgetProperty() map[string]any {
 	return integerProperty("Maximum encoded MCP tool-result size in bytes. Use limit/page to reduce semantic evidence first; this is a hard response safety budget.", minToolResponseBytes, maxToolResponseBytes, defaultToolResponseBytes)
 }
 
-// addResponseBudgetProperty keeps the response-size contract consistent for
-// every canonical tool without forcing each handler argument struct to carry
-// an unrelated transport field.
+// largeResultTools are the only tools whose result can realistically approach
+// the response budget: they attach a PNG or a standalone HTML document. Every
+// other tool is already bounded by limit/page to a few kilobytes of evidence.
+var largeResultTools = map[string]bool{
+	"map_render":         true,
+	"map_terrain_edit":   true,
+	"ck3_gui":            true,
+	"ck3_dependencies":   true,
+	"map_split_province": true,
+}
+
+// addResponseBudgetProperty advertises the budget knob only where it is
+// plausibly useful, but keeps every tool accepting it. Publishing it on all 34
+// tools cost roughly 7 KB of catalog for a transport control a caller sets on
+// almost none of them; validateArguments runs before splitResponseControl, so
+// the compatibility entry is what keeps the argument legal everywhere.
 func addResponseBudgetProperty(definitions []ToolDefinition) []ToolDefinition {
 	for i := range definitions {
 		properties, ok := definitions[i].InputSchema["properties"].(map[string]any)
 		if !ok || properties == nil {
 			continue
 		}
-		properties["max_response_bytes"] = responseBudgetProperty()
+		if largeResultTools[definitions[i].Name] {
+			properties["max_response_bytes"] = responseBudgetProperty()
+			continue
+		}
+		definitions[i].CompatibilityProperties = append(
+			append([]string(nil), definitions[i].CompatibilityProperties...),
+			"max_response_bytes",
+		)
 	}
 	return definitions
 }

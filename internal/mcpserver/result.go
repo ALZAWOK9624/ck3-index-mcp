@@ -113,10 +113,101 @@ func enforceResponseBudget(result map[string]any, responseBudget int) (map[strin
 	if err != nil {
 		return nil, fmt.Errorf("encode MCP tool result: %w", err)
 	}
-	if len(data) > responseBudget {
-		return nil, &responseTooLargeError{Actual: len(data), Limit: responseBudget}
+	if len(data) <= responseBudget {
+		return result, nil
 	}
-	return result, nil
+	// Failing outright discarded a result the server had already paid to
+	// compute and left the caller to guess a smaller limit. Evidence lists are
+	// ordered by relevance, so dropping their tail keeps the answer that was
+	// actually asked for and marks it truncated. A result carrying an image is
+	// still refused: a PNG has no meaningful tail to drop.
+	if trimmed, ok := trimResultToBudget(result, responseBudget); ok {
+		return trimmed, nil
+	}
+	return nil, &responseTooLargeError{Actual: len(data), Limit: responseBudget}
+}
+
+// trimResultToBudget repeatedly halves the longest array in structuredContent
+// until the encoded result fits. It reports false when no further trimming is
+// possible, which leaves the oversize condition an error as before.
+func trimResultToBudget(result map[string]any, responseBudget int) (map[string]any, bool) {
+	if resultCarriesBinaryContent(result) {
+		return nil, false
+	}
+	structured, ok := result["structuredContent"].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	trimmed := cloneStructured(structured)
+	if trimmed == nil {
+		return nil, false
+	}
+	for {
+		name, longest := longestTrimmableArray(trimmed)
+		if name == "" {
+			return nil, false
+		}
+		trimmed[name] = longest[:len(longest)/2]
+		trimmed["truncated"] = true
+		data, err := json.Marshal(trimmed)
+		if err != nil {
+			return nil, false
+		}
+		candidate := map[string]any{
+			"content":           []map[string]any{{"type": "text", "text": string(data)}},
+			"structuredContent": trimmed,
+		}
+		encoded, err := json.Marshal(candidate)
+		if err != nil {
+			return nil, false
+		}
+		if len(encoded) <= responseBudget {
+			return candidate, true
+		}
+	}
+}
+
+func resultCarriesBinaryContent(result map[string]any) bool {
+	items, ok := result["content"].([]map[string]any)
+	if !ok {
+		return false
+	}
+	for _, item := range items {
+		if kind, _ := item["type"].(string); kind != "text" {
+			return true
+		}
+	}
+	return false
+}
+
+// longestTrimmableArray returns the top-level array holding the most elements.
+// Single-element arrays are left alone: halving them yields an empty list that
+// tells the caller nothing it could not learn from truncated alone.
+func longestTrimmableArray(structured map[string]any) (string, []any) {
+	var name string
+	var longest []any
+	for key, value := range structured {
+		items, ok := value.([]any)
+		if !ok || len(items) < 2 {
+			continue
+		}
+		if len(items) > len(longest) || (len(items) == len(longest) && key < name) {
+			name, longest = key, items
+		}
+	}
+	return name, longest
+}
+
+func cloneStructured(structured map[string]any) map[string]any {
+	data, err := json.Marshal(structured)
+	if err != nil {
+		return nil
+	}
+	var cloned map[string]any
+	if err := json.Unmarshal(data, &cloned); err != nil {
+		return nil
+	}
+	return cloned
 }
 
 func encodeStructuredValue(value any) ([]byte, map[string]any, error) {
@@ -155,7 +246,6 @@ func canonicalizeNextActions(structured map[string]any) {
 				arguments[name] = value
 			}
 		}
-		_, knownTool := findCanonicalTool(tool)
 		definition, definitionFound := findCanonicalTool(tool)
 		id, _ := query["id"].(string)
 		mappedID := id == ""
@@ -183,7 +273,7 @@ func canonicalizeNextActions(structured map[string]any) {
 			}
 			delete(arguments, "history_year")
 		}
-		if !knownTool || !definitionFound || !mappedID {
+		if !definitionFound || !mappedID {
 			continue
 		}
 		data, err := json.Marshal(arguments)
@@ -304,6 +394,7 @@ func mcpHealthReport(h indexer.HealthReport) map[string]any {
 	result := map[string]any{
 		"status":                         h.Status,
 		"binary_version":                 buildinfo.Version,
+		"binary_revision":                buildinfo.Revision,
 		"database_mb":                    h.DatabaseMB,
 		"database_version":               h.DatabaseVersion,
 		"database_fingerprint":           h.DatabaseFingerprint,

@@ -81,10 +81,14 @@ func TestServeMCPProtocolContract(t *testing.T) {
 		t.Fatalf("standard tools/list count = %d, want 34", len(listed))
 	}
 	first := listed[0].(map[string]any)
-	for _, field := range []string{"title", "description", "inputSchema", "outputSchema", "annotations"} {
+	for _, field := range []string{"title", "description", "inputSchema", "annotations"} {
 		if _, ok := first[field]; !ok {
 			t.Fatalf("advertised tool lacks %s: %+v", field, first)
 		}
+	}
+	// outputSchema is intentionally not advertised; see advertisedCanonicalTool.
+	if _, ok := first["outputSchema"]; ok {
+		t.Fatalf("advertised tool must not carry outputSchema: %+v", first)
 	}
 
 	argumentResponse := responseByID(t, responses, "4")

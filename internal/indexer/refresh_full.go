@@ -130,6 +130,9 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 		return ScanStats{}, err
 	}
 	defer lock.Close()
+	// Swept under the publication lock, before a new stage is created: at this
+	// point no other full refresh can be holding one.
+	removeOrphanedStagedDatabases(dbPath)
 	if err := ctx.Err(); err != nil {
 		recordStagedFullScanFailure(normalized, err)
 		return ScanStats{}, err
@@ -253,6 +256,47 @@ func stagedFullScanPath(dbPath string) (string, error) {
 func removeStagedDatabase(path string) {
 	for _, suffix := range []string{"", "-wal", "-shm"} {
 		_ = os.Remove(path + suffix)
+	}
+}
+
+// orphanedStagedDatabaseAge keeps the sweep away from a staging cache that a
+// live refresh is still filling. Holding the publication lock already implies
+// no other full scan is running, but a lock reclaimed from a process declared
+// dead leaves a narrow window, and these files are large enough that erring
+// toward one extra hour of disk is the cheaper mistake.
+const orphanedStagedDatabaseAge = time.Hour
+
+// removeOrphanedStagedDatabases deletes staging caches abandoned by a refresh
+// that died before its deferred cleanup could run — a killed process, a power
+// loss. Nothing else ever reclaimed them, so each interrupted full refresh
+// silently cost multiple gigabytes until someone went looking.
+//
+// Deletion is the lock test. On Windows an open SQLite file cannot be removed
+// and the attempt simply fails; on Unix the unlink is safe by construction
+// because a reader keeps its inode. Either way a failure is not an error worth
+// interrupting the scan for.
+func removeOrphanedStagedDatabases(dbPath string) {
+	dir := filepath.Dir(dbPath)
+	base := filepath.Base(dbPath)
+	matches, err := filepath.Glob(filepath.Join(dir, "."+base+".staging-*.sqlite"))
+	if err != nil {
+		return
+	}
+	var reclaimed int64
+	for _, path := range matches {
+		info, statErr := os.Stat(path)
+		if statErr != nil || time.Since(info.ModTime()) < orphanedStagedDatabaseAge {
+			continue
+		}
+		size := info.Size()
+		removeStagedDatabase(path)
+		if _, stillThere := os.Stat(path); stillThere == nil {
+			continue
+		}
+		reclaimed += size
+	}
+	if reclaimed > 0 {
+		fmt.Fprintf(os.Stderr, "[scan] removed orphaned staging caches, reclaimed %dMB\n", reclaimed/(1<<20))
 	}
 }
 

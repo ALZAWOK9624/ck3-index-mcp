@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Tool catalog cost
+
+- The advertised `tools/list` payload dropped from 120024 to 79490 bytes (-33.8%) with no tool removed and no capability changed. That payload is the one thing every session pays for before the caller has asked anything, so its size is a direct tax on the context window available for actual work.
+- `outputSchema` is no longer advertised (24296 → 0 bytes, a fifth of the old catalog). MCP treats it as optional, every tool already returns `structuredContent`, and the precise unions were supersets no client rejects. `ToolDefinition.OutputSchema` is retained unchanged because `contract_test` asserts real handler output against it — that check was the schema's actual value, and it never required publishing it.
+- `max_response_bytes` is advertised only on the five tools whose result can realistically approach the budget (`map_render`, `map_terrain_edit`, `ck3_gui`, `ck3_dependencies`, `map_split_province`), saving roughly 7 KB. Every other tool still accepts the argument through `CompatibilityProperties`, because `validateArguments` runs before `splitResponseControl` and would otherwise reject it.
+- Tool descriptions dropped the `Input:` and `Returns:` clauses (22489 → 16991 bytes). They restated what the input schema's own property descriptions and the tool's base description already said; `When`/`DoNotUse`/`Unlike` are the clauses that actually separate near-neighbour tools. The repeated `visibility` and `page` property descriptions were shortened for the same reason — both appear on roughly thirty tools.
+
+### Oversize results
+
+- An oversize tool result is now trimmed and returned instead of being discarded. Evidence lists are ordered by relevance, so the tail is dropped, `truncated=true` is set, and `content[0].text` is re-encoded to match the trimmed `structuredContent`. Previously the server threw away a result it had already paid to compute and left the caller to guess a smaller `limit`.
+- Two cases still fail rather than mislead: a result carrying an image (a PNG has no meaningful tail to drop) and a result whose bulk is a single large field with no array to halve. Both return `RESPONSE_TOO_LARGE` as before.
+- `RESULT_TRUNCATED` was removed from the error contract. It had never been emitted anywhere in the codebase, so a client branching on it waited for a condition that could not occur; truncation is now a successful result carrying a flag.
+
+### Staging and build provenance
+
+- A full refresh sweeps staging caches abandoned by an earlier run before creating its own. Cleanup was previously a `defer`, which covers a returned error but not a killed process or a power loss, so every interrupted full refresh silently cost multiple gigabytes that nothing ever reclaimed. The sweep runs under the publication lock, skips anything modified within the last hour, and treats a failed delete as a lock signal rather than an error.
+- `buildinfo.Revision` records the source commit and `ck3_health` reports it as `binary_revision`. `Version` moves once per release, so a locally built server could sit many commits behind its own source while still reporting a plausible version — which is how a rebuilt tool goes missing unnoticed. `tools/build_local.ps1` stamps both in one command.
+
 ### Shared upstream index
 
 - New optional `base_database` names a prebuilt index holding only the upstream layers. A staged full refresh copies it into the staging cache and parses just the project layer, so several projects sharing the same game and Mod trees pay for those trees once instead of once each. Measured on a warm cache: sandbox project 84.9s → 53.8s, a 68845-file Godherja project 156.8s → 81.8s. Omitting the key keeps the previous behaviour exactly.

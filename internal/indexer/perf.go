@@ -344,10 +344,10 @@ func (db *DB) health(ctx context.Context, configuredPath string) (HealthReport, 
 			{Name: "shm", Path: dbPath + "-shm", Exists: fileExists(dbPath + "-shm"), SizeMB: fileSizeMB(dbPath + "-shm")},
 		},
 		MCPConfigured:         codexMCPConfigured(),
-		SQLiteReadConnections: maxReadConnections,
-		SQLiteCachePerConnMB:  readCacheMiBPerConnection,
-		SQLiteCacheBudgetMB:   estimatedSQLiteReadCacheBudgetMiB,
-		SQLiteMMapLimitMB:     readMMapLimitMiB,
+		SQLiteReadConnections: db.readOptions.Connections,
+		SQLiteCachePerConnMB:  db.readOptions.CacheMBPerConnection,
+		SQLiteCacheBudgetMB:   db.readOptions.Connections * db.readOptions.CacheMBPerConnection,
+		SQLiteMMapLimitMB:     db.readOptions.MMapLimitMB,
 	}
 	if db.tableExists(ctx, "meta") {
 		state, err := db.IndexState(ctx)

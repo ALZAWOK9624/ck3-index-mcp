@@ -145,15 +145,18 @@ ck3-index exposes one canonical MCP tool surface. Each tool uses bounded operati
 | `duplicate_barony_province` | warning | One active province is assigned to multiple baronies |
 | `invalid_title_hierarchy` | warning | Landed-title parent rank or barony province assignment is invalid |
 | `map_definition_non_contiguous_ids` | error | Positive province ids in definition.csv contain gaps |
-| `province_reference_missing_definition` | error | A map consumer references a province absent from definition.csv |
+| `map_definition_out_of_order` | error | Positive province ids in definition.csv are not in ascending row order |
+| `map_definition_duplicate_id` | error | A positive province id occurs on more than one definition.csv row |
+| `province_reference_missing_definition` | error | A typed map consumer, including non-generated locators, references a province absent from definition.csv |
 | `duplicate_default_map_field` | error | A singleton default.map province list is defined more than once |
 | `conflicting_province_terrain_assignment` | error | One province receives conflicting scripted-terrain assignments |
 | `duplicate_province_terrain_assignment` | warning | One province repeats the same scripted-terrain assignment |
 | `duplicate_province_history_block` | error | One province has multiple active history blocks |
 | `conflicting_province_history_field` | error | One province/date/history field has conflicting values |
-| `invalid_title_capital_reference` | error | A title capital is missing or is not a direct barony of its county |
+| `invalid_title_capital_reference` | error | A county capital is not its direct barony, or a higher-rank capital is not an in-tree county |
 | `county_history_anchor_mismatch` | warning | Declared county capital differs from the first direct barony used for province-history coloring |
-| `county_history_anchor_missing` | warning | A county's effective history anchor lacks culture, religion, or holding data |
+| `county_history_anchor_missing` | error | A county's effective history anchor lacks culture, religion, or a non-none holding at a bookmark date |
+| `invalid_holding_province` | error | Water, river, or impassable province history assigns a non-none holding |
 | `on_action_direct_override` | warning | Project/dependency directly overrides a known vanilla on_action effect/trigger block; this is an overwrite-risk review, not an illegal-field claim |
 | `unsupported_event_field` | error | CK3 1.19 event field such as direct `is_triggered_only` that the event loader does not accept |
 | `event_option_selection_conflict` | warning | Event option declares both `ai_chance` and `ai_will_select`, which are competing AI-selection grammars |

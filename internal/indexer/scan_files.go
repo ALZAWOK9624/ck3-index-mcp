@@ -77,7 +77,7 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 		return ScanStats{}, err
 	}
 	defer lock.Close()
-	db, err := Open(dbPath)
+	db, err := OpenWithOptions(dbPath, normalized.SQLiteReadOptions())
 	if err != nil {
 		return ScanStats{}, err
 	}

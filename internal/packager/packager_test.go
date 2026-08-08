@@ -425,7 +425,7 @@ func TestIndexerValidatorReturnsMissingReferenceDiagnostics(t *testing.T) {
 }
 
 func TestIndexerValidatorBlocksUnindexedMapContract(t *testing.T) {
-	db, err := indexer.Open(filepath.Join(t.TempDir(), "test.sqlite"))
+	db, err := indexer.OpenWithOptions(filepath.Join(t.TempDir(), "test.sqlite"), indexer.SQLiteReadOptions{Connections: 2, CacheMBPerConnection: 16, MMapLimitMB: 256})
 	if err != nil {
 		t.Fatal(err)
 	}

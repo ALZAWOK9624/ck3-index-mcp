@@ -73,7 +73,7 @@ func seedStagedScanFromBase(ctx context.Context, cfg Config, stagePath, engineFi
 	if basePath == "" {
 		return false, ""
 	}
-	if err := onlineBackupDatabase(ctx, basePath, stagePath); err != nil {
+	if err := onlineBackupDatabaseWithOptions(ctx, basePath, stagePath, cfg.SQLiteReadOptions()); err != nil {
 		return false, "base index could not be copied into the staging cache"
 	}
 	origin, reason, err := inspectBaseSeed(ctx, cfg, stagePath, engineFingerprint)
@@ -85,7 +85,7 @@ func seedStagedScanFromBase(ctx context.Context, cfg Config, stagePath, engineFi
 		removeDatabaseSnapshot(stagePath)
 		return false, reason
 	}
-	if err := recordBaseSeedOrigin(ctx, stagePath, origin); err != nil {
+	if err := recordBaseSeedOriginWithOptions(ctx, stagePath, origin, cfg.SQLiteReadOptions()); err != nil {
 		removeDatabaseSnapshot(stagePath)
 		return false, "base index provenance could not be recorded in the staging cache"
 	}
@@ -109,7 +109,7 @@ func inspectBaseSeed(ctx context.Context, cfg Config, basePath, engineFingerprin
 	if info, err := os.Stat(basePath); err != nil || info.IsDir() {
 		return baseSeedOrigin{}, "base index does not exist at the configured path", nil
 	}
-	base, err := OpenReadOnly(basePath)
+	base, err := OpenReadOnlyWithOptions(basePath, cfg.SQLiteReadOptions())
 	if err != nil {
 		return baseSeedOrigin{}, "base index could not be opened", nil
 	}
@@ -177,8 +177,12 @@ type sqliteBackuper interface {
 // that are still resident in the source WAL. Copying only the main file can
 // validate one generation and seed a different, older one.
 func onlineBackupDatabase(ctx context.Context, src, dst string) error {
+	return onlineBackupDatabaseWithOptions(ctx, src, dst, DefaultSQLiteReadOptions())
+}
+
+func onlineBackupDatabaseWithOptions(ctx context.Context, src, dst string, options SQLiteReadOptions) error {
 	removeDatabaseSnapshot(dst)
-	base, err := OpenReadOnly(src)
+	base, err := OpenReadOnlyWithOptions(src, options)
 	if err != nil {
 		return err
 	}
@@ -222,7 +226,11 @@ func onlineBackupDatabase(ctx context.Context, src, dst string) error {
 }
 
 func recordBaseSeedOrigin(ctx context.Context, stagePath string, origin baseSeedOrigin) error {
-	stage, err := Open(stagePath)
+	return recordBaseSeedOriginWithOptions(ctx, stagePath, origin, DefaultSQLiteReadOptions())
+}
+
+func recordBaseSeedOriginWithOptions(ctx context.Context, stagePath string, origin baseSeedOrigin, options SQLiteReadOptions) error {
+	stage, err := OpenWithOptions(stagePath, options)
 	if err != nil {
 		return err
 	}

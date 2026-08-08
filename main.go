@@ -1353,7 +1353,7 @@ func openDB(ctx context.Context, cfgPath string) (*indexer.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, err := indexer.Open(dbPath)
+	db, err := indexer.OpenWithOptions(dbPath, cfg.SQLiteReadOptions())
 	if err != nil {
 		return nil, err
 	}
@@ -1373,7 +1373,7 @@ func openReadOnlyDB(cfgPath string) (*indexer.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	return indexer.OpenReadOnly(dbPath)
+	return indexer.OpenReadOnlyWithOptions(dbPath, cfg.SQLiteReadOptions())
 }
 
 func readPatchInput(path string) (indexer.PreflightPatchInput, error) {

@@ -137,7 +137,7 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 		recordStagedFullScanFailure(normalized, err)
 		return ScanStats{}, err
 	}
-	base, err := readPublicationBase(ctx, dbPath)
+	base, err := readPublicationBase(ctx, dbPath, normalized.SQLiteReadOptions())
 	if err != nil {
 		return ScanStats{}, err
 	}
@@ -185,7 +185,7 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 		recordStagedFullScanFailure(normalized, err)
 		return ScanStats{}, err
 	}
-	live, err := OpenReadOnly(dbPath)
+	live, err := OpenReadOnlyWithOptions(dbPath, normalized.SQLiteReadOptions())
 	if err != nil {
 		return ScanStats{}, err
 	}
@@ -210,8 +210,8 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 	return stats, nil
 }
 
-func readPublicationBase(ctx context.Context, dbPath string) (PublicationBase, error) {
-	db, err := Open(dbPath)
+func readPublicationBase(ctx context.Context, dbPath string, options SQLiteReadOptions) (PublicationBase, error) {
+	db, err := OpenWithOptions(dbPath, options)
 	if err != nil {
 		return PublicationBase{}, err
 	}
@@ -312,7 +312,7 @@ func recordStagedFullScanFailure(cfg Config, scanErr error) {
 	if err != nil {
 		return
 	}
-	db, err := Open(dbPath)
+	db, err := OpenWithOptions(dbPath, cfg.SQLiteReadOptions())
 	if err != nil {
 		return
 	}
@@ -328,7 +328,7 @@ func publishStagedFullScan(ctx context.Context, cfg Config, stagePath string, ba
 	if err != nil {
 		return err
 	}
-	stage, err := OpenReadOnly(stagePath)
+	stage, err := OpenReadOnlyWithOptions(stagePath, cfg.SQLiteReadOptions())
 	if err != nil {
 		return err
 	}
@@ -341,7 +341,7 @@ func publishStagedFullScan(ctx context.Context, cfg Config, stagePath string, ba
 		return fmt.Errorf("staged full scan did not publish a ready generation")
 	}
 
-	db, err := Open(dbPath)
+	db, err := OpenWithOptions(dbPath, cfg.SQLiteReadOptions())
 	if err != nil {
 		return err
 	}

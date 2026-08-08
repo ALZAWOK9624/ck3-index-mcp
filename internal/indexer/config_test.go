@@ -57,6 +57,10 @@ resource_only = true
 	if cfg.GISCacheRoot != wantGISCache {
 		t.Fatalf("GIS cache root = %q, want %q", cfg.GISCacheRoot, wantGISCache)
 	}
+	if cfg.SQLiteReadConnections != DefaultSQLiteReadConnections || cfg.SQLiteCacheMBPerConnection != DefaultSQLiteCacheMBPerConnection || cfg.SQLiteMMapLimitMB != DefaultSQLiteMMapLimitMB ||
+		cfg.MCPMaxTasks != DefaultMCPMaxTasks || cfg.MCPMaxHeavyTasks != DefaultMCPMaxHeavyTasks || cfg.MCPMaxRasterTasks != DefaultMCPMaxRasterTasks {
+		t.Fatalf("resource defaults changed: %+v", cfg)
+	}
 
 	wantRelative := filepath.Clean(filepath.Join(filepath.Dir(cfgPath), "../project"))
 	if cfg.Sources[0].Path != wantRelative {
@@ -74,6 +78,58 @@ resource_only = true
 	}
 	if !cfg.Sources[2].ResourceOnly {
 		t.Fatal("resource_only source flag was not preserved")
+	}
+}
+
+func TestLoadConfigAcceptsLowMemoryResourceLimits(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "ck3-index.toml")
+	text := `database = "cache/test.sqlite"
+sqlite_read_connections = 2
+sqlite_cache_mb_per_connection = 16
+sqlite_mmap_limit_mb = 256
+mcp_max_tasks = 4
+mcp_max_heavy_tasks = 1
+mcp_max_raster_tasks = 1
+[[source]]
+name = "project"
+path = "project"
+rank = 1
+role = "project"
+`
+	if err := os.WriteFile(cfgPath, []byte(text), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SQLiteReadConnections != 2 || cfg.SQLiteCacheMBPerConnection != 16 || cfg.SQLiteMMapLimitMB != 256 || cfg.MCPMaxTasks != 4 || cfg.MCPMaxHeavyTasks != 1 || cfg.MCPMaxRasterTasks != 1 {
+		t.Fatalf("resource limits=%+v", cfg)
+	}
+	options := cfg.SQLiteReadOptions()
+	if options.Connections != 2 || options.CacheMBPerConnection != 16 || options.MMapLimitMB != 256 {
+		t.Fatalf("SQLite options=%+v", options)
+	}
+}
+
+func TestLoadConfigRejectsInconsistentResourceLimits(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "ck3-index.toml")
+	text := `database = "cache/test.sqlite"
+mcp_max_tasks = 1
+mcp_max_heavy_tasks = 2
+[[source]]
+name = "project"
+path = "project"
+rank = 1
+role = "project"
+`
+	if err := os.WriteFile(cfgPath, []byte(text), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(cfgPath); err == nil || !strings.Contains(err.Error(), "mcp_max_heavy_tasks") {
+		t.Fatalf("expected inconsistent MCP limits error, got %v", err)
 	}
 }
 

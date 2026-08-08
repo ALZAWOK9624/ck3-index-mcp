@@ -116,7 +116,7 @@ type fileRecord struct {
 	OverrideRule     string
 }
 
-const indexRuleVersion = "2026-08-08-v0.5.0-map-contract-1"
+const indexRuleVersion = "2026-08-09-v0.5.0-map-contract-2"
 
 // Keep ordinary full scans well below SQLite's variable limit when they take
 // the scoped resolver/validator path. Larger edits remain correct by falling
@@ -171,7 +171,7 @@ func scanWithModePublishing(ctx context.Context, cfg Config, forceClean, publish
 	if err != nil {
 		return ScanStats{}, err
 	}
-	db, err := Open(dbPath)
+	db, err := OpenWithOptions(dbPath, cfg.SQLiteReadOptions())
 	if err != nil {
 		return ScanStats{}, err
 	}

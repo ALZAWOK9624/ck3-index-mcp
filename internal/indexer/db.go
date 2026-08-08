@@ -16,6 +16,7 @@ import (
 type DB struct {
 	sql                 *sql.DB
 	path                string
+	readOptions         SQLiteReadOptions
 	physicalRasterMu    sync.Mutex
 	physicalRasterCache map[string]cachedMapPhysicalRaster
 	guiResolutionMu     sync.Mutex
@@ -23,7 +24,51 @@ type DB struct {
 	guiResolutionOrder  []string
 }
 
+const (
+	DefaultSQLiteReadConnections      = 8
+	DefaultSQLiteCacheMBPerConnection = 64
+	DefaultSQLiteMMapLimitMB          = 1024
+	DefaultMCPMaxTasks                = 12
+	DefaultMCPMaxHeavyTasks           = 2
+	DefaultMCPMaxRasterTasks          = 1
+)
+
+type SQLiteReadOptions struct {
+	Connections          int
+	CacheMBPerConnection int
+	MMapLimitMB          int
+}
+
+func DefaultSQLiteReadOptions() SQLiteReadOptions {
+	return SQLiteReadOptions{
+		Connections: DefaultSQLiteReadConnections, CacheMBPerConnection: DefaultSQLiteCacheMBPerConnection, MMapLimitMB: DefaultSQLiteMMapLimitMB,
+	}
+}
+
+func (cfg Config) SQLiteReadOptions() SQLiteReadOptions {
+	options := SQLiteReadOptions{Connections: cfg.SQLiteReadConnections, CacheMBPerConnection: cfg.SQLiteCacheMBPerConnection, MMapLimitMB: cfg.SQLiteMMapLimitMB}
+	return normalizeSQLiteReadOptions(options)
+}
+
+func normalizeSQLiteReadOptions(options SQLiteReadOptions) SQLiteReadOptions {
+	defaults := DefaultSQLiteReadOptions()
+	if options.Connections <= 0 {
+		options.Connections = defaults.Connections
+	}
+	if options.CacheMBPerConnection <= 0 {
+		options.CacheMBPerConnection = defaults.CacheMBPerConnection
+	}
+	if options.MMapLimitMB <= 0 {
+		options.MMapLimitMB = defaults.MMapLimitMB
+	}
+	return options
+}
+
 func Open(path string) (*DB, error) {
+	return OpenWithOptions(path, DefaultSQLiteReadOptions())
+}
+
+func OpenWithOptions(path string, options SQLiteReadOptions) (*DB, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
@@ -31,18 +76,23 @@ func Open(path string) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(absolute), 0755); err != nil {
 		return nil, err
 	}
-	return openSQLite(absolute, false)
+	return openSQLite(absolute, false, options)
 }
 
 func OpenReadOnly(path string) (*DB, error) {
+	return OpenReadOnlyWithOptions(path, DefaultSQLiteReadOptions())
+}
+
+func OpenReadOnlyWithOptions(path string, options SQLiteReadOptions) (*DB, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
-	return openSQLite(absolute, true)
+	return openSQLite(absolute, true, options)
 }
 
-func openSQLite(path string, readOnly bool) (*DB, error) {
+func openSQLite(path string, readOnly bool, options SQLiteReadOptions) (*DB, error) {
+	options = normalizeSQLiteReadOptions(options)
 	uriPath := filepath.ToSlash(path)
 	if runtime.GOOS == "windows" && len(uriPath) >= 2 && uriPath[1] == ':' {
 		uriPath = "/" + uriPath
@@ -55,7 +105,7 @@ func openSQLite(path string, readOnly bool) (*DB, error) {
 	//
 	// Add, never Set: url.Values.Set replaces the whole key, so a second Set
 	// would silently discard every pragma but the last.
-	for _, pragma := range readConnectionPragmas {
+	for _, pragma := range readConnectionPragmas(options) {
 		query.Add("_pragma", pragma)
 	}
 	if readOnly {
@@ -67,23 +117,23 @@ func openSQLite(path string, readOnly bool) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(maxReadConnections)
+	db.SetMaxOpenConns(options.Connections)
 	// Without a matching idle count database/sql keeps only two connections and
 	// closes the rest after each burst of tool calls. Reopening pays the connect
 	// cost again and, worse, starts over with an empty page cache, so the
 	// cache_size above would never accumulate anything.
-	db.SetMaxIdleConns(maxReadConnections)
+	db.SetMaxIdleConns(options.Connections)
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, err
 	}
-	return &DB{sql: db, path: path}, nil
+	return &DB{sql: db, path: path, readOptions: options}, nil
 }
 
 const (
-	maxReadConnections                = 8
-	readCacheMiBPerConnection         = 64
-	readMMapLimitMiB                  = 1024
+	maxReadConnections                = DefaultSQLiteReadConnections
+	readCacheMiBPerConnection         = DefaultSQLiteCacheMBPerConnection
+	readMMapLimitMiB                  = DefaultSQLiteMMapLimitMB
 	estimatedSQLiteReadCacheBudgetMiB = maxReadConnections * readCacheMiBPerConnection
 )
 
@@ -100,14 +150,16 @@ const (
 // temp_store matters more than the cache here. Nearly every hot query orders by
 // columns no index covers and therefore builds a temporary b-tree; on the
 // default setting each of those spills to disk.
-var readConnectionPragmas = []string{
-	"busy_timeout=5000",
-	"cache_size=-65536",
-	"temp_store=MEMORY",
-	// Memory-mapped reads avoid a pread and a page copy per access. The value is
-	// an upper bound, not an allocation: SQLite maps at most the file's length,
-	// and falls back to ordinary I/O where the mapping cannot be established.
-	"mmap_size=1073741824",
+func readConnectionPragmas(options SQLiteReadOptions) []string {
+	return []string{
+		"busy_timeout=5000",
+		fmt.Sprintf("cache_size=-%d", int64(options.CacheMBPerConnection)*1024),
+		"temp_store=MEMORY",
+		// Memory-mapped reads avoid a pread and a page copy per access. The value is
+		// an upper bound, not an allocation: SQLite maps at most the file's length,
+		// and falls back to ordinary I/O where the mapping cannot be established.
+		fmt.Sprintf("mmap_size=%d", int64(options.MMapLimitMB)*1024*1024),
+	}
 }
 
 func (db *DB) Close() error { return db.sql.Close() }

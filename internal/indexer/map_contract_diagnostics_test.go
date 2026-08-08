@@ -4,8 +4,21 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func writeMapContractFile(t *testing.T, root, rel, content string) activeMapFile {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return activeMapFile{Path: path, Rel: rel, Src: Source{Name: "project", Rank: 1}}
+}
 
 func TestCollectBaseMapContractDiagnosticsFindsCrossFileFailures(t *testing.T) {
 	root := t.TempDir()
@@ -43,6 +56,145 @@ func TestCollectBaseMapContractDiagnosticsFindsCrossFileFailures(t *testing.T) {
 	} {
 		if !codes[code] {
 			t.Errorf("expected diagnostic %s, got %+v", code, codes)
+		}
+	}
+}
+
+func TestDefinitionSequenceReportsOrderAndDuplicateIndependently(t *testing.T) {
+	file := writeMapContractFile(t, t.TempDir(), "map_data/definition.csv", "province;red;green;blue\n1;1;1;1\n3;3;3;3\n2;2;2;2\n2;4;4;4\n")
+	ids, diagnostics := auditDefinitionSequence(file)
+	if len(ids) != 3 {
+		t.Fatalf("defined ids=%v, want 1..3", ids)
+	}
+	codes := map[string]bool{}
+	for _, diagnostic := range diagnostics {
+		codes[diagnostic.Code] = true
+	}
+	for _, code := range []string{"map_definition_out_of_order", "map_definition_duplicate_id"} {
+		if !codes[code] {
+			t.Fatalf("missing %s in %+v", code, diagnostics)
+		}
+	}
+	if codes["map_definition_non_contiguous_ids"] {
+		t.Fatalf("order-only fixture was reported as a gap: %+v", diagnostics)
+	}
+}
+
+func TestProvinceLocatorContractChecksTypedRecordsAndAllowsZeroSentinel(t *testing.T) {
+	root := t.TempDir()
+	file := writeMapContractFile(t, root, "gfx/map/map_object_data/combat_locators.txt", `
+game_object_locator = {
+	instances = {
+		# { id=99 position={ 1 2 3 } rotation={ 0 0 0 1 } scale={ 1 1 1 } }
+		{ id=0 position={ 1 2 3 } rotation={ 0 0 0 1 } scale={ 1 1 1 } }
+		{ id=2 position={ 1066 4 5 } rotation={ 0 0 0 1 } scale={ 1 1 1 } }
+	}
+}
+`)
+	diagnostics := auditProvinceLocatorContract(map[string]activeMapFile{file.Rel: file}, map[int]bool{1: true})
+	if len(diagnostics) != 1 || diagnostics[0].Code != "province_reference_missing_definition" || diagnostics[0].Occurrences != 1 {
+		t.Fatalf("locator diagnostics=%+v", diagnostics)
+	}
+	if !strings.Contains(diagnostics[0].Message, "2") || strings.Contains(diagnostics[0].Message, "1066") || strings.Contains(diagnostics[0].Message, "99") {
+		t.Fatalf("locator parser scanned a non-id number: %+v", diagnostics[0])
+	}
+}
+
+func TestProvinceMappingContractChecksOnlyTypedKeyValuePairs(t *testing.T) {
+	root := t.TempDir()
+	file := writeMapContractFile(t, root, "history/province_mapping/00.txt", "# 99 = 98\n1 = 2\n3 = 1\n")
+	diagnostics := auditProvinceMappingContract(map[string]activeMapFile{file.Rel: file}, map[int]bool{1: true, 2: true})
+	if len(diagnostics) != 1 || diagnostics[0].Occurrences != 1 || !strings.Contains(diagnostics[0].Message, "3") {
+		t.Fatalf("mapping diagnostics=%+v", diagnostics)
+	}
+}
+
+func TestInvalidHoldingProvinceRejectsBlockedAssignmentsButAllowsNone(t *testing.T) {
+	root := t.TempDir()
+	file := writeMapContractFile(t, root, "history/provinces/00.txt", `
+1 = { holding = castle_holding }
+2 = { holding = none }
+3 = { 1066.10.1 = { holding = city_holding } }
+`)
+	provinces := map[int]*mapProvinceBuild{
+		1: {ID: 1, BlockKind: "water", WaterKind: "sea"},
+		2: {ID: 2, BlockKind: "water", WaterKind: "river"},
+		3: {ID: 3, BlockKind: "impassable_mountain"},
+	}
+	diagnostics := invalidHoldingProvinceDiagnostics(map[string]activeMapFile{file.Rel: file}, provinces)
+	if len(diagnostics) != 1 || diagnostics[0].Code != "invalid_holding_province" || diagnostics[0].Occurrences != 2 {
+		t.Fatalf("holding diagnostics=%+v", diagnostics)
+	}
+}
+
+func TestCountyHistoryAnchorUsesEveryBookmarkEffectiveValue(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "index.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := db.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	for _, row := range []struct {
+		date  int
+		field string
+		value string
+	}{
+		{0, "culture", "culture_a"},
+		{0, "religion", "faith_a"},
+		{0, "holding", "none"},
+		{10661002, "holding", "castle_holding"},
+	} {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO map_province_history(province_id,date_key,field,value) VALUES(1,?,?,?)`, row.date, row.field, row.value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	anchors := map[string]countyHistoryAnchor{"c_test": {CountyID: "c_test", BaronyID: "b_test", ProvinceID: 1, Source: "project", Path: "common/landed_titles/00.txt", Line: 1}}
+	diagnostics := countyHistoryAnchorDiagnostics(ctx, tx, anchors, []int{10661001, 10661003})
+	if len(diagnostics) != 1 || diagnostics[0].Severity != "error" || diagnostics[0].Occurrences != 1 || !strings.Contains(diagnostics[0].Message, "1066.10.1: holding") {
+		t.Fatalf("bookmark diagnostics=%+v", diagnostics)
+	}
+
+	if _, err := tx.ExecContext(ctx, `UPDATE map_province_history SET date_key=10661001 WHERE province_id=1 AND field='holding' AND value='castle_holding'`); err != nil {
+		t.Fatal(err)
+	}
+	if diagnostics := countyHistoryAnchorDiagnostics(ctx, tx, anchors, []int{10661001, 10661003}); len(diagnostics) != 0 {
+		t.Fatalf("effective bookmark values were not accepted: %+v", diagnostics)
+	}
+}
+
+func TestCollectBookmarkStartDatesFindsNestedBookmarks(t *testing.T) {
+	root := t.TempDir()
+	file := writeMapContractFile(t, root, "common/bookmarks/bookmarks/00.txt", `group = { bookmark = { start_date = 1066.10.1 } bookmark = { start_date = 867.1.1 } }`)
+	dates := collectBookmarkStartDates(map[string]activeMapFile{file.Rel: file})
+	if len(dates) != 2 || dates[0] != 8670101 || dates[1] != 10661001 {
+		t.Fatalf("bookmark dates=%v", dates)
+	}
+}
+
+func TestHigherTitleCapitalMustBeCountyInsideDeJureTree(t *testing.T) {
+	titles := map[string]*mapTitleBuild{
+		"d_test":     {ID: "d_test", Type: "d", CapitalTitle: "c_outside", Children: []string{"c_inside"}, Source: "project", Rel: "common/landed_titles/00.txt", Line: 1},
+		"c_inside":   {ID: "c_inside", Type: "c", Parent: "d_test"},
+		"c_outside":  {ID: "c_outside", Type: "c"},
+		"d_titular":  {ID: "d_titular", Type: "d", CapitalTitle: "c_outside", Source: "project", Rel: "common/landed_titles/00.txt", Line: 2},
+		"d_bad_rank": {ID: "d_bad_rank", Type: "d", CapitalTitle: "b_inside", Source: "project", Rel: "common/landed_titles/00.txt", Line: 3},
+		"b_inside":   {ID: "b_inside", Type: "b", Parent: "c_inside"},
+	}
+	diagnostics := titleMapContractDiagnostics(titles, nil, nil, nil)
+	if len(diagnostics) != 2 {
+		t.Fatalf("capital diagnostics=%+v", diagnostics)
+	}
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Code != "invalid_title_capital_reference" {
+			t.Fatalf("unexpected diagnostic=%+v", diagnostic)
 		}
 	}
 }
@@ -152,6 +304,13 @@ impassable_mountains = LIST { 1 # 99 is documentation only
 		if diagnostic.Code == "duplicate_default_map_field" || diagnostic.Code == "province_reference_missing_definition" {
 			t.Fatalf("commented default.map content produced a hard diagnostic: %+v", diagnostics)
 		}
+	}
+	blocked, err := parseDefaultMapBlocked(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked[2].BlockKind != "" || blocked[99].BlockKind != "" || blocked[1].BlockKind != "impassable_mountain" {
+		t.Fatalf("commented default.map values entered blocked province cache: %+v", blocked)
 	}
 }
 

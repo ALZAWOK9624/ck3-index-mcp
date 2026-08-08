@@ -45,8 +45,17 @@ type Config struct {
 	SaveTokenMapRoot string
 	// SaveMaxBytes caps one save file.
 	SaveMaxBytes int64
-	Sources      []Source
-	ForceClean   bool
+	// SQLite read-pool and MCP task limits are optional. Zero values preserve
+	// the historical defaults so old TOML files and programmatic callers keep
+	// the same behavior.
+	SQLiteReadConnections      int
+	SQLiteCacheMBPerConnection int
+	SQLiteMMapLimitMB          int
+	MCPMaxTasks                int
+	MCPMaxHeavyTasks           int
+	MCPMaxRasterTasks          int
+	Sources                    []Source
+	ForceClean                 bool
 }
 
 // SourceRole identifies why a configured source exists. Rank remains solely
@@ -78,12 +87,45 @@ type Source struct {
 // validates the resulting source model. New callers should use its returned
 // configuration rather than deriving project/game identity from rank or name.
 func NormalizeConfig(cfg Config) (Config, error) {
+	if err := normalizeResourceLimits(&cfg); err != nil {
+		return Config{}, err
+	}
 	sources, err := normalizeSources(cfg.Sources)
 	if err != nil {
 		return Config{}, err
 	}
 	cfg.Sources = sources
 	return cfg, nil
+}
+
+func normalizeResourceLimits(cfg *Config) error {
+	limits := []struct {
+		name         string
+		value        *int
+		defaultValue int
+	}{
+		{"sqlite_read_connections", &cfg.SQLiteReadConnections, DefaultSQLiteReadConnections},
+		{"sqlite_cache_mb_per_connection", &cfg.SQLiteCacheMBPerConnection, DefaultSQLiteCacheMBPerConnection},
+		{"sqlite_mmap_limit_mb", &cfg.SQLiteMMapLimitMB, DefaultSQLiteMMapLimitMB},
+		{"mcp_max_tasks", &cfg.MCPMaxTasks, DefaultMCPMaxTasks},
+		{"mcp_max_heavy_tasks", &cfg.MCPMaxHeavyTasks, DefaultMCPMaxHeavyTasks},
+		{"mcp_max_raster_tasks", &cfg.MCPMaxRasterTasks, DefaultMCPMaxRasterTasks},
+	}
+	for _, limit := range limits {
+		if *limit.value < 0 {
+			return fmt.Errorf("%s must be a positive integer", limit.name)
+		}
+		if *limit.value == 0 {
+			*limit.value = limit.defaultValue
+		}
+	}
+	if cfg.MCPMaxHeavyTasks > cfg.MCPMaxTasks {
+		return fmt.Errorf("mcp_max_heavy_tasks must not exceed mcp_max_tasks")
+	}
+	if cfg.MCPMaxRasterTasks > cfg.MCPMaxTasks {
+		return fmt.Errorf("mcp_max_raster_tasks must not exceed mcp_max_tasks")
+	}
+	return nil
 }
 
 func normalizeSources(sources []Source) ([]Source, error) {
@@ -358,23 +400,29 @@ func WriteDefaultConfig(path string) error {
 }
 
 type configTOML struct {
-	Database               string       `toml:"database"`
-	BaseDatabase           string       `toml:"base_database"`
-	EngineLogs             string       `toml:"engine_logs"`
-	ArtifactRoot           string       `toml:"artifact_root"`
-	MigrationSnapshotRoot  string       `toml:"migration_snapshot_root"`
-	ArtifactRetentionHours *int         `toml:"artifact_retention_hours"`
-	GISEnabled             *bool        `toml:"gis_enabled"`
-	GISAnalysis            string       `toml:"gis_analysis"`
-	GISCacheRoot           string       `toml:"gis_cache_root"`
-	GISCacheMaxGiB         *int         `toml:"gis_cache_max_gib"`
-	GISTimeoutSeconds      *int         `toml:"gis_timeout_seconds"`
-	GISSidecarPath         string       `toml:"gis_sidecar_path"`
-	GISSidecarSHA256       string       `toml:"gis_sidecar_sha256"`
-	SaveRoots              []string     `toml:"save_roots"`
-	SaveTokenMapRoot       string       `toml:"save_token_map_root"`
-	SaveMaxBytes           *int64       `toml:"save_max_bytes"`
-	Sources                []sourceTOML `toml:"source"`
+	Database                   string       `toml:"database"`
+	BaseDatabase               string       `toml:"base_database"`
+	EngineLogs                 string       `toml:"engine_logs"`
+	ArtifactRoot               string       `toml:"artifact_root"`
+	MigrationSnapshotRoot      string       `toml:"migration_snapshot_root"`
+	ArtifactRetentionHours     *int         `toml:"artifact_retention_hours"`
+	GISEnabled                 *bool        `toml:"gis_enabled"`
+	GISAnalysis                string       `toml:"gis_analysis"`
+	GISCacheRoot               string       `toml:"gis_cache_root"`
+	GISCacheMaxGiB             *int         `toml:"gis_cache_max_gib"`
+	GISTimeoutSeconds          *int         `toml:"gis_timeout_seconds"`
+	GISSidecarPath             string       `toml:"gis_sidecar_path"`
+	GISSidecarSHA256           string       `toml:"gis_sidecar_sha256"`
+	SaveRoots                  []string     `toml:"save_roots"`
+	SaveTokenMapRoot           string       `toml:"save_token_map_root"`
+	SaveMaxBytes               *int64       `toml:"save_max_bytes"`
+	SQLiteReadConnections      *int         `toml:"sqlite_read_connections"`
+	SQLiteCacheMBPerConnection *int         `toml:"sqlite_cache_mb_per_connection"`
+	SQLiteMMapLimitMB          *int         `toml:"sqlite_mmap_limit_mb"`
+	MCPMaxTasks                *int         `toml:"mcp_max_tasks"`
+	MCPMaxHeavyTasks           *int         `toml:"mcp_max_heavy_tasks"`
+	MCPMaxRasterTasks          *int         `toml:"mcp_max_raster_tasks"`
+	Sources                    []sourceTOML `toml:"source"`
 }
 
 type sourceTOML struct {
@@ -463,6 +511,27 @@ func LoadConfig(path string) (Config, error) {
 			return Config{}, fmt.Errorf("save_max_bytes must be a positive integer")
 		}
 		cfg.SaveMaxBytes = *decoded.SaveMaxBytes
+	}
+	resourceLimits := []struct {
+		name  string
+		input *int
+		value *int
+	}{
+		{"sqlite_read_connections", decoded.SQLiteReadConnections, &cfg.SQLiteReadConnections},
+		{"sqlite_cache_mb_per_connection", decoded.SQLiteCacheMBPerConnection, &cfg.SQLiteCacheMBPerConnection},
+		{"sqlite_mmap_limit_mb", decoded.SQLiteMMapLimitMB, &cfg.SQLiteMMapLimitMB},
+		{"mcp_max_tasks", decoded.MCPMaxTasks, &cfg.MCPMaxTasks},
+		{"mcp_max_heavy_tasks", decoded.MCPMaxHeavyTasks, &cfg.MCPMaxHeavyTasks},
+		{"mcp_max_raster_tasks", decoded.MCPMaxRasterTasks, &cfg.MCPMaxRasterTasks},
+	}
+	for _, limit := range resourceLimits {
+		if limit.input == nil {
+			continue
+		}
+		if *limit.input <= 0 {
+			return Config{}, fmt.Errorf("%s must be a positive integer", limit.name)
+		}
+		*limit.value = *limit.input
 	}
 	seenSaveRoots := make(map[string]struct{}, len(decoded.SaveRoots))
 	for _, root := range decoded.SaveRoots {

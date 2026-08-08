@@ -39,3 +39,31 @@ func TestHealthReportsSQLiteReadMemoryBudget(t *testing.T) {
 		t.Fatalf("health SQLite memory budget is incomplete: %+v", report)
 	}
 }
+
+func TestHealthReportsConfiguredSQLiteReadMemoryBudget(t *testing.T) {
+	db, err := OpenWithOptions(filepath.Join(t.TempDir(), "health.sqlite"), SQLiteReadOptions{Connections: 2, CacheMBPerConnection: 16, MMapLimitMB: 256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.EnsureSchema(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	report, err := db.Health(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.SQLiteReadConnections != 2 || report.SQLiteCachePerConnMB != 16 || report.SQLiteCacheBudgetMB != 32 || report.SQLiteMMapLimitMB != 256 {
+		t.Fatalf("configured health SQLite memory budget is incomplete: %+v", report)
+	}
+	if stats := db.sql.Stats(); stats.MaxOpenConnections != 2 {
+		t.Fatalf("SQLite max open connections=%d, want 2", stats.MaxOpenConnections)
+	}
+	var cacheSize int
+	if err := db.sql.QueryRow(`PRAGMA cache_size`).Scan(&cacheSize); err != nil {
+		t.Fatal(err)
+	}
+	if cacheSize != -16*1024 {
+		t.Fatalf("SQLite cache_size=%d, want %d", cacheSize, -16*1024)
+	}
+}

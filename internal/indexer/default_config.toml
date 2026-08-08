@@ -15,6 +15,16 @@ gis_analysis = "terrain"
 gis_cache_root = "cache/gis"
 gis_cache_max_gib = 8
 gis_timeout_seconds = 900
+# Optional resource limits. Omitting them preserves the historical defaults:
+# 8 SQLite read connections, 64 MB cache per connection, 1024 MB mmap, and
+# MCP concurrency limits of 12 ordinary / 2 heavy / 1 raster task.
+# A conservative 4 GB server profile is 2 / 16 / 256 and 4 / 1 / 1.
+# sqlite_read_connections = 2
+# sqlite_cache_mb_per_connection = 16
+# sqlite_mmap_limit_mb = 256
+# mcp_max_tasks = 4
+# mcp_max_heavy_tasks = 1
+# mcp_max_raster_tasks = 1
 # Release bundles set these to the bundled, verified WhiteboxTools binary.
 # gis_sidecar_path = "sidecar/whitebox_tools.exe"
 # gis_sidecar_sha256 = "<release-manifest-sha256>"

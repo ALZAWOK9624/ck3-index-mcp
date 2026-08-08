@@ -72,15 +72,18 @@ const (
 	mcpTaskHeavy  mcpTaskClass = "heavy"
 	mcpTaskRaster mcpTaskClass = "raster"
 
-	maxMCPTasks       = 12
-	maxMCPHeavyTasks  = 2
-	maxMCPRasterTasks = 1
+	maxMCPTasks       = indexer.DefaultMCPMaxTasks
+	maxMCPHeavyTasks  = indexer.DefaultMCPMaxHeavyTasks
+	maxMCPRasterTasks = indexer.DefaultMCPMaxRasterTasks
 )
 
 type mcpTaskLimiter struct {
 	active       int
 	heavy        int
 	raster       int
+	maxActive    int
+	maxHeavy     int
+	maxRaster    int
 	trackProcess bool
 }
 
@@ -118,13 +121,14 @@ func currentMCPTaskUsage() mcpTaskUsageSnapshot {
 }
 
 func (limiter *mcpTaskLimiter) acquire(class mcpTaskClass) bool {
-	if limiter.active >= maxMCPTasks {
+	maxActive, maxHeavy, maxRaster := limiter.limits()
+	if limiter.active >= maxActive {
 		return false
 	}
-	if class == mcpTaskHeavy && limiter.heavy >= maxMCPHeavyTasks {
+	if class == mcpTaskHeavy && limiter.heavy >= maxHeavy {
 		return false
 	}
-	if class == mcpTaskRaster && limiter.raster >= maxMCPRasterTasks {
+	if class == mcpTaskRaster && limiter.raster >= maxRaster {
 		return false
 	}
 	limiter.active++
@@ -144,6 +148,34 @@ func (limiter *mcpTaskLimiter) acquire(class mcpTaskClass) bool {
 		}
 	}
 	return true
+}
+
+func (limiter *mcpTaskLimiter) limits() (int, int, int) {
+	active, heavy, raster := limiter.maxActive, limiter.maxHeavy, limiter.maxRaster
+	if active <= 0 {
+		active = maxMCPTasks
+	}
+	if heavy <= 0 {
+		heavy = maxMCPHeavyTasks
+	}
+	if raster <= 0 {
+		raster = maxMCPRasterTasks
+	}
+	return active, heavy, raster
+}
+
+func newMCPTaskLimiter(cfg indexer.Config) mcpTaskLimiter {
+	active, heavy, raster := cfg.MCPMaxTasks, cfg.MCPMaxHeavyTasks, cfg.MCPMaxRasterTasks
+	if active <= 0 {
+		active = maxMCPTasks
+	}
+	if heavy <= 0 {
+		heavy = maxMCPHeavyTasks
+	}
+	if raster <= 0 {
+		raster = maxMCPRasterTasks
+	}
+	return mcpTaskLimiter{maxActive: active, maxHeavy: heavy, maxRaster: raster, trackProcess: true}
 }
 
 func (limiter *mcpTaskLimiter) release(class mcpTaskClass) {
@@ -202,7 +234,7 @@ func classifyMCPTask(raw json.RawMessage) mcpTaskClass {
 }
 
 func serveWithToolCaller(ctx context.Context, cfg indexer.Config, dbPath string, in io.Reader, out io.Writer, caller mcpToolCaller) error {
-	db, err := openMCPDatabase(ctx, dbPath)
+	db, err := openMCPDatabase(ctx, cfg, dbPath)
 	if err != nil {
 		return err
 	}
@@ -214,11 +246,15 @@ func serveWithToolCaller(ctx context.Context, cfg indexer.Config, dbPath string,
 	sessionCtx, cancelSession := context.WithCancel(ctx)
 	defer cancelSession()
 	readEvents := startMCPReader(sessionCtx, bufio.NewReaderSize(in, 4*1024*1024))
-	taskResults := make(chan mcpToolTaskResult, maxMCPTasks)
+	configuredTasks := cfg.MCPMaxTasks
+	if configuredTasks <= 0 {
+		configuredTasks = maxMCPTasks
+	}
+	taskResults := make(chan mcpToolTaskResult, configuredTasks)
 	tasks := map[string]mcpToolTask{}
 	inputClosed := false
 	session := mcpSession{seenRequestIDs: map[string]struct{}{}}
-	limiter := mcpTaskLimiter{trackProcess: true}
+	limiter := newMCPTaskLimiter(cfg)
 	defer limiter.close()
 
 	writeResponse := func(response rpcResponse) error {
@@ -386,12 +422,12 @@ func serveWithToolCaller(ctx context.Context, cfg indexer.Config, dbPath string,
 	return nil
 }
 
-func openMCPDatabase(ctx context.Context, dbPath string) (*indexer.DB, error) {
+func openMCPDatabase(ctx context.Context, cfg indexer.Config, dbPath string) (*indexer.DB, error) {
 	if _, err := os.Stat(dbPath); err != nil {
 		if !os.IsNotExist(err) {
 			return nil, err
 		}
-		bootstrap, openErr := indexer.Open(dbPath)
+		bootstrap, openErr := indexer.OpenWithOptions(dbPath, cfg.SQLiteReadOptions())
 		if openErr != nil {
 			return nil, openErr
 		}
@@ -404,7 +440,7 @@ func openMCPDatabase(ctx context.Context, dbPath string) (*indexer.DB, error) {
 			return nil, closeErr
 		}
 	}
-	return indexer.OpenReadOnly(dbPath)
+	return indexer.OpenReadOnlyWithOptions(dbPath, cfg.SQLiteReadOptions())
 }
 
 func startMCPReader(ctx context.Context, reader *bufio.Reader) <-chan mcpReadEvent {

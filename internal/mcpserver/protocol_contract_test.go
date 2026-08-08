@@ -356,6 +356,20 @@ func TestMapRasterToolsUseTheSingleRasterTaskClass(t *testing.T) {
 	}
 }
 
+func TestConfiguredTaskLimiterUsesLowMemoryLimits(t *testing.T) {
+	limiter := newMCPTaskLimiter(indexer.Config{MCPMaxTasks: 4, MCPMaxHeavyTasks: 1, MCPMaxRasterTasks: 1})
+	defer limiter.close()
+	if !limiter.acquire(mcpTaskHeavy) || limiter.acquire(mcpTaskHeavy) {
+		t.Fatal("configured heavy task limit was not enforced")
+	}
+	if !limiter.acquire(mcpTaskRaster) || limiter.acquire(mcpTaskRaster) {
+		t.Fatal("configured raster task limit was not enforced")
+	}
+	if !limiter.acquire(mcpTaskRead) || !limiter.acquire(mcpTaskRead) || limiter.acquire(mcpTaskRead) {
+		t.Fatal("configured global task limit was not enforced")
+	}
+}
+
 func TestTrackedTaskLimiterReportsAndReleasesMemoryEstimate(t *testing.T) {
 	before := currentMCPTaskUsage()
 	limiter := mcpTaskLimiter{trackProcess: true}

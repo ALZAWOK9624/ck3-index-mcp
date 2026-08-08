@@ -14,7 +14,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,7 +31,7 @@ type activeMapFile struct {
 // it covers only the direct inputs and cache semantics of rebuildMapCache.
 // Bump it when that pipeline starts consuming a new input or changes output
 // semantics that cannot be inferred from the input bytes alone.
-const mapInputFingerprintVersion = "map_input_v2_contract_diagnostics"
+const mapInputFingerprintVersion = "map_input_v3_bookmark_contracts"
 
 type mapProvinceBuild struct {
 	ID              int
@@ -286,7 +285,8 @@ func rebuildMapCache(ctx context.Context, tx *sql.Tx, cfg Config) error {
 	if err := insertProvinceHistory(ctx, tx, active); err != nil {
 		return err
 	}
-	mapDiagnostics = append(mapDiagnostics, countyHistoryAnchorDiagnostics(ctx, tx, countyAnchors)...)
+	mapDiagnostics = append(mapDiagnostics, invalidHoldingProvinceDiagnostics(active, provinces)...)
+	mapDiagnostics = append(mapDiagnostics, countyHistoryAnchorDiagnostics(ctx, tx, countyAnchors, collectBookmarkStartDates(active))...)
 	if err := insertTitleHistory(ctx, tx, active); err != nil {
 		return err
 	}
@@ -514,6 +514,7 @@ func isMapContextRel(rel string) bool {
 		rel == "map_data/default.map" ||
 		isGeographicalRegionDefinitionsPath(rel) ||
 		(strings.HasPrefix(rel, "common/province_terrain/") && strings.HasSuffix(rel, ".txt")) ||
+		(strings.HasPrefix(rel, "common/bookmarks/bookmarks/") && strings.HasSuffix(rel, ".txt")) ||
 		(strings.HasPrefix(rel, "common/landed_titles/") && strings.HasSuffix(rel, ".txt")) ||
 		(strings.HasPrefix(rel, "common/religion/holy_sites/") && strings.HasSuffix(rel, ".txt")) ||
 		(strings.HasPrefix(rel, "common/religion/religions/") && strings.HasSuffix(rel, ".txt")) ||
@@ -522,6 +523,7 @@ func isMapContextRel(rel string) bool {
 		rel == "gfx/map/terrain/detail_index.tga" ||
 		rel == "gfx/map/terrain/detail_intensity.tga" ||
 		(strings.HasPrefix(rel, "history/provinces/") && strings.HasSuffix(rel, ".txt")) ||
+		(strings.HasPrefix(rel, "history/province_mapping/") && strings.HasSuffix(rel, ".txt")) ||
 		(strings.HasPrefix(rel, "history/titles/") && strings.HasSuffix(rel, ".txt")) ||
 		(strings.HasPrefix(rel, "history/characters/") && strings.HasSuffix(rel, ".txt"))
 }
@@ -602,9 +604,13 @@ func parseDefaultMapBlocked(path string) (map[int]mapBlockKind, error) {
 	}
 	mountainKeys := map[string]bool{"impassable_mountains": true, "impassable_mountain": true}
 	out := map[int]mapBlockKind{}
-	matches := regexp.MustCompile(`(?is)\b(\w+)\s*=\s*(?:LIST\s*)?\{([^}]*)\}`).FindAllStringSubmatch(string(data), -1)
-	for _, m := range matches {
-		key := strings.ToLower(m[1])
+	text := string(data)
+	matches := regexpDefaultNamedList.FindAllStringSubmatchIndex(text, -1)
+	for _, match := range matches {
+		if len(match) < 6 || mapContractInsideCommentOrString(text, match[0]) {
+			continue
+		}
+		key := strings.ToLower(text[match[2]:match[3]])
 		block := mapBlockKind{}
 		if water := waterKeys[key]; water != "" {
 			block = mapBlockKind{BlockKind: "water", WaterKind: water}
@@ -614,10 +620,8 @@ func parseDefaultMapBlocked(path string) (map[int]mapBlockKind, error) {
 		if block.BlockKind == "" {
 			continue
 		}
-		for _, token := range strings.Fields(m[2]) {
-			if id, err := strconv.Atoi(token); err == nil {
-				out[id] = block
-			}
+		for _, id := range mapContractNumericIDs(text[match[4]:match[5]]) {
+			out[id] = block
 		}
 	}
 	return out, nil

@@ -102,6 +102,8 @@ func collectBaseMapContractDiagnostics(ctx context.Context, active map[string]ac
 	out = append(out, auditProvinceHistoryContract(active, definedIDs)...)
 	out = append(out, auditAdjacencyContract(active["map_data/adjacencies.csv"], definedIDs)...)
 	out = append(out, auditMapRegionContract(active, definedIDs)...)
+	out = append(out, auditProvinceLocatorContract(active, definedIDs)...)
+	out = append(out, auditProvinceMappingContract(active, definedIDs)...)
 	return out, definedIDs
 }
 
@@ -115,6 +117,11 @@ func auditDefinitionSequence(file activeMapFile) (map[int]bool, []mapContractDia
 	r := csv.NewReader(f)
 	r.Comma = ';'
 	r.FieldsPerRecord = -1
+	firstLine := map[int]int{}
+	previousID, previousLine := 0, 0
+	duplicateCount, outOfOrderCount := 0, 0
+	duplicateSamples := make([]string, 0, 8)
+	outOfOrderSamples := make([]string, 0, 8)
 	for {
 		record, readErr := r.Read()
 		if readErr == io.EOF {
@@ -124,12 +131,42 @@ func auditDefinitionSequence(file activeMapFile) (map[int]bool, []mapContractDia
 			continue
 		}
 		id, parseErr := strconv.Atoi(strings.TrimSpace(record[0]))
-		if parseErr == nil && id > 0 {
-			ids[id] = true
+		if parseErr != nil || id <= 0 {
+			continue
 		}
+		line, _ := r.FieldPos(0)
+		if originalLine, duplicate := firstLine[id]; duplicate {
+			duplicateCount++
+			if len(duplicateSamples) < 8 {
+				duplicateSamples = append(duplicateSamples, fmt.Sprintf("%d at lines %d and %d", id, originalLine, line))
+			}
+		} else {
+			firstLine[id] = line
+		}
+		if previousID > 0 && id < previousID {
+			outOfOrderCount++
+			if len(outOfOrderSamples) < 8 {
+				outOfOrderSamples = append(outOfOrderSamples, fmt.Sprintf("line %d id %d follows line %d id %d", line, id, previousLine, previousID))
+			}
+		}
+		ids[id] = true
+		previousID, previousLine = id, line
+	}
+	diagnostics := make([]mapContractDiagnostic, 0, 3)
+	if duplicateCount > 0 {
+		diagnostics = append(diagnostics, mapContractDiagnostic{
+			Severity: "error", Code: "map_definition_duplicate_id", Source: file.Src.Name, Path: file.Rel, Line: 1,
+			Message: fmt.Sprintf("definition.csv repeats %d positive province ids; samples: %s", duplicateCount, strings.Join(duplicateSamples, "; ")), Occurrences: duplicateCount,
+		})
+	}
+	if outOfOrderCount > 0 {
+		diagnostics = append(diagnostics, mapContractDiagnostic{
+			Severity: "error", Code: "map_definition_out_of_order", Source: file.Src.Name, Path: file.Rel, Line: 1,
+			Message: fmt.Sprintf("definition.csv province ids must be in ascending row order; %d descending transitions found; samples: %s", outOfOrderCount, strings.Join(outOfOrderSamples, "; ")), Occurrences: outOfOrderCount,
+		})
 	}
 	if len(ids) == 0 {
-		return ids, nil
+		return ids, diagnostics
 	}
 	maxID := 0
 	for id := range ids {
@@ -144,17 +181,18 @@ func auditDefinitionSequence(file activeMapFile) (map[int]bool, []mapContractDia
 		}
 	}
 	if len(missing) == 0 {
-		return ids, nil
+		return ids, diagnostics
 	}
 	samples := missing
 	if len(samples) > 8 {
 		samples = samples[:8]
 	}
-	return ids, []mapContractDiagnostic{{
+	diagnostics = append(diagnostics, mapContractDiagnostic{
 		Severity: "error", Code: "map_definition_non_contiguous_ids", Source: file.Src.Name, Path: file.Rel, Line: 1,
 		Message:     fmt.Sprintf("positive province ids must form a continuous 1..%d sequence; %d ids are missing; samples: %s", maxID, len(missing), joinInts(samples)),
 		Occurrences: len(missing),
-	}}
+	})
+	return ids, diagnostics
 }
 
 func auditDefaultMapContract(file activeMapFile, definedIDs map[int]bool) []mapContractDiagnostic {
@@ -472,6 +510,127 @@ func auditMapRegionContract(active map[string]activeMapFile, definedIDs map[int]
 	return out
 }
 
+// auditProvinceLocatorContract deliberately recognizes only complete locator
+// records. Generated vegetation locators are coordinate anchors rather than
+// province consumers, and id=0 is a CK3 sentinel in combat/stack locator files.
+func auditProvinceLocatorContract(active map[string]activeMapFile, definedIDs map[int]bool) []mapContractDiagnostic {
+	if len(definedIDs) == 0 {
+		return nil
+	}
+	var out []mapContractDiagnostic
+	for _, file := range activeFilesWithPrefix(active, "gfx/map/map_object_data/") {
+		if strings.Contains(strings.ToLower(file.Rel), "/generated/") {
+			continue
+		}
+		data, err := os.ReadFile(file.Path)
+		if err != nil {
+			out = append(out, mapContractDiagnostic{Severity: "error", Code: "map_locator_unreadable", Message: err.Error(), Source: file.Src.Name, Path: file.Rel, Occurrences: 1})
+			continue
+		}
+		missing := make([]int, 0)
+		firstLine := 0
+		locatorCode := mapContractCodeBytes(data)
+		for _, match := range mapLocatorPattern.FindAllSubmatchIndex(locatorCode, -1) {
+			if len(match) < 4 {
+				continue
+			}
+			id, parseErr := strconv.Atoi(string(locatorCode[match[2]:match[3]]))
+			if parseErr != nil || id <= 0 || definedIDs[id] {
+				continue
+			}
+			missing = append(missing, id)
+			if firstLine == 0 {
+				firstLine = 1 + strings.Count(string(data[:match[2]]), "\n")
+			}
+		}
+		if len(missing) > 0 {
+			out = append(out, missingDefinitionDiagnostic(file, firstLine, "map object locator", uniqueSortedInts(missing)))
+		}
+	}
+	return out
+}
+
+func mapContractCodeBytes(data []byte) []byte {
+	out := append([]byte(nil), data...)
+	quoted, escaped, comment := false, false, false
+	for index, char := range out {
+		if comment {
+			if char == '\n' {
+				comment = false
+			} else {
+				out[index] = ' '
+			}
+			continue
+		}
+		if escaped {
+			escaped = false
+			out[index] = ' '
+			continue
+		}
+		if quoted && char == '\\' {
+			escaped = true
+			out[index] = ' '
+			continue
+		}
+		if char == '"' {
+			quoted = !quoted
+			out[index] = ' '
+			continue
+		}
+		if !quoted && char == '#' {
+			comment = true
+			out[index] = ' '
+			continue
+		}
+		if quoted {
+			out[index] = ' '
+		}
+	}
+	return out
+}
+
+// Province mapping files have a narrow numeric-key = numeric-value grammar.
+// Parsing that structure avoids treating dates, coordinates, or comments as
+// province references.
+func auditProvinceMappingContract(active map[string]activeMapFile, definedIDs map[int]bool) []mapContractDiagnostic {
+	if len(definedIDs) == 0 {
+		return nil
+	}
+	var out []mapContractDiagnostic
+	for _, file := range activeFilesWithPrefix(active, "history/province_mapping/") {
+		data, err := os.ReadFile(file.Path)
+		if err != nil {
+			out = append(out, mapContractDiagnostic{Severity: "error", Code: "province_mapping_unreadable", Message: err.Error(), Source: file.Src.Name, Path: file.Rel, Occurrences: 1})
+			continue
+		}
+		parsed := script.ParseBytes(data)
+		missing := make([]int, 0)
+		firstLine := 0
+		for _, node := range parsed.Nodes {
+			if node.Kind != "atom" {
+				continue
+			}
+			from, fromErr := strconv.Atoi(node.Key)
+			to, toErr := strconv.Atoi(node.Value)
+			if fromErr != nil || toErr != nil {
+				continue
+			}
+			for _, id := range []int{from, to} {
+				if id > 0 && !definedIDs[id] {
+					missing = append(missing, id)
+					if firstLine == 0 {
+						firstLine = node.Line
+					}
+				}
+			}
+		}
+		if len(missing) > 0 {
+			out = append(out, missingDefinitionDiagnostic(file, firstLine, "province mapping", uniqueSortedInts(missing)))
+		}
+	}
+	return out
+}
+
 type provinceHistoryFieldOccurrence struct {
 	Date  int
 	Field string
@@ -625,6 +784,16 @@ func titleMapContractDiagnostics(titles map[string]*mapTitleBuild, provinces map
 					Severity: "error", Code: "invalid_title_capital_reference", Source: title.Source, Path: title.Rel, Line: title.Line,
 					Message: fmt.Sprintf("county %s declares capital %s, which is not its direct barony", title.ID, title.CapitalTitle), Occurrences: 1,
 				})
+			} else if isHigherTitleType(title.Type) && capital.Type != "c" {
+				out = append(out, mapContractDiagnostic{
+					Severity: "error", Code: "invalid_title_capital_reference", Source: title.Source, Path: title.Rel, Line: title.Line,
+					Message: fmt.Sprintf("title %s declares capital %s, which is not a county title", title.ID, title.CapitalTitle), Occurrences: 1,
+				})
+			} else if isHigherTitleType(title.Type) && len(title.Children) > 0 && !titleDescendsFrom(capital, title.ID, titles) {
+				out = append(out, mapContractDiagnostic{
+					Severity: "error", Code: "invalid_title_capital_reference", Source: title.Source, Path: title.Rel, Line: title.Line,
+					Message: fmt.Sprintf("title %s declares capital %s outside its de jure child tree", title.ID, title.CapitalTitle), Occurrences: 1,
+				})
 			}
 		}
 		if title.Type != "b" || title.ProvinceID <= 0 || len(definedIDs) == 0 || definedIDs[title.ProvinceID] {
@@ -673,37 +842,147 @@ func titleMapContractDiagnostics(titles map[string]*mapTitleBuild, provinces map
 	return out
 }
 
-func countyHistoryAnchorDiagnostics(ctx context.Context, tx *sql.Tx, anchors map[string]countyHistoryAnchor) []mapContractDiagnostic {
+func isHigherTitleType(titleType string) bool {
+	switch titleType {
+	case "d", "k", "e", "h":
+		return true
+	default:
+		return false
+	}
+}
+
+func titleDescendsFrom(title *mapTitleBuild, ancestorID string, titles map[string]*mapTitleBuild) bool {
+	seen := map[string]bool{}
+	for current := title; current != nil && current.Parent != ""; current = titles[current.Parent] {
+		if seen[current.ID] {
+			return false
+		}
+		seen[current.ID] = true
+		if current.Parent == ancestorID {
+			return true
+		}
+	}
+	return false
+}
+
+func collectBookmarkStartDates(active map[string]activeMapFile) []int {
+	dates := map[int]bool{}
+	var visit func([]*script.Node)
+	visit = func(nodes []*script.Node) {
+		for _, node := range nodes {
+			if node.Kind == "atom" && node.Key == "start_date" {
+				if date, ok := parseDateKey(node.Value); ok {
+					dates[date] = true
+				}
+			}
+			visit(node.Children)
+		}
+	}
+	for _, file := range activeFilesWithPrefix(active, "common/bookmarks/bookmarks/") {
+		data, err := os.ReadFile(file.Path)
+		if err == nil {
+			visit(script.ParseBytes(data).Nodes)
+		}
+	}
+	out := make([]int, 0, len(dates))
+	for date := range dates {
+		out = append(out, date)
+	}
+	sort.Ints(out)
+	return out
+}
+
+func invalidHoldingProvinceDiagnostics(active map[string]activeMapFile, provinces map[int]*mapProvinceBuild) []mapContractDiagnostic {
+	winners := map[provinceHistoryKey]mapValueOccurrence{}
+	for _, file := range activeFilesWithPrefix(active, "history/provinces/") {
+		data, err := os.ReadFile(file.Path)
+		if err != nil {
+			continue
+		}
+		parsed := script.ParseBytes(data)
+		for _, node := range parsed.Nodes {
+			id, parseErr := strconv.Atoi(node.Key)
+			if parseErr != nil || node.Kind != "block" {
+				continue
+			}
+			for _, field := range provinceHistoryFieldOccurrences(node) {
+				if field.Field == "holding" {
+					winners[provinceHistoryKey{Province: id, Date: field.Date, Field: field.Field}] = mapValueOccurrence{File: file, Line: field.Line, Value: field.Value}
+				}
+			}
+		}
+	}
+	aggregates := map[string]*mapContractAggregate{}
+	keys := make([]provinceHistoryKey, 0, len(winners))
+	for key := range winners {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].Province != keys[j].Province {
+			return keys[i].Province < keys[j].Province
+		}
+		if keys[i].Date != keys[j].Date {
+			return keys[i].Date < keys[j].Date
+		}
+		return keys[i].Field < keys[j].Field
+	})
+	for _, key := range keys {
+		occurrence := winners[key]
+		province := provinces[key.Province]
+		if province == nil || province.BlockKind == "" || strings.EqualFold(strings.TrimSpace(occurrence.Value), "none") {
+			continue
+		}
+		sample := fmt.Sprintf("province %d (%s) sets holding=%s at %s", key.Province, province.BlockKind, occurrence.Value, formatDateKey(key.Date))
+		if key.Date == 0 {
+			sample = fmt.Sprintf("province %d (%s) sets base holding=%s", key.Province, province.BlockKind, occurrence.Value)
+		}
+		addContractAggregate(aggregates, occurrence.File, "invalid_holding_province", "error", occurrence.Line, sample)
+	}
+	return aggregatesToDiagnostics(aggregates)
+}
+
+func countyHistoryAnchorDiagnostics(ctx context.Context, tx *sql.Tx, anchors map[string]countyHistoryAnchor, bookmarkDates []int) []mapContractDiagnostic {
+	if len(bookmarkDates) == 0 {
+		return nil
+	}
 	counties := sortedStringKeys(anchors)
 	out := make([]mapContractDiagnostic, 0)
 	for _, county := range counties {
 		anchor := anchors[county]
-		rows, err := tx.QueryContext(ctx, `SELECT DISTINCT field FROM map_province_history WHERE province_id=? AND field IN ('culture','religion','holding')`, anchor.ProvinceID)
-		if err != nil {
-			out = append(out, mapContractDiagnostic{Severity: "error", Code: "county_history_anchor_check_failed", Message: err.Error(), Source: anchor.Source, Path: anchor.Path, Line: anchor.Line, Occurrences: 1})
-			continue
-		}
-		present := map[string]bool{}
-		for rows.Next() {
-			var field string
-			if scanErr := rows.Scan(&field); scanErr == nil {
-				present[field] = true
+		missingCount := 0
+		samples := make([]string, 0, len(bookmarkDates))
+		failed := false
+		for _, date := range bookmarkDates {
+			missing := make([]string, 0, 3)
+			for _, field := range []string{"culture", "religion", "holding"} {
+				var value string
+				err := tx.QueryRowContext(ctx, `SELECT value FROM map_province_history WHERE province_id=? AND field=? AND date_key<=? ORDER BY date_key DESC LIMIT 1`, anchor.ProvinceID, field, date).Scan(&value)
+				if err != nil && err != sql.ErrNoRows {
+					out = append(out, mapContractDiagnostic{Severity: "error", Code: "county_history_anchor_check_failed", Message: err.Error(), Source: anchor.Source, Path: anchor.Path, Line: anchor.Line, Occurrences: 1})
+					failed = true
+					break
+				}
+				if err == sql.ErrNoRows || strings.TrimSpace(value) == "" || (field == "holding" && strings.EqualFold(strings.TrimSpace(value), "none")) {
+					missing = append(missing, field)
+				}
+			}
+			if failed {
+				break
+			}
+			if len(missing) > 0 {
+				missingCount += len(missing)
+				if len(samples) < 8 {
+					samples = append(samples, fmt.Sprintf("%s: %s", formatDateKey(date), strings.Join(missing, ", ")))
+				}
 			}
 		}
-		rows.Close()
-		missing := make([]string, 0, 3)
-		for _, field := range []string{"culture", "religion", "holding"} {
-			if !present[field] {
-				missing = append(missing, field)
-			}
-		}
-		if len(missing) == 0 {
+		if failed || missingCount == 0 {
 			continue
 		}
 		out = append(out, mapContractDiagnostic{
-			Severity: "warning", Code: "county_history_anchor_missing", Source: anchor.Source, Path: anchor.Path, Line: anchor.Line,
-			Message:     fmt.Sprintf("county %s history anchor %s (province %d) has no %s assignment at any indexed date", county, anchor.BaronyID, anchor.ProvinceID, strings.Join(missing, ", ")),
-			Occurrences: len(missing),
+			Severity: "error", Code: "county_history_anchor_missing", Source: anchor.Source, Path: anchor.Path, Line: anchor.Line,
+			Message:     fmt.Sprintf("county %s history anchor %s (province %d) lacks effective bookmark fields; %s", county, anchor.BaronyID, anchor.ProvinceID, strings.Join(samples, "; ")),
+			Occurrences: missingCount,
 		})
 	}
 	return out

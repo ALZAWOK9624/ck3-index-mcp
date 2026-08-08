@@ -424,6 +424,36 @@ func TestIndexerValidatorReturnsMissingReferenceDiagnostics(t *testing.T) {
 	}
 }
 
+func TestIndexerValidatorBlocksUnindexedMapContract(t *testing.T) {
+	db, err := indexer.Open(filepath.Join(t.TempDir(), "test.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.EnsureSchema(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	report, err := (IndexerValidator{DB: db}).Validate(context.Background(), []PreparedFile{{
+		Path: "map_data/definition.csv",
+		Data: []byte("province;red;green;blue\n1;255;0;0\n"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Blocked {
+		t.Fatalf("unindexed map package was not blocked: %+v", report)
+	}
+	found := false
+	for _, diagnostic := range report.Diagnostics {
+		if diagnostic.Code == "map_package_index_stale" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("map_package_index_stale diagnostic missing: %+v", report.Diagnostics)
+	}
+}
+
 func TestBuildCleansOnlyRegisteredExpiredArtifacts(t *testing.T) {
 	root := t.TempDir()
 	options := BuildOptions{ArtifactRoot: root, Retention: 7 * 24 * time.Hour, Limits: MCPLimits, Validator: allowAllValidator(0)}

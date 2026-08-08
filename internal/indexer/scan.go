@@ -116,7 +116,7 @@ type fileRecord struct {
 	OverrideRule     string
 }
 
-const indexRuleVersion = "2026-08-02-v0.5.0-script-text-contentless-3"
+const indexRuleVersion = "2026-08-08-v0.5.0-map-contract-1"
 
 // Keep ordinary full scans well below SQLite's variable limit when they take
 // the scoped resolver/validator path. Larger edits remain correct by falling
@@ -1604,6 +1604,10 @@ func classifyRel(rel string) string {
 			return "script"
 		}
 		if root == "gfx" || root == "map_data" || root == "sound" {
+			return "resource"
+		}
+	case ".csv", ".map", ".settings":
+		if root == "gfx" || root == "map_data" {
 			return "resource"
 		}
 	case ".yml", ".yaml":

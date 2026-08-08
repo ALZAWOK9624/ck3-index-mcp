@@ -51,6 +51,22 @@ func (v IndexerValidator) Validate(ctx context.Context, files []PreparedFile) (V
 	appendPreflightDiagnostics(&report, preflight.Evidence)
 	report.Blockers = preflight.Counts["blocking_risks"]
 	report.Warnings = preflight.Counts["nonblocking_risks"]
+	mapDiagnostics, err := v.DB.MapPackageDiagnostics(ctx, patchFiles)
+	if err != nil {
+		return ValidationReport{}, err
+	}
+	for _, diagnostic := range mapDiagnostics {
+		report.Diagnostics = append(report.Diagnostics, Diagnostic{
+			Severity: diagnostic.Severity, Code: diagnostic.Code, Message: diagnostic.Message,
+			Path: diagnostic.Path, Line: diagnostic.Line, Column: diagnostic.Column,
+			Confidence: diagnostic.Confidence,
+		})
+		if strings.EqualFold(diagnostic.Severity, "error") {
+			report.Blockers++
+		} else {
+			report.Warnings++
+		}
+	}
 	if len(report.MissingLoc) > 0 {
 		report.Blockers += len(report.MissingLoc)
 		report.Warnings -= min(len(report.MissingLoc), report.Warnings)
@@ -89,6 +105,9 @@ func (v IndexerValidator) Validate(ctx context.Context, files []PreparedFile) (V
 		if len(report.MissingRes) > 0 {
 			report.Fixes = append(report.Fixes, "Add the missing resource files at the referenced gfx or sound paths.")
 		}
+		if containsDiagnosticCode(report.Diagnostics, "map_package_index_stale") {
+			report.Fixes = append(report.Fixes, "Run a full ck3-index scan after the final map edits, then package the unchanged indexed files.")
+		}
 	}
 	sort.Slice(report.Diagnostics, func(i, j int) bool {
 		if report.Diagnostics[i].Path != report.Diagnostics[j].Path {
@@ -100,6 +119,15 @@ func (v IndexerValidator) Validate(ctx context.Context, files []PreparedFile) (V
 		return report.Diagnostics[i].Code < report.Diagnostics[j].Code
 	})
 	return report, nil
+}
+
+func containsDiagnosticCode(diagnostics []Diagnostic, code string) bool {
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Code == code {
+			return true
+		}
+	}
+	return false
 }
 
 func appendPreflightDiagnostics(report *ValidationReport, evidence []indexer.LLMEvidence) {

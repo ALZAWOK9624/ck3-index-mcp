@@ -32,7 +32,7 @@ type activeMapFile struct {
 // it covers only the direct inputs and cache semantics of rebuildMapCache.
 // Bump it when that pipeline starts consuming a new input or changes output
 // semantics that cannot be inferred from the input bytes alone.
-const mapInputFingerprintVersion = "map_input_v1"
+const mapInputFingerprintVersion = "map_input_v2_contract_diagnostics"
 
 type mapProvinceBuild struct {
 	ID              int
@@ -69,6 +69,7 @@ type mapTitleBuild struct {
 }
 
 type MapIntegrityIssue struct {
+	Severity   string `json:"severity,omitempty"`
 	Code       string `json:"code"`
 	TitleID    string `json:"title_id,omitempty"`
 	ProvinceID int    `json:"province_id,omitempty"`
@@ -76,6 +77,16 @@ type MapIntegrityIssue struct {
 	Source     string `json:"source,omitempty"`
 	Path       string `json:"path,omitempty"`
 	Line       int    `json:"line,omitempty"`
+}
+
+type countyHistoryAnchor struct {
+	CountyID        string
+	BaronyID        string
+	ProvinceID      int
+	DeclaredCapital string
+	Source          string
+	Path            string
+	Line            int
 }
 
 type mapTitleAgg struct {
@@ -111,6 +122,7 @@ func rebuildMapCache(ctx context.Context, tx *sql.Tx, cfg Config) error {
 	if err != nil {
 		return err
 	}
+	mapDiagnostics, definedIDs := collectBaseMapContractDiagnostics(ctx, active)
 	inputFingerprint, _, err := mapInputFingerprintForActive(cfg, active)
 	if err != nil {
 		return err
@@ -134,6 +146,9 @@ func rebuildMapCache(ctx context.Context, tx *sql.Tx, cfg Config) error {
 			}
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM meta WHERE key LIKE 'map_surface_material_%'`); err != nil {
+			return err
+		}
+		if err := replaceMapContractDiagnostics(ctx, tx, mapDiagnostics); err != nil {
 			return err
 		}
 		return storeMapInputFingerprint(ctx, tx, inputFingerprint)
@@ -187,7 +202,7 @@ func rebuildMapCache(ctx context.Context, tx *sql.Tx, cfg Config) error {
 	}
 	applyProvinceTerrain(provinces, terrains, terrainDefaults)
 
-	titles, provinceTitles, titleProvinces, countyCapitals, integrityIssues, err := parseActiveLandedTitles(active)
+	titles, provinceTitles, titleProvinces, countyAnchors, integrityIssues, err := parseActiveLandedTitles(active)
 	if err != nil {
 		return err
 	}
@@ -197,6 +212,7 @@ func rebuildMapCache(ctx context.Context, tx *sql.Tx, cfg Config) error {
 			return err
 		}
 	}
+	mapDiagnostics = append(mapDiagnostics, titleMapContractDiagnostics(titles, provinces, definedIDs, integrityIssues)...)
 	for pid, chain := range provinceTitles {
 		p := provinces[pid]
 		if p == nil {
@@ -212,7 +228,8 @@ func rebuildMapCache(ctx context.Context, tx *sql.Tx, cfg Config) error {
 			p.Empire = chain["h"]
 		}
 	}
-	for pid := range countyCapitals {
+	for _, anchor := range countyAnchors {
+		pid := anchor.ProvinceID
 		p := provinces[pid]
 		if p == nil {
 			p = &mapProvinceBuild{ID: pid, MinX: math.MaxInt, MinY: math.MaxInt, MaxX: -1, MaxY: -1}
@@ -269,6 +286,7 @@ func rebuildMapCache(ctx context.Context, tx *sql.Tx, cfg Config) error {
 	if err := insertProvinceHistory(ctx, tx, active); err != nil {
 		return err
 	}
+	mapDiagnostics = append(mapDiagnostics, countyHistoryAnchorDiagnostics(ctx, tx, countyAnchors)...)
 	if err := insertTitleHistory(ctx, tx, active); err != nil {
 		return err
 	}
@@ -276,6 +294,9 @@ func rebuildMapCache(ctx context.Context, tx *sql.Tx, cfg Config) error {
 		return err
 	}
 	if err := refreshMapTitleHolders(ctx, tx); err != nil {
+		return err
+	}
+	if err := replaceMapContractDiagnostics(ctx, tx, mapDiagnostics); err != nil {
 		return err
 	}
 	return storeMapInputFingerprint(ctx, tx, inputFingerprint)
@@ -840,7 +861,7 @@ func DecodeMapRuns(data []byte) ([]MapRun, error) {
 	return runs, nil
 }
 
-func parseActiveLandedTitles(active map[string]activeMapFile) (map[string]*mapTitleBuild, map[int]map[string]string, map[string]map[int]bool, map[int]bool, []MapIntegrityIssue, error) {
+func parseActiveLandedTitles(active map[string]activeMapFile) (map[string]*mapTitleBuild, map[int]map[string]string, map[string]map[int]bool, map[string]countyHistoryAnchor, []MapIntegrityIssue, error) {
 	titles := map[string]*mapTitleBuild{}
 	var issues []MapIntegrityIssue
 	for _, f := range activeFilesWithPrefix(active, "common/landed_titles/") {
@@ -898,25 +919,29 @@ func parseActiveLandedTitles(active map[string]activeMapFile) (map[string]*mapTi
 		}
 		provinceChains[t.ProvinceID] = chain
 	}
-	countyCapitals := map[int]bool{}
+	countyAnchors := map[string]countyHistoryAnchor{}
 	for _, t := range orderedTitles {
 		if t.Type != "c" {
 			continue
 		}
-		capital := t.CapitalTitle
-		if capital == "" {
-			for _, child := range t.Children {
-				if childTitle := titles[child]; childTitle != nil && childTitle.Type == "b" {
-					capital = child
-					break
-				}
+		// CK3 province history paints a county from its first direct barony.
+		// The optional capital field has other title semantics and must not
+		// replace that history anchor.
+		anchorTitle := ""
+		for _, child := range t.Children {
+			if childTitle := titles[child]; childTitle != nil && childTitle.Type == "b" {
+				anchorTitle = child
+				break
 			}
 		}
-		if capitalTitle := titles[capital]; capitalTitle != nil && capitalTitle.ProvinceID > 0 {
-			countyCapitals[capitalTitle.ProvinceID] = true
+		if anchor := titles[anchorTitle]; anchor != nil && anchor.ProvinceID > 0 {
+			countyAnchors[t.ID] = countyHistoryAnchor{
+				CountyID: t.ID, BaronyID: anchor.ID, ProvinceID: anchor.ProvinceID,
+				DeclaredCapital: t.CapitalTitle, Source: t.Source, Path: t.Rel, Line: t.Line,
+			}
 		}
 	}
-	return titles, provinceChains, titleProvinces, countyCapitals, issues, nil
+	return titles, provinceChains, titleProvinces, countyAnchors, issues, nil
 }
 
 func titleBuildPreferred(a, b *mapTitleBuild) bool {

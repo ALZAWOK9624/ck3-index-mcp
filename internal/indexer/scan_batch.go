@@ -6,6 +6,12 @@ import (
 	"strings"
 )
 
+// These look small, and raising them is the obvious idea. It is the wrong one
+// here: BenchmarkObjectInsertBatch{64,128,512} writes the same 20000 rows and
+// gets 86.8ms, 128.1ms and 358.8ms. multiRowInsertSQL builds a fresh statement
+// per batch, and this driver is pure Go, so statement compilation grows with
+// the number of value tuples faster than the per-statement overhead falls.
+// Keep them small, and re-measure before changing them.
 const (
 	objectInsertBatchSize       = 64
 	referenceInsertBatchSize    = 64

@@ -73,6 +73,18 @@ func seedStagedScanFromBase(ctx context.Context, cfg Config, stagePath, engineFi
 	if basePath == "" {
 		return false, ""
 	}
+	// Decide before copying. A base index is the size of a full upstream cache
+	// -- gigabytes -- and every reason it can be rejected (missing, wrong
+	// schema, stale engine fingerprint, incompatible source layout) is readable
+	// from the base itself. Copying first meant a rejected base still cost a
+	// whole-database copy before anything looked at it. The authoritative
+	// inspection below still runs against the copy; this one only avoids
+	// paying for a copy that was never going to be used.
+	if _, reason, err := inspectBaseSeed(ctx, cfg, basePath, engineFingerprint); err != nil {
+		return false, "base index could not be inspected: " + displayPath(basePath)
+	} else if reason != "" {
+		return false, reason
+	}
 	if err := onlineBackupDatabaseWithOptions(ctx, basePath, stagePath, cfg.SQLiteReadOptions()); err != nil {
 		return false, "base index could not be copied into the staging cache"
 	}

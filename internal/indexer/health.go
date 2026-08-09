@@ -107,9 +107,15 @@ func (db *DB) checkEventDecisionLocKeys(ctx context.Context) error {
 // M8: LIOS safety – warn when a mod file overrides a subset of objects
 // from an upstream file, potentially leaving some objects undefined.
 func (db *DB) checkLIOSSafety(ctx context.Context) error {
+	// fl.sha256 comes along so the parse below can be cached against it.
+	// Overridden files are deliberately metadata-only during a scan -- they are
+	// hashed but never parsed -- so the count cannot come from the objects
+	// table, and recording it during the scan would mean parsing every
+	// overridden upstream file on a path that exists to avoid exactly that.
+	// Caching on content is the version that costs nothing on the common path.
 	rows, err := db.sql.QueryContext(ctx, `
 		SELECT w.rel_path, COUNT(DISTINCT ow.name) AS win_count,
-		       fl.path, fl.source_name, fl.source_rank, fl.kind
+		       fl.path, fl.source_name, fl.source_rank, fl.kind, fl.sha256
 		FROM objects ow
 		JOIN files w ON w.id=ow.file_id
 		JOIN files fl ON fl.rel_path=w.rel_path AND fl.overridden=1
@@ -125,16 +131,25 @@ func (db *DB) checkLIOSSafety(ctx context.Context) error {
 		win, lose int
 	}
 	best := map[string]lio{}
+	// Two mods overriding the same upstream file, or one file overridden under
+	// several rel_paths, otherwise reparse identical bytes once per row.
+	counted := map[string]int{}
 	for rows.Next() {
-		var rel, path, source, kind string
+		var rel, path, source, kind, sha string
 		var win, rank int
-		if err := rows.Scan(&rel, &win, &path, &source, &rank, &kind); err != nil {
+		if err := rows.Scan(&rel, &win, &path, &source, &rank, &kind, &sha); err != nil {
 			return err
 		}
 		if kind != "script" {
 			continue
 		}
-		lose := countObjectsInScriptFile(path, rel, source, rank)
+		lose, cached := counted[sha]
+		if !cached || sha == "" {
+			lose = countObjectsInScriptFile(path, rel, source, rank)
+			if sha != "" {
+				counted[sha] = lose
+			}
+		}
 		if lose <= win || lose == 0 {
 			continue
 		}

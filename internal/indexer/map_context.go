@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
-	"encoding/csv"
 	"fmt"
 	"image"
 	_ "image/png"
@@ -487,9 +486,9 @@ func mapInputFingerprintForActive(ctx context.Context, cfg Config, active map[st
 	// Describing the dependency is strictly stronger than refusing to trust it:
 	// a removed, replaced, downgraded, or newly failing sidecar all change the
 	// fingerprint and force the rebuild that actually matters, while an
-	// unchanged one now lets the cache be reused. InspectGISSidecar is memoized
-	// against the file's identity, so asking costs one verification per process
-	// rather than one per scan.
+	// unchanged one now lets the cache be reused. InspectGISSidecar memoizes the
+	// version subprocess against the trusted content address, while rehashing the
+	// published copy on each non-overlapping call so cache tampering fails closed.
 	reusable := true
 	if cfg.GISEnabled && strings.TrimSpace(cfg.GISSidecarSHA256) != "" {
 		sidecar := InspectGISSidecar(ctx, cfg)
@@ -590,36 +589,6 @@ func activeFilesWithPrefix(active map[string]activeMapFile, prefix string) []act
 		return files[i].Rel < files[j].Rel
 	})
 	return files
-}
-
-func parseProvinceDefinitions(path string) (map[uint32]int, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	r := csv.NewReader(f)
-	r.Comma = ';'
-	r.FieldsPerRecord = -1
-	out := map[uint32]int{}
-	for {
-		rec, err := r.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil || len(rec) < 4 {
-			continue
-		}
-		id, err1 := strconv.Atoi(strings.TrimSpace(rec[0]))
-		rr, err2 := strconv.Atoi(strings.TrimSpace(rec[1]))
-		gg, err3 := strconv.Atoi(strings.TrimSpace(rec[2]))
-		bb, err4 := strconv.Atoi(strings.TrimSpace(rec[3]))
-		if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
-			continue
-		}
-		out[uint32(rr)<<16|uint32(gg)<<8|uint32(bb)] = id
-	}
-	return out, nil
 }
 
 func parseDefaultMapBlocked(path string) (map[int]mapBlockKind, error) {

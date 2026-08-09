@@ -51,6 +51,12 @@ type Config struct {
 	SQLiteReadConnections      int
 	SQLiteCacheMBPerConnection int
 	SQLiteMMapLimitMB          int
+	// MaxOpenDatabasePools and MaxSQLiteCacheBudgetMB bound the aggregate
+	// SQLite resources held by the hot-switchable MCP database catalog. A
+	// candidate pool is charged before it is opened, and retired pools remain
+	// charged until their final in-flight lease is released.
+	MaxOpenDatabasePools       int
+	MaxSQLiteCacheBudgetMB     int
 	MCPMaxTasks                int
 	MCPMaxHeavyTasks           int
 	MCPMaxRasterTasks          int
@@ -136,6 +142,9 @@ func normalizeMCPDatabaseCatalog(cfg *Config) error {
 	if len(cfg.MCPDatabases) > maxMCPDatabaseTargets {
 		return fmt.Errorf("mcp_database may contain at most %d targets", maxMCPDatabaseTargets)
 	}
+	if len(cfg.MCPDatabases) > 0 && cfg.MaxOpenDatabasePools < 2 {
+		return fmt.Errorf("max_open_database_pools must be at least 2 when mcp_database targets are configured so a candidate can be verified before replacing the active pool")
+	}
 	names := map[string]struct{}{name: {}}
 	for index := range cfg.MCPDatabases {
 		target := &cfg.MCPDatabases[index]
@@ -181,6 +190,12 @@ func normalizeMCPDatabaseName(value string) (string, error) {
 }
 
 func normalizeResourceLimits(cfg *Config) error {
+	// A process-wide cache budget did not exist in older configurations. Keep
+	// those configurations loadable when they intentionally use a larger
+	// single SQLite pool: an omitted new limit defaults to at least the pool
+	// that already had to be opened. An explicitly configured budget remains a
+	// hard bound and is still rejected below.
+	cacheBudgetUnspecified := cfg.MaxSQLiteCacheBudgetMB == 0
 	limits := []struct {
 		name         string
 		value        *int
@@ -189,6 +204,8 @@ func normalizeResourceLimits(cfg *Config) error {
 		{"sqlite_read_connections", &cfg.SQLiteReadConnections, DefaultSQLiteReadConnections},
 		{"sqlite_cache_mb_per_connection", &cfg.SQLiteCacheMBPerConnection, DefaultSQLiteCacheMBPerConnection},
 		{"sqlite_mmap_limit_mb", &cfg.SQLiteMMapLimitMB, DefaultSQLiteMMapLimitMB},
+		{"max_open_database_pools", &cfg.MaxOpenDatabasePools, DefaultMaxOpenDatabasePools},
+		{"max_sqlite_cache_budget_mb", &cfg.MaxSQLiteCacheBudgetMB, DefaultMaxSQLiteCacheBudgetMB},
 		{"mcp_max_tasks", &cfg.MCPMaxTasks, DefaultMCPMaxTasks},
 		{"mcp_max_heavy_tasks", &cfg.MCPMaxHeavyTasks, DefaultMCPMaxHeavyTasks},
 		{"mcp_max_raster_tasks", &cfg.MCPMaxRasterTasks, DefaultMCPMaxRasterTasks},
@@ -204,6 +221,13 @@ func normalizeResourceLimits(cfg *Config) error {
 			*limit.value = limit.defaultValue
 		}
 	}
+	if cacheBudgetUnspecified && cfg.SQLiteCacheMBPerConnection > 0 &&
+		cfg.SQLiteReadConnections <= int(^uint(0)>>1)/cfg.SQLiteCacheMBPerConnection {
+		singlePoolBudgetMB := cfg.SQLiteReadConnections * cfg.SQLiteCacheMBPerConnection
+		if cfg.MaxSQLiteCacheBudgetMB < singlePoolBudgetMB {
+			cfg.MaxSQLiteCacheBudgetMB = singlePoolBudgetMB
+		}
+	}
 	if cfg.MCPMaxHeavyTasks >= cfg.MCPMaxTasks {
 		return fmt.Errorf("mcp_max_heavy_tasks must be lower than mcp_max_tasks so ordinary requests retain one execution slot")
 	}
@@ -212,6 +236,9 @@ func normalizeResourceLimits(cfg *Config) error {
 	}
 	if cfg.MCPMaxHeavyTasks >= cfg.SQLiteReadConnections {
 		return fmt.Errorf("sqlite_read_connections must exceed mcp_max_heavy_tasks so ordinary requests retain one database connection")
+	}
+	if cfg.SQLiteReadConnections > cfg.MaxSQLiteCacheBudgetMB/cfg.SQLiteCacheMBPerConnection {
+		return fmt.Errorf("max_sqlite_cache_budget_mb must cover sqlite_read_connections * sqlite_cache_mb_per_connection for at least one database pool")
 	}
 	return nil
 }
@@ -507,6 +534,8 @@ type configTOML struct {
 	SQLiteReadConnections      *int              `toml:"sqlite_read_connections"`
 	SQLiteCacheMBPerConnection *int              `toml:"sqlite_cache_mb_per_connection"`
 	SQLiteMMapLimitMB          *int              `toml:"sqlite_mmap_limit_mb"`
+	MaxOpenDatabasePools       *int              `toml:"max_open_database_pools"`
+	MaxSQLiteCacheBudgetMB     *int              `toml:"max_sqlite_cache_budget_mb"`
 	MCPMaxTasks                *int              `toml:"mcp_max_tasks"`
 	MCPMaxHeavyTasks           *int              `toml:"mcp_max_heavy_tasks"`
 	MCPMaxRasterTasks          *int              `toml:"mcp_max_raster_tasks"`
@@ -631,6 +660,8 @@ func LoadConfig(path string) (Config, error) {
 		{"sqlite_read_connections", decoded.SQLiteReadConnections, &cfg.SQLiteReadConnections},
 		{"sqlite_cache_mb_per_connection", decoded.SQLiteCacheMBPerConnection, &cfg.SQLiteCacheMBPerConnection},
 		{"sqlite_mmap_limit_mb", decoded.SQLiteMMapLimitMB, &cfg.SQLiteMMapLimitMB},
+		{"max_open_database_pools", decoded.MaxOpenDatabasePools, &cfg.MaxOpenDatabasePools},
+		{"max_sqlite_cache_budget_mb", decoded.MaxSQLiteCacheBudgetMB, &cfg.MaxSQLiteCacheBudgetMB},
 		{"mcp_max_tasks", decoded.MCPMaxTasks, &cfg.MCPMaxTasks},
 		{"mcp_max_heavy_tasks", decoded.MCPMaxHeavyTasks, &cfg.MCPMaxHeavyTasks},
 		{"mcp_max_raster_tasks", decoded.MCPMaxRasterTasks, &cfg.MCPMaxRasterTasks},

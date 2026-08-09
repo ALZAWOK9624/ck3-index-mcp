@@ -22,6 +22,29 @@ type ToolDefinition struct {
 	Annotations             ToolAnnotations
 	Handler                 ToolHandler
 	CompatibilityProperties []string
+	// TrimmableFields is an explicit allowlist of top-level structuredContent
+	// arrays whose relevance-ordered tail may be dropped to meet a response
+	// budget. Complete contracts such as files, patch_files, databases, and
+	// artifacts must never appear here.
+	TrimmableFields []string
+}
+
+var toolTrimmableFields = map[string][]string{
+	"ck3_search":       {"evidence", "suggestions"},
+	"ck3_inspect":      {"evidence"},
+	"ck3_review":       {"evidence"},
+	"ck3_dependencies": {"evidence"},
+	"ck3_prepare_edit": {"evidence"},
+	"ck3_preflight":    {"evidence"},
+	"ck3_impact":       {"evidence"},
+	"ck3_diagnostics":  {"evidence"},
+}
+
+func declareTrimmableResponseFields(definitions []ToolDefinition) []ToolDefinition {
+	for i := range definitions {
+		definitions[i].TrimmableFields = append([]string(nil), toolTrimmableFields[definitions[i].Name]...)
+	}
+	return definitions
 }
 
 type ToolDocumentation struct {

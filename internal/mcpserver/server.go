@@ -332,6 +332,10 @@ func classifyMCPTask(raw json.RawMessage) mcpTaskClass {
 		// card and compatibility read only the header and metadata; audit
 		// and character stream the whole gamestate.
 		return saveTaskClass(call.Arguments)
+	case "ck3_health":
+		return healthTaskClass(call.Arguments)
+	case "ck3_database":
+		return databaseTaskClass(call.Arguments)
 	case "ck3_review", "ck3_preflight", "ck3_impact", "ck3_refresh", "ck3_package", "ck3_gui",
 		"map_asset_audit", "map_province_mapping", "map_build_metric", "map_physical_context", "map_route",
 		"map_migration_snapshot", "map_province_migration", "map_assignment_plan", "map_building_candidates":
@@ -342,6 +346,46 @@ func classifyMCPTask(raw json.RawMessage) mcpTaskClass {
 		return dependencyTaskClass(call.Arguments)
 	default:
 		return mcpTaskRead
+	}
+}
+
+func healthTaskClass(arguments json.RawMessage) mcpTaskClass {
+	if len(strings.TrimSpace(string(arguments))) == 0 {
+		return mcpTaskRead
+	}
+	var args struct {
+		Mode string `json:"mode"`
+	}
+	if err := json.Unmarshal(arguments, &args); err != nil {
+		return mcpTaskHeavy
+	}
+	switch strings.ToLower(strings.TrimSpace(args.Mode)) {
+	case "", "quick":
+		return mcpTaskRead
+	default:
+		// Deep walks the large tables and FTS indexes. Unknown values are also
+		// charged conservatively until argument validation rejects them.
+		return mcpTaskHeavy
+	}
+}
+
+func databaseTaskClass(arguments json.RawMessage) mcpTaskClass {
+	if len(strings.TrimSpace(string(arguments))) == 0 {
+		return mcpTaskRead
+	}
+	var args struct {
+		Operation string `json:"operation"`
+	}
+	if err := json.Unmarshal(arguments, &args); err != nil {
+		return mcpTaskHeavy
+	}
+	switch strings.ToLower(strings.TrimSpace(args.Operation)) {
+	case "", "list", "status":
+		return mcpTaskRead
+	default:
+		// switch opens and verifies a second pool and waits on the serialized
+		// control-plane gate. Unknown operations are charged conservatively.
+		return mcpTaskHeavy
 	}
 }
 

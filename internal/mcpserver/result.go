@@ -14,7 +14,7 @@ func encodeToolResult(value any, visibility string) (map[string]any, error) {
 	return encodeToolResultWithBudget(value, visibility, defaultToolResponseBytes)
 }
 
-func encodeToolResultWithBudget(value any, visibility string, responseBudget int) (map[string]any, error) {
+func encodeToolResultWithBudget(value any, visibility string, responseBudget int, trimmableFields ...string) (map[string]any, error) {
 	value = redactToolValue(value, visibility)
 	if rendered, ok := value.(indexer.MapTerrainEditResult); ok && len(rendered.PreviewPNG) > 0 {
 		pngData := rendered.PreviewPNG
@@ -33,7 +33,7 @@ func encodeToolResultWithBudget(value any, visibility string, responseBudget int
 			},
 			"structuredContent": structured,
 		}
-		return enforceResponseBudget(result, responseBudget)
+		return enforceResponseBudget(result, responseBudget, trimmableFields...)
 	}
 	if rendered, ok := value.(indexer.GUIQueryResult); ok && rendered.Preview != nil && len(rendered.Preview.PNG) > 0 {
 		pngData := rendered.Preview.PNG
@@ -52,7 +52,7 @@ func encodeToolResultWithBudget(value any, visibility string, responseBudget int
 			},
 			"structuredContent": structured,
 		}
-		return enforceResponseBudget(result, responseBudget)
+		return enforceResponseBudget(result, responseBudget, trimmableFields...)
 	}
 	if rendered, ok := value.(indexer.MapRenderResult); ok {
 		pngData := rendered.PNG
@@ -92,7 +92,7 @@ func encodeToolResultWithBudget(value any, visibility string, responseBudget int
 			"content":           content,
 			"structuredContent": structured,
 		}
-		return enforceResponseBudget(result, responseBudget)
+		return enforceResponseBudget(result, responseBudget, trimmableFields...)
 	}
 	data, structured, err := encodeStructuredValue(value)
 	if err != nil {
@@ -102,10 +102,10 @@ func encodeToolResultWithBudget(value any, visibility string, responseBudget int
 		"content":           []map[string]any{{"type": "text", "text": string(data)}},
 		"structuredContent": structured,
 	}
-	return enforceResponseBudget(result, responseBudget)
+	return enforceResponseBudget(result, responseBudget, trimmableFields...)
 }
 
-func enforceResponseBudget(result map[string]any, responseBudget int) (map[string]any, error) {
+func enforceResponseBudget(result map[string]any, responseBudget int, trimmableFields ...string) (map[string]any, error) {
 	if responseBudget <= 0 {
 		responseBudget = defaultToolResponseBytes
 	}
@@ -121,16 +121,17 @@ func enforceResponseBudget(result map[string]any, responseBudget int) (map[strin
 	// ordered by relevance, so dropping their tail keeps the answer that was
 	// actually asked for and marks it truncated. A result carrying an image is
 	// still refused: a PNG has no meaningful tail to drop.
-	if trimmed, ok := trimResultToBudget(result, responseBudget); ok {
+	if trimmed, ok := trimResultToBudget(result, responseBudget, trimmableFields); ok {
 		return trimmed, nil
 	}
 	return nil, &responseTooLargeError{Actual: len(data), Limit: responseBudget}
 }
 
-// trimResultToBudget repeatedly halves the longest array in structuredContent
-// until the encoded result fits. It reports false when no further trimming is
-// possible, which leaves the oversize condition an error as before.
-func trimResultToBudget(result map[string]any, responseBudget int) (map[string]any, bool) {
+// trimResultToBudget repeatedly halves only relevance-ordered arrays the tool
+// definition explicitly allowlisted. It reports false when no declared field
+// can be shortened, preserving complete file, artifact, database, diagnostic
+// contract, and action lists instead of silently returning a partial success.
+func trimResultToBudget(result map[string]any, responseBudget int, trimmableFields []string) (map[string]any, bool) {
 	if resultCarriesBinaryContent(result) {
 		return nil, false
 	}
@@ -143,20 +144,23 @@ func trimResultToBudget(result map[string]any, responseBudget int) (map[string]a
 		return nil, false
 	}
 	for {
-		name, longest := longestTrimmableArray(trimmed)
+		name, longest := longestTrimmableArray(trimmed, trimmableFields)
 		if name == "" {
 			return nil, false
 		}
-		trimmed[name] = longest[:len(longest)/2]
-		trimmed["truncated"] = true
+		kept := len(longest) / 2
+		trimmed[name] = longest[:kept]
+		synchronizeTruncationMetadata(trimmed, name, len(longest), kept, trimmableFields)
 		data, err := json.Marshal(trimmed)
 		if err != nil {
 			return nil, false
 		}
-		candidate := map[string]any{
-			"content":           []map[string]any{{"type": "text", "text": string(data)}},
-			"structuredContent": trimmed,
+		candidate := make(map[string]any, len(result))
+		for key, value := range result {
+			candidate[key] = value
 		}
+		candidate["content"] = []map[string]any{{"type": "text", "text": string(data)}}
+		candidate["structuredContent"] = trimmed
 		encoded, err := json.Marshal(candidate)
 		if err != nil {
 			return nil, false
@@ -180,13 +184,14 @@ func resultCarriesBinaryContent(result map[string]any) bool {
 	return false
 }
 
-// longestTrimmableArray returns the top-level array holding the most elements.
+// longestTrimmableArray returns the largest explicitly allowed top-level array.
 // Single-element arrays are left alone: halving them yields an empty list that
 // tells the caller nothing it could not learn from truncated alone.
-func longestTrimmableArray(structured map[string]any) (string, []any) {
+func longestTrimmableArray(structured map[string]any, allowed []string) (string, []any) {
 	var name string
 	var longest []any
-	for key, value := range structured {
+	for _, key := range allowed {
+		value := structured[key]
 		items, ok := value.([]any)
 		if !ok || len(items) < 2 {
 			continue
@@ -196,6 +201,59 @@ func longestTrimmableArray(structured map[string]any) (string, []any) {
 		}
 	}
 	return name, longest
+}
+
+func synchronizeTruncationMetadata(structured map[string]any, field string, previous, kept int, trimmableFields []string) {
+	structured["truncated"] = true
+	truncation, _ := structured["truncation"].(map[string]any)
+	if truncation == nil {
+		truncation = map[string]any{}
+		structured["truncation"] = truncation
+	}
+	entry, _ := truncation[field].(map[string]any)
+	if entry == nil {
+		entry = map[string]any{"original": previous}
+		truncation[field] = entry
+	}
+	entry["returned"] = kept
+
+	// Generic count/served/returned fields are safe to synchronize only when
+	// this response has one relevance-ordered collection. With both evidence
+	// and suggestions present, those names do not say which collection they
+	// count; field-specific counts remain unambiguous in either case.
+	presentCollections := 0
+	for _, candidate := range trimmableFields {
+		if items, ok := structured[candidate].([]any); ok && len(items) > 0 {
+			presentCollections++
+		}
+	}
+	if presentCollections == 1 {
+		for _, name := range []string{"count", "served", "returned"} {
+			if _, exists := structured[name]; exists {
+				structured[name] = kept
+			}
+		}
+	}
+	fieldCount := field + "_count"
+	if _, exists := structured[fieldCount]; exists {
+		structured[fieldCount] = kept
+	}
+
+	// Response-budget trimming removes the tail of the page already returned;
+	// it does not create a semantic next page. Advancing page+1 would skip the
+	// omitted tail because query pagination starts after the original page
+	// limit. Preserve has_more/next_page and only synchronize the returned count
+	// on the pagination object that actually belongs to this field.
+	paginationField := ""
+	switch field {
+	case "evidence":
+		paginationField = "pagination"
+	case "suggestions":
+		paginationField = "suggestion_pagination"
+	}
+	if pagination, ok := structured[paginationField].(map[string]any); ok {
+		pagination["returned"] = kept
+	}
 }
 
 func cloneStructured(structured map[string]any) map[string]any {
@@ -267,11 +325,13 @@ func canonicalizeNextActions(structured map[string]any) {
 				}
 			}
 		}
-		if historyYear, exists := arguments["history_year"]; exists {
-			if _, hasYear := arguments["year"]; !hasYear {
-				arguments["year"] = historyYear
+		if canonical, allowed := argumentAliases[tool]["history_year"]; allowed {
+			if historyYear, exists := arguments["history_year"]; exists {
+				if _, hasCanonical := arguments[canonical]; !hasCanonical {
+					arguments[canonical] = historyYear
+				}
+				delete(arguments, "history_year")
 			}
-			delete(arguments, "history_year")
 		}
 		if !definitionFound || !mappedID {
 			continue
@@ -396,43 +456,49 @@ func mcpHealthReport(h indexer.HealthReport) map[string]any {
 		wal = append(wal, item)
 	}
 	result := map[string]any{
-		"status":                         h.Status,
-		"binary_version":                 buildinfo.Version,
-		"binary_revision":                buildinfo.Revision,
-		"database_mb":                    h.DatabaseMB,
-		"database_version":               h.DatabaseVersion,
-		"database_fingerprint":           h.DatabaseFingerprint,
-		"authoritative_database":         h.AuthoritativeDatabase,
-		"schema_version":                 h.SchemaVersion,
-		"map_database":                   h.MapDatabase,
-		"tables":                         h.Tables,
-		"index_rule_version":             h.IndexRuleVersion,
-		"scan_generation":                h.ScanGeneration,
-		"scan_revision":                  h.ScanRevision,
-		"scan_committed_at":              h.ScanCommittedAt,
-		"scan_status":                    h.ScanStatus,
-		"missing_indexes":                h.MissingIndexes,
-		"wal_files":                      wal,
-		"mcp_configured":                 h.MCPConfigured,
-		"mcp_serving":                    true,
-		"sqlite_read_connections":        h.SQLiteReadConnections,
-		"sqlite_cache_per_connection_mb": h.SQLiteCachePerConnMB,
-		"sqlite_cache_budget_mb":         h.SQLiteCacheBudgetMB,
-		"sqlite_mmap_limit_mb":           h.SQLiteMMapLimitMB,
-		"active_tasks":                   h.ActiveTasks,
-		"active_expensive_tasks":         h.ActiveExpensiveTasks,
-		"active_heavy_tasks":             h.ActiveHeavyTasks,
-		"active_raster_tasks":            h.ActiveRasterTasks,
-		"queued_tasks":                   h.QueuedTasks,
-		"queued_expensive_tasks":         h.QueuedExpensiveTasks,
-		"queued_heavy_tasks":             h.QueuedHeavyTasks,
-		"queued_raster_tasks":            h.QueuedRasterTasks,
-		"mcp_max_tasks":                  h.MCPMaxTasks,
-		"mcp_max_heavy_tasks":            h.MCPMaxHeavyTasks,
-		"mcp_max_raster_tasks":           h.MCPMaxRasterTasks,
-		"mcp_max_queued_tasks":           h.MCPMaxQueuedTasks,
-		"mcp_queue_timeout_seconds":      h.MCPQueueTimeoutSecs,
-		"mcp_execution_timeout_seconds":  h.MCPExecutionTimeoutSecs,
+		"status":                           h.Status,
+		"depth":                            h.Depth,
+		"binary_version":                   buildinfo.Version,
+		"binary_revision":                  buildinfo.Revision,
+		"database_mb":                      h.DatabaseMB,
+		"database_version":                 h.DatabaseVersion,
+		"database_fingerprint":             h.DatabaseFingerprint,
+		"authoritative_database":           h.AuthoritativeDatabase,
+		"schema_version":                   h.SchemaVersion,
+		"map_database":                     h.MapDatabase,
+		"tables":                           h.Tables,
+		"index_rule_version":               h.IndexRuleVersion,
+		"scan_generation":                  h.ScanGeneration,
+		"scan_revision":                    h.ScanRevision,
+		"scan_committed_at":                h.ScanCommittedAt,
+		"scan_status":                      h.ScanStatus,
+		"missing_indexes":                  h.MissingIndexes,
+		"wal_files":                        wal,
+		"mcp_configured":                   h.MCPConfigured,
+		"mcp_serving":                      true,
+		"sqlite_read_connections":          h.SQLiteReadConnections,
+		"sqlite_cache_per_connection_mb":   h.SQLiteCachePerConnMB,
+		"sqlite_cache_budget_mb":           h.SQLiteCacheBudgetMB,
+		"sqlite_mmap_limit_mb":             h.SQLiteMMapLimitMB,
+		"loaded_database_count":            h.LoadedDatabaseCount,
+		"retired_database_count":           h.RetiredDatabaseCount,
+		"aggregate_sqlite_cache_budget_mb": h.AggregateSQLiteCacheBudgetMB,
+		"max_open_database_pools":          h.MaxOpenDatabasePools,
+		"max_sqlite_cache_budget_mb":       h.MaxSQLiteCacheBudgetMB,
+		"active_tasks":                     h.ActiveTasks,
+		"active_expensive_tasks":           h.ActiveExpensiveTasks,
+		"active_heavy_tasks":               h.ActiveHeavyTasks,
+		"active_raster_tasks":              h.ActiveRasterTasks,
+		"queued_tasks":                     h.QueuedTasks,
+		"queued_expensive_tasks":           h.QueuedExpensiveTasks,
+		"queued_heavy_tasks":               h.QueuedHeavyTasks,
+		"queued_raster_tasks":              h.QueuedRasterTasks,
+		"mcp_max_tasks":                    h.MCPMaxTasks,
+		"mcp_max_heavy_tasks":              h.MCPMaxHeavyTasks,
+		"mcp_max_raster_tasks":             h.MCPMaxRasterTasks,
+		"mcp_max_queued_tasks":             h.MCPMaxQueuedTasks,
+		"mcp_queue_timeout_seconds":        h.MCPQueueTimeoutSecs,
+		"mcp_execution_timeout_seconds":    h.MCPExecutionTimeoutSecs,
 		"sqlite_connections_reserved_for_ordinary_tasks": h.SQLiteOrdinaryReserve,
 		"estimated_task_memory_mb":                       h.EstimatedTaskMemoryMB,
 		"guidance":                                       h.Guidance,

@@ -2,6 +2,7 @@ package indexer
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,6 +78,112 @@ func TestDefinitionSequenceReportsOrderAndDuplicateIndependently(t *testing.T) {
 	}
 	if codes["map_definition_non_contiguous_ids"] {
 		t.Fatalf("order-only fixture was reported as a gap: %+v", diagnostics)
+	}
+}
+
+func TestProvinceDefinitionParserRejectsOutOfRangeAndAmbiguousRows(t *testing.T) {
+	content := fmt.Sprintf(`province;red;green;blue
+0;0;0;0
+1;1;2;3
+1;4;5;6
+2;1;2;3
+3;256;0;0
+4;-1;0;0
+0;1;1;1
+%d;7;8;9
+`, int64(MaxProvinceID)+1)
+	file := writeMapContractFile(t, t.TempDir(), "map_data/definition.csv", content)
+	definitions, err := parseProvinceDefinitionsForAudit(file.Path, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if definitions.InvalidRows != 4 {
+		t.Fatalf("invalid rows=%d samples=%v, want 4", definitions.InvalidRows, definitions.Samples)
+	}
+	if definitions.DuplicateIDs != 1 || definitions.DuplicateColors != 1 {
+		t.Fatalf("duplicate counts ids=%d colors=%d", definitions.DuplicateIDs, definitions.DuplicateColors)
+	}
+	if len(definitions.IDToColor) != 1 || definitions.IDToColor[1] != 0x010203 {
+		t.Fatalf("ambiguous or invalid rows entered ID lookup: %#v", definitions.IDToColor)
+	}
+	if len(definitions.ColorToID) != 1 || definitions.ColorToID[0x010203] != 1 {
+		t.Fatalf("ambiguous or invalid rows entered RGB lookup: %#v", definitions.ColorToID)
+	}
+	if len(definitions.DuplicateIDSamples) != 1 || !strings.Contains(definitions.DuplicateIDSamples[0], "lines 3 and 4") {
+		t.Fatalf("duplicate ID samples=%v", definitions.DuplicateIDSamples)
+	}
+	if len(definitions.DuplicateColorSamples) != 1 || !strings.Contains(definitions.DuplicateColorSamples[0], "province ids 1 and 2") {
+		t.Fatalf("duplicate RGB samples=%v", definitions.DuplicateColorSamples)
+	}
+}
+
+func TestProvinceDefinitionDuplicateTrackingIncludesRejectedRows(t *testing.T) {
+	file := writeMapContractFile(t, t.TempDir(), "map_data/definition.csv", `
+1;1;1;1
+2;1;1;1
+2;2;2;2
+3;2;2;2
+`)
+	definitions, err := parseProvinceDefinitionsForAudit(file.Path, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if definitions.DuplicateIDs != 1 || definitions.DuplicateColors != 2 {
+		t.Fatalf("cross-duplicate counts ids=%d colors=%d; id/color keys from rejected rows must remain tracked", definitions.DuplicateIDs, definitions.DuplicateColors)
+	}
+	if len(definitions.IDToColor) != 1 || definitions.IDToColor[1] != 0x010101 {
+		t.Fatalf("ambiguous cross-duplicate rows entered first-wins lookup: %#v", definitions.IDToColor)
+	}
+	if len(definitions.ColorToID) != 1 || definitions.ColorToID[0x010101] != 1 {
+		t.Fatalf("ambiguous cross-duplicate rows entered first-wins lookup: %#v", definitions.ColorToID)
+	}
+}
+
+func TestProvinceDefinitionSentinelDoesNotOverwriteFirstColorOccurrence(t *testing.T) {
+	file := writeMapContractFile(t, t.TempDir(), "map_data/definition.csv", `
+1;0;0;0
+0;0;0;0
+2;0;0;0
+`)
+	definitions, err := parseProvinceDefinitionsForAudit(file.Path, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if definitions.DuplicateColors != 2 {
+		t.Fatalf("duplicate colors=%d, want sentinel and later province both compared with the first positive black row", definitions.DuplicateColors)
+	}
+	for _, sample := range definitions.DuplicateColorSamples {
+		if !strings.Contains(sample, "province ids 1 and") {
+			t.Fatalf("sentinel overwrote first RGB occurrence: samples=%v", definitions.DuplicateColorSamples)
+		}
+	}
+	if definitions.ColorToID[0] != 1 || len(definitions.ColorToID) != 1 {
+		t.Fatalf("sentinel changed first-wins RGB lookup: %#v", definitions.ColorToID)
+	}
+}
+
+func TestDefinitionSequenceCountsHugeSparseGapWithoutMaterializingIt(t *testing.T) {
+	content := fmt.Sprintf("province;red;green;blue\n1;1;2;3\n%d;4;5;6\n", MaxProvinceID)
+	file := writeMapContractFile(t, t.TempDir(), "map_data/definition.csv", content)
+	ids, diagnostics := auditDefinitionSequence(file)
+	if len(ids) != 2 || !ids[1] || !ids[MaxProvinceID] {
+		t.Fatalf("defined ids=%v", ids)
+	}
+	var gap *mapContractDiagnostic
+	for i := range diagnostics {
+		if diagnostics[i].Code == "map_definition_non_contiguous_ids" {
+			gap = &diagnostics[i]
+			break
+		}
+	}
+	if gap == nil {
+		t.Fatalf("missing gap diagnostic: %+v", diagnostics)
+	}
+	if gap.Occurrences != MaxProvinceID-2 {
+		t.Fatalf("missing count=%d, want %d", gap.Occurrences, MaxProvinceID-2)
+	}
+	if !strings.Contains(gap.Message, "samples: 2, 3, 4, 5, 6, 7, 8, 9") {
+		t.Fatalf("gap samples were not bounded to the first eight: %s", gap.Message)
 	}
 }
 

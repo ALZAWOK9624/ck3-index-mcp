@@ -29,7 +29,7 @@ func newSearchFixture(t *testing.T) (*indexer.DB, indexer.Config) {
 	}
 	game := filepath.Join(dir, "game")
 	project := filepath.Join(dir, "project")
-	write(game, "common/traits/traits.txt", "nearmiss_target = { value = 1 }\npale_knight = { value = 2 }\n")
+	write(game, "common/traits/traits.txt", "nearmiss_target = { value = 1 }\npale_knight = { value = 2 }\nmechanic_candidate = { value = 3 }\n")
 	write(project, "common/traits/project_traits.txt", "project_only_trait = { value = 3 }\n")
 	cfg := indexer.Config{
 		ConfigPath: filepath.Join(dir, "ck3-index.toml"),
@@ -89,6 +89,30 @@ func TestSearchStripsInspectStyleIDPrefix(t *testing.T) {
 	if len(evidence) == 0 {
 		t.Fatalf("type-prefixed query recovered nothing: %+v", body)
 	}
+}
+
+func TestSearchLongestTokenCandidatesStaySuggestions(t *testing.T) {
+	db, cfg := newSearchFixture(t)
+	result := callToolForTest(t, db, cfg, "ck3_search", map[string]any{"query": "special pale mechanic"})
+	if result["isError"] == true {
+		t.Fatalf("search failed: %+v", result)
+	}
+	body := result["structuredContent"].(map[string]any)
+	if evidence, _ := body["evidence"].([]any); len(evidence) != 0 {
+		t.Fatalf("longest-token candidates were promoted to evidence: %+v", evidence)
+	}
+	suggestions, _ := body["suggestions"].([]any)
+	if len(suggestions) == 0 || body["recovered_query"] != "mechanic" || body["recovery_confidence"] != "low" {
+		t.Fatalf("low-confidence recovery contract missing: %+v", body)
+	}
+	if _, exists := body["next_actions"]; exists {
+		t.Fatalf("a low-confidence suggestion must not produce an inspect action: %+v", body["next_actions"])
+	}
+	definition, ok := findCanonicalTool("ck3_search")
+	if !ok {
+		t.Fatal("ck3_search is not registered")
+	}
+	assertDecodedValueMatchesSchema(t, "low-confidence search result", body, definition.OutputSchema)
 }
 
 // A genuine absence still has to end the search rather than invite another

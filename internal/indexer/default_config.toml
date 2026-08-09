@@ -31,7 +31,8 @@ gis_cache_root = "cache/gis"
 gis_cache_max_gib = 8
 gis_timeout_seconds = 900
 # Optional resource limits. Omitting them preserves the historical defaults:
-# 8 SQLite read connections, 64 MB cache per connection, 1024 MB mmap, and
+# 8 SQLite read connections, 64 MB cache per connection, 1024 MB mmap,
+# at most 2 live database pools / 1024 MB aggregate SQLite page cache, and
 # MCP concurrency limits of 12 total / 2 expensive / 1 raster task, a bounded
 # queue of 32 calls, a 15 second queue timeout, and a 900 second execution
 # timeout. Raster work consumes both its own limit and the shared expensive
@@ -41,6 +42,8 @@ gis_timeout_seconds = 900
 # sqlite_read_connections = 2
 # sqlite_cache_mb_per_connection = 16
 # sqlite_mmap_limit_mb = 256
+# max_open_database_pools = 2
+# max_sqlite_cache_budget_mb = 64
 # mcp_max_tasks = 4
 # mcp_max_heavy_tasks = 1
 # mcp_max_raster_tasks = 1

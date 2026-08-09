@@ -109,54 +109,30 @@ func collectBaseMapContractDiagnostics(ctx context.Context, active map[string]ac
 
 func auditDefinitionSequence(file activeMapFile) (map[int]bool, []mapContractDiagnostic) {
 	ids := map[int]bool{}
-	f, err := os.Open(file.Path)
+	definitions, err := parseProvinceDefinitionsForAudit(file.Path, 8)
 	if err != nil {
 		return ids, []mapContractDiagnostic{{Severity: "error", Code: "map_definition_unreadable", Message: err.Error(), Source: file.Src.Name, Path: file.Rel, Occurrences: 1}}
 	}
-	defer f.Close()
-	r := csv.NewReader(f)
-	r.Comma = ';'
-	r.FieldsPerRecord = -1
-	firstLine := map[int]int{}
+	for id := range definitions.IDToColor {
+		ids[id] = true
+	}
 	previousID, previousLine := 0, 0
-	duplicateCount, outOfOrderCount := 0, 0
-	duplicateSamples := make([]string, 0, 8)
+	outOfOrderCount := 0
 	outOfOrderSamples := make([]string, 0, 8)
-	for {
-		record, readErr := r.Read()
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil || len(record) == 0 {
-			continue
-		}
-		id, parseErr := strconv.Atoi(strings.TrimSpace(record[0]))
-		if parseErr != nil || id <= 0 {
-			continue
-		}
-		line, _ := r.FieldPos(0)
-		if originalLine, duplicate := firstLine[id]; duplicate {
-			duplicateCount++
-			if len(duplicateSamples) < 8 {
-				duplicateSamples = append(duplicateSamples, fmt.Sprintf("%d at lines %d and %d", id, originalLine, line))
-			}
-		} else {
-			firstLine[id] = line
-		}
-		if previousID > 0 && id < previousID {
+	for _, entry := range definitions.Entries {
+		if previousID > 0 && entry.ID < previousID {
 			outOfOrderCount++
 			if len(outOfOrderSamples) < 8 {
-				outOfOrderSamples = append(outOfOrderSamples, fmt.Sprintf("line %d id %d follows line %d id %d", line, id, previousLine, previousID))
+				outOfOrderSamples = append(outOfOrderSamples, fmt.Sprintf("line %d id %d follows line %d id %d", entry.Line, entry.ID, previousLine, previousID))
 			}
 		}
-		ids[id] = true
-		previousID, previousLine = id, line
+		previousID, previousLine = entry.ID, entry.Line
 	}
 	diagnostics := make([]mapContractDiagnostic, 0, 3)
-	if duplicateCount > 0 {
+	if definitions.DuplicateIDs > 0 {
 		diagnostics = append(diagnostics, mapContractDiagnostic{
 			Severity: "error", Code: "map_definition_duplicate_id", Source: file.Src.Name, Path: file.Rel, Line: 1,
-			Message: fmt.Sprintf("definition.csv repeats %d positive province ids; samples: %s", duplicateCount, strings.Join(duplicateSamples, "; ")), Occurrences: duplicateCount,
+			Message: fmt.Sprintf("definition.csv repeats %d province ids; samples: %s", definitions.DuplicateIDs, strings.Join(definitions.DuplicateIDSamples, "; ")), Occurrences: definitions.DuplicateIDs,
 		})
 	}
 	if outOfOrderCount > 0 {
@@ -168,31 +144,45 @@ func auditDefinitionSequence(file activeMapFile) (map[int]bool, []mapContractDia
 	if len(ids) == 0 {
 		return ids, diagnostics
 	}
-	maxID := 0
-	for id := range ids {
-		if id > maxID {
-			maxID = id
-		}
-	}
-	missing := make([]int, 0)
-	for id := 1; id <= maxID; id++ {
-		if !ids[id] {
-			missing = append(missing, id)
-		}
-	}
-	if len(missing) == 0 {
+	maxID, missingCount, missingSamples := provinceDefinitionGaps(ids, 8)
+	if missingCount == 0 {
 		return ids, diagnostics
-	}
-	samples := missing
-	if len(samples) > 8 {
-		samples = samples[:8]
 	}
 	diagnostics = append(diagnostics, mapContractDiagnostic{
 		Severity: "error", Code: "map_definition_non_contiguous_ids", Source: file.Src.Name, Path: file.Rel, Line: 1,
-		Message:     fmt.Sprintf("positive province ids must form a continuous 1..%d sequence; %d ids are missing; samples: %s", maxID, len(missing), joinInts(samples)),
-		Occurrences: len(missing),
+		Message:     fmt.Sprintf("positive province ids must form a continuous 1..%d sequence; %d ids are missing; samples: %s", maxID, missingCount, joinInts(missingSamples)),
+		Occurrences: missingCount,
 	})
 	return ids, diagnostics
+}
+
+// provinceDefinitionGaps is O(number of definitions), excluding the sort. It
+// never allocates in proportion to the largest id or the number of missing
+// provinces: only the requested diagnostic samples are retained.
+func provinceDefinitionGaps(ids map[int]bool, sampleLimit int) (maxID, missingCount int, samples []int) {
+	sortedIDs := make([]int, 0, len(ids))
+	for id := range ids {
+		sortedIDs = append(sortedIDs, id)
+	}
+	sort.Ints(sortedIDs)
+	previous := 0
+	for _, id := range sortedIDs {
+		if id <= previous {
+			continue
+		}
+		gap := id - previous - 1
+		if gap > 0 {
+			missingCount += gap
+			for sample := previous + 1; sample < id && len(samples) < sampleLimit; sample++ {
+				samples = append(samples, sample)
+			}
+		}
+		previous = id
+	}
+	if len(sortedIDs) > 0 {
+		maxID = sortedIDs[len(sortedIDs)-1]
+	}
+	return maxID, missingCount, samples
 }
 
 func auditDefaultMapContract(file activeMapFile, definedIDs map[int]bool) []mapContractDiagnostic {

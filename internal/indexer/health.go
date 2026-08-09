@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path"
 	"strings"
 
 	"ck3-index/internal/script"
@@ -131,8 +132,9 @@ func (db *DB) checkLIOSSafety(ctx context.Context) error {
 		win, lose int
 	}
 	best := map[string]lio{}
-	// Two mods overriding the same upstream file, or one file overridden under
-	// several rel_paths, otherwise reparse identical bytes once per row.
+	// Identical bytes can extract different object sets under different CK3
+	// directories, so the path-derived extraction context is part of the key.
+	// The same path across source layers still shares one parse.
 	counted := map[string]int{}
 	for rows.Next() {
 		var rel, path, source, kind, sha string
@@ -143,11 +145,12 @@ func (db *DB) checkLIOSSafety(ctx context.Context) error {
 		if kind != "script" {
 			continue
 		}
-		lose, cached := counted[sha]
+		cacheKey := liosObjectCountCacheKey(sha, rel)
+		lose, cached := counted[cacheKey]
 		if !cached || sha == "" {
 			lose = countObjectsInScriptFile(path, rel, source, rank)
 			if sha != "" {
-				counted[sha] = lose
+				counted[cacheKey] = lose
 			}
 		}
 		if lose <= win || lose == 0 {
@@ -169,6 +172,11 @@ func (db *DB) checkLIOSSafety(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func liosObjectCountCacheKey(sha, rel string) string {
+	rel = strings.ToLower(path.Clean(strings.ReplaceAll(strings.TrimSpace(rel), "\\", "/")))
+	return sha + "\x00" + rel
 }
 
 func countObjectsInScriptFile(path, rel, source string, rank int) int {

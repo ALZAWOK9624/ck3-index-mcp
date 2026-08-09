@@ -44,7 +44,10 @@ func handleDatabase(ctx context.Context, runtime *Runtime, definition *ToolDefin
 			return toolOutput{}, missingArgument("name")
 		}
 		result, err := controller.Switch(ctx, name)
-		return toolOutput{Value: result, Visibility: "private"}, err
+		// A changed switch is an atomic control-plane publication. If caller
+		// cancellation races just after activation, runtime must return the
+		// committed identity instead of claiming that no change occurred.
+		return toolOutput{Value: result, Visibility: "private", Committed: err == nil && result.Changed}, err
 	default:
 		return toolOutput{}, unknownOperation(operation)
 	}

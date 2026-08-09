@@ -30,6 +30,8 @@ const (
 	DefaultSQLiteReadConnections      = 8
 	DefaultSQLiteCacheMBPerConnection = 64
 	DefaultSQLiteMMapLimitMB          = 1024
+	DefaultMaxOpenDatabasePools       = 2
+	DefaultMaxSQLiteCacheBudgetMB     = DefaultMaxOpenDatabasePools * DefaultSQLiteReadConnections * DefaultSQLiteCacheMBPerConnection
 	DefaultMCPMaxTasks                = 12
 	DefaultMCPMaxHeavyTasks           = 2
 	DefaultMCPMaxRasterTasks          = 1

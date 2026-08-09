@@ -64,7 +64,7 @@ func newNearMissDB(t *testing.T) *DB {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("pale_knight = { value = 1 }\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("pale_knight = { value = 1 }\nmechanic_candidate = { value = 2 }\nmechanic_candidate_two = { value = 3 }\nmechanic_candidate_three = { value = 4 }\nmechanic_candidate_four = { value = 5 }\nmechanic_candidate_five = { value = 6 }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cfg := Config{
@@ -112,7 +112,7 @@ func TestSearchIndexedSpellingUsesThePrefixRange(t *testing.T) {
 // follow-up ck3_inspect repeats the spelling that just missed.
 func TestSearchNearMissReportsTheRecoveringSpelling(t *testing.T) {
 	db := newNearMissDB(t)
-	evidence, spelling, err := db.searchNearMiss(context.Background(), "Pale Knight", SearchOptions{}, 8)
+	evidence, spelling, confidence, err := db.searchNearMiss(context.Background(), "Pale Knight", SearchOptions{}, 8)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,16 +122,82 @@ func TestSearchNearMissReportsTheRecoveringSpelling(t *testing.T) {
 	if spelling != "pale_knight" {
 		t.Fatalf("recovering spelling = %q, want pale_knight", spelling)
 	}
+	if confidence != "high" {
+		t.Fatalf("mechanical recovery confidence = %q, want high", confidence)
+	}
+}
+
+func TestSearchNearMissMarksLongestTokenRecoveryLowConfidence(t *testing.T) {
+	db := newNearMissDB(t)
+	evidence, spelling, confidence, err := db.searchNearMiss(context.Background(), "special pale mechanic", SearchOptions{}, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evidence) == 0 || spelling != "mechanic" || confidence != "low" {
+		t.Fatalf("token recovery = evidence=%v spelling=%q confidence=%q", evidence, spelling, confidence)
+	}
+
+	result, err := db.LLMSearch(context.Background(), SearchOptions{Query: "special pale mechanic"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Evidence) != 0 || len(result.Suggestions) == 0 {
+		t.Fatalf("lossy token result promoted suggestions to evidence: %+v", result)
+	}
+	if result.RecoveredQuery != "mechanic" || result.RecoveryConfidence != "low" {
+		t.Fatalf("recovery metadata = query=%q confidence=%q", result.RecoveredQuery, result.RecoveryConfidence)
+	}
+}
+
+func TestSearchNearMissPrefixOnlyMechanicalRewriteIsNotEvidence(t *testing.T) {
+	db := newNearMissDB(t)
+	result, err := db.LLMSearch(context.Background(), SearchOptions{Query: "Mechanic Can"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Evidence) != 0 || len(result.Suggestions) == 0 {
+		t.Fatalf("prefix-only normalized spelling was promoted to evidence: %+v", result)
+	}
+	if result.RecoveredQuery != "mechanic" || result.RecoveryConfidence != "low" {
+		t.Fatalf("prefix-only recovery metadata = query=%q confidence=%q", result.RecoveredQuery, result.RecoveryConfidence)
+	}
+}
+
+func TestSearchNearMissSuggestionsPaginateWithoutRepeatingPageOne(t *testing.T) {
+	db := newNearMissDB(t)
+	first, err := db.LLMSearch(context.Background(), SearchOptions{Query: "special pale mechanic", Page: 1, LLMOptions: LLMOptions{Limit: 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := db.LLMSearch(context.Background(), SearchOptions{Query: "special pale mechanic", Page: 2, LLMOptions: LLMOptions{Limit: 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Suggestions) != 2 || len(second.Suggestions) != 2 {
+		t.Fatalf("suggestion pages have wrong sizes: first=%d second=%d", len(first.Suggestions), len(second.Suggestions))
+	}
+	if first.Pagination != nil || second.Pagination != nil || first.SuggestionPagination == nil || second.SuggestionPagination == nil || first.SuggestionPagination.Returned != 2 || second.SuggestionPagination.Returned != 2 || !first.SuggestionPagination.HasMore {
+		t.Fatalf("suggestion pagination metadata is inconsistent: evidence=(%+v,%+v) suggestions=(%+v,%+v)", first.Pagination, second.Pagination, first.SuggestionPagination, second.SuggestionPagination)
+	}
+	firstNames := map[string]bool{}
+	for _, item := range first.Suggestions {
+		firstNames[item.Name] = true
+	}
+	for _, item := range second.Suggestions {
+		if firstNames[item.Name] {
+			t.Fatalf("page 2 repeated page-1 suggestion %q", item.Name)
+		}
+	}
 }
 
 func TestSearchNearMissStaysEmptyForAGenuineAbsence(t *testing.T) {
 	db := newNearMissDB(t)
-	evidence, spelling, err := db.searchNearMiss(context.Background(), "外乡人军团", SearchOptions{}, 8)
+	evidence, spelling, confidence, err := db.searchNearMiss(context.Background(), "外乡人军团", SearchOptions{}, 8)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(evidence) != 0 || spelling != "" {
-		t.Fatalf("absent term produced evidence %v via %q", evidence, spelling)
+	if len(evidence) != 0 || spelling != "" || confidence != "" {
+		t.Fatalf("absent term produced evidence %v via %q confidence=%q", evidence, spelling, confidence)
 	}
 }
 

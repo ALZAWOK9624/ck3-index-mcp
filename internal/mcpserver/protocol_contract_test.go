@@ -106,29 +106,38 @@ func TestServeMCPProtocolContract(t *testing.T) {
 
 func TestHealthReportIncludesBinaryVersion(t *testing.T) {
 	report := mcpHealthReport(indexer.HealthReport{
-		SQLiteReadConnections:   8,
-		SQLiteCachePerConnMB:    64,
-		SQLiteCacheBudgetMB:     512,
-		SQLiteMMapLimitMB:       1024,
-		ActiveTasks:             3,
-		ActiveExpensiveTasks:    2,
-		ActiveHeavyTasks:        1,
-		ActiveRasterTasks:       1,
-		QueuedTasks:             4,
-		QueuedExpensiveTasks:    3,
-		QueuedHeavyTasks:        2,
-		QueuedRasterTasks:       1,
-		MCPMaxTasks:             12,
-		MCPMaxHeavyTasks:        2,
-		MCPMaxRasterTasks:       1,
-		MCPMaxQueuedTasks:       32,
-		MCPQueueTimeoutSecs:     15,
-		MCPExecutionTimeoutSecs: 900,
-		SQLiteOrdinaryReserve:   6,
-		EstimatedTaskMemoryMB:   968,
+		Depth:                        "quick",
+		SQLiteReadConnections:        8,
+		SQLiteCachePerConnMB:         64,
+		SQLiteCacheBudgetMB:          512,
+		SQLiteMMapLimitMB:            1024,
+		ActiveTasks:                  3,
+		ActiveExpensiveTasks:         2,
+		ActiveHeavyTasks:             1,
+		ActiveRasterTasks:            1,
+		QueuedTasks:                  4,
+		QueuedExpensiveTasks:         3,
+		QueuedHeavyTasks:             2,
+		QueuedRasterTasks:            1,
+		MCPMaxTasks:                  12,
+		MCPMaxHeavyTasks:             2,
+		MCPMaxRasterTasks:            1,
+		MCPMaxQueuedTasks:            32,
+		MCPQueueTimeoutSecs:          15,
+		MCPExecutionTimeoutSecs:      900,
+		SQLiteOrdinaryReserve:        6,
+		EstimatedTaskMemoryMB:        968,
+		LoadedDatabaseCount:          2,
+		RetiredDatabaseCount:         1,
+		AggregateSQLiteCacheBudgetMB: 768,
+		MaxOpenDatabasePools:         3,
+		MaxSQLiteCacheBudgetMB:       1024,
 	})
 	if report["binary_version"] != buildinfo.Version {
 		t.Fatalf("health binary_version = %v, want %q", report["binary_version"], buildinfo.Version)
+	}
+	if report["depth"] != "quick" {
+		t.Fatalf("health depth = %v, want quick", report["depth"])
 	}
 	for key, want := range map[string]int{
 		"sqlite_read_connections": 8, "sqlite_cache_per_connection_mb": 64,
@@ -139,6 +148,11 @@ func TestHealthReportIncludesBinaryVersion(t *testing.T) {
 		"mcp_queue_timeout_seconds": 15, "mcp_execution_timeout_seconds": 900,
 		"sqlite_connections_reserved_for_ordinary_tasks": 6,
 		"estimated_task_memory_mb":                       968,
+		"loaded_database_count":                          2,
+		"retired_database_count":                         1,
+		"aggregate_sqlite_cache_budget_mb":               768,
+		"max_open_database_pools":                        3,
+		"max_sqlite_cache_budget_mb":                     1024,
 	} {
 		if got := report[key]; got != want {
 			t.Fatalf("health %s = %v, want %d", key, got, want)
@@ -389,6 +403,130 @@ func TestPotentiallyExpensiveOperationsUseTheSharedHeavyClass(t *testing.T) {
 		raw := json.RawMessage(fmt.Sprintf(`{"name":%q,"arguments":{"operation":%q}}`, tt.name, tt.operation))
 		if got := classifyMCPTask(raw); got != tt.want {
 			t.Fatalf("%s operation=%q class=%q, want %q", tt.name, tt.operation, got, tt.want)
+		}
+	}
+}
+
+func TestHealthAndDatabaseTaskClassesFollowOperationCost(t *testing.T) {
+	tests := []struct {
+		name      string
+		arguments string
+		want      mcpTaskClass
+	}{
+		{name: "ck3_health", arguments: `{}`, want: mcpTaskRead},
+		{name: "ck3_health", arguments: `{"mode":"quick"}`, want: mcpTaskRead},
+		{name: "ck3_health", arguments: `{"mode":"deep"}`, want: mcpTaskHeavy},
+		{name: "ck3_health", arguments: `{"mode":"future"}`, want: mcpTaskHeavy},
+		{name: "ck3_database", arguments: `{}`, want: mcpTaskRead},
+		{name: "ck3_database", arguments: `{"operation":"list"}`, want: mcpTaskRead},
+		{name: "ck3_database", arguments: `{"operation":"status"}`, want: mcpTaskRead},
+		{name: "ck3_database", arguments: `{"operation":"switch","name":"other"}`, want: mcpTaskHeavy},
+		{name: "ck3_database", arguments: `{"operation":"future"}`, want: mcpTaskHeavy},
+	}
+	for _, test := range tests {
+		raw := json.RawMessage(fmt.Sprintf(`{"name":%q,"arguments":%s}`, test.name, test.arguments))
+		if got := classifyMCPTask(raw); got != test.want {
+			t.Fatalf("%s arguments=%s class=%q, want %q", test.name, test.arguments, got, test.want)
+		}
+	}
+
+	limiter := mcpTaskLimiter{maxActive: 4, maxHeavy: 1, maxRaster: 1, maxQueued: 4}
+	if !limiter.acquire(mcpTaskHeavy) {
+		t.Fatal("failed to occupy the configured heavy slot")
+	}
+	deepClass := classifyMCPTask(json.RawMessage(`{"name":"ck3_health","arguments":{"mode":"deep"}}`))
+	switchClass := classifyMCPTask(json.RawMessage(`{"name":"ck3_database","arguments":{"operation":"switch","name":"other"}}`))
+	if limiter.acquire(deepClass) || limiter.acquire(switchClass) {
+		t.Fatal("deep health or database switch bypassed the shared expensive-task limit")
+	}
+	if !limiter.enqueue(deepClass) || !limiter.enqueue(switchClass) {
+		t.Fatal("deep health and database switch were not admitted to the bounded queue")
+	}
+	diagnostics := limiter.diagnostics()
+	if diagnostics["queued_tasks"] != 2 || diagnostics["queued_heavy_tasks"] != 2 || diagnostics["queued_raster_tasks"] != 0 {
+		t.Fatalf("operation-aware queue diagnostics = %+v", diagnostics)
+	}
+	limiter.dequeue(deepClass)
+	limiter.dequeue(switchClass)
+	limiter.release(mcpTaskHeavy)
+}
+
+type cancelAfterDatabaseCommitController struct {
+	cancel context.CancelFunc
+	active mcpDatabaseIdentity
+}
+
+func (controller *cancelAfterDatabaseCommitController) Current() mcpDatabaseIdentity {
+	return controller.active
+}
+
+func (controller *cancelAfterDatabaseCommitController) List() []mcpDatabaseSummary {
+	_, databases := controller.Catalog()
+	return databases
+}
+
+func (controller *cancelAfterDatabaseCommitController) Catalog() (mcpDatabaseIdentity, []mcpDatabaseSummary) {
+	return controller.active, []mcpDatabaseSummary{{Name: controller.active.Name, Active: true, Available: true}}
+}
+
+func (controller *cancelAfterDatabaseCommitController) Switch(_ context.Context, name string) (mcpDatabaseSwitchResult, error) {
+	previous := controller.active
+	controller.active = mcpDatabaseIdentity{Name: name, Epoch: previous.Epoch + 1, DatabaseIdentity: name + ".sqlite"}
+	result := mcpDatabaseSwitchResult{
+		Previous: previous, Active: controller.active, Changed: true, Status: "ready", ScanStatus: indexer.IndexStatusReady,
+		Guidance: []string{"committed fixture switch"},
+	}
+	controller.cancel()
+	return result, nil
+}
+
+func TestDatabaseSwitchCommittedBeforeCancellationReturnsChangedResult(t *testing.T) {
+	dir := t.TempDir()
+	firstPath := createReadyMCPDatabase(t, dir, "first.sqlite", 11)
+	db, err := indexer.OpenReadOnlyWithOptions(firstPath, indexer.SQLiteReadOptions{Connections: 2, CacheMBPerConnection: 8, MMapLimitMB: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	cfg := databaseManagerTestConfig(firstPath, filepath.Join(dir, "second.sqlite"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	controller := &cancelAfterDatabaseCommitController{
+		cancel: cancel,
+		active: mcpDatabaseIdentity{Name: "first", Epoch: 1, DatabaseIdentity: "first.sqlite"},
+	}
+	ctx = withMCPDatabaseContext(ctx, controller, controller.active)
+	result, err := callMCPTool(ctx, db, cfg, json.RawMessage(`{"name":"ck3_database","arguments":{"operation":"switch","name":"second"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("fixture did not cancel after commit: %v", ctx.Err())
+	}
+	structured := result.(map[string]any)["structuredContent"].(map[string]any)
+	active := structured["active"].(map[string]any)
+	if structured["changed"] != true || active["name"] != "second" || active["epoch"].(float64) != 2 {
+		t.Fatalf("committed switch was rewritten after cancellation: %+v", structured)
+	}
+}
+
+func TestDatabaseListStatusAndNoopSwitchAreNotCommitted(t *testing.T) {
+	definition, ok := findCanonicalTool("ck3_database")
+	if !ok {
+		t.Fatal("ck3_database definition is missing")
+	}
+	runtime := &Runtime{DatabaseController: staticMCPDatabaseController{identity: mcpDatabaseIdentity{Name: "first", Epoch: 1}}}
+	for _, arguments := range []string{
+		`{"operation":"list"}`,
+		`{"operation":"status"}`,
+		`{"operation":"switch","name":"first"}`,
+	} {
+		output, err := handleDatabase(context.Background(), runtime, definition, json.RawMessage(arguments))
+		if err != nil {
+			t.Fatalf("arguments %s: %v", arguments, err)
+		}
+		if output.Committed {
+			t.Fatalf("read-only or no-op database operation was marked committed: %s", arguments)
 		}
 	}
 }

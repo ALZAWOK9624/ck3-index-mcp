@@ -181,7 +181,7 @@ func buildCanonicalTools() []ToolDefinition {
 		{
 			Name:        "ck3_health",
 			Title:       "Check CK3 Index Health",
-			Description: "Check whether the database, schema, indexes, and MCP registration are trustworthy, and confirm which configuration is live. Reports bounded SQLite read/cache settings, active and queued task classes, concurrency limits, queue/execution timeouts, reserved ordinary-query connections, and estimated task memory. The active config and source roots are identifiable while the database path stays redacted.",
+			Description: "Check whether the database, schema, indexes, and MCP registration are trustworthy, and confirm which configuration is live. Reports bounded SQLite read/cache settings, loaded and retired database pools, aggregate cache budget and process limits, active and queued task classes, concurrency limits, queue/execution timeouts, reserved ordinary-query connections, and estimated task memory. The active config and source roots are identifiable while the database path stays redacted.",
 			InputSchema: objectSchema(map[string]any{
 				"mode": stringProperty("quick answers from recorded scan totals; deep re-counts every table and re-verifies the GIS sidecar.", "quick", "deep"),
 			}),
@@ -190,7 +190,7 @@ func buildCanonicalTools() []ToolDefinition {
 		{
 			Name:         "ck3_database",
 			Title:        "Select CK3 Index Database",
-			Description:  "List the administrator-configured SQLite indexes, report the active database, or hot-switch subsequent MCP calls to one exact configured name without restarting the server. In-flight calls retain their original database lease; callers never provide filesystem paths.",
+			Description:  "List the administrator-configured SQLite indexes, report the active database, or hot-switch subsequent MCP calls to one exact configured name without restarting the server. In-flight calls retain their original database lease and its pool budget until release; an over-budget candidate is rejected without changing the active database. Callers never provide filesystem paths.",
 			InputSchema:  databaseInputSchema(),
 			OutputSchema: output, Annotations: artifactAnnotations(), Handler: handleDatabase,
 		},
@@ -230,6 +230,7 @@ func buildCanonicalTools() []ToolDefinition {
 	definitions = append(definitions, buildCanonicalMapTools(annotations, output)...)
 	definitions = addResponseBudgetProperty(definitions)
 	definitions = declarePrivateOnlyVisibility(definitions)
+	definitions = declareTrimmableResponseFields(definitions)
 	return standardizeCanonicalToolDescriptions(definitions)
 }
 

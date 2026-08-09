@@ -7,6 +7,17 @@ func nullableObjectSchema(schema map[string]any) map[string]any {
 func preciseToolOutputSchema(successSchemas ...map[string]any) map[string]any {
 	alternatives := make([]any, 0, len(successSchemas)+1)
 	for _, schema := range successSchemas {
+		// Successful results may carry notices for safe argument repairs (for
+		// example, a clamped limit or a retained field alias). The notice is
+		// attached after the handler value is encoded, so it is transport
+		// metadata rather than a field on every concrete result struct. Declare
+		// it on every closed success schema or the advertised output contract
+		// rejects a response the server legitimately emits.
+		if properties, ok := schema["properties"].(map[string]any); ok {
+			if _, declared := properties["argument_notices"]; !declared {
+				properties["argument_notices"] = arrayProperty("Safe argument repairs applied before execution.", map[string]any{"type": "string"})
+			}
+		}
 		alternatives = append(alternatives, schema)
 	}
 	alternatives = append(alternatives, toolErrorOutputSchema())
@@ -81,15 +92,18 @@ func llmResultOutputSchema() map[string]any {
 				"items": evidence,
 			},
 		},
-		"guidance":          stringArray,
-		"evidence":          arrayProperty("", evidence),
-		"redacted":          map[string]any{"type": "integer", "minimum": 0},
-		"needs_refresh":     map[string]any{"type": "boolean"},
-		"needs_scan":        map[string]any{"type": "boolean"},
-		"impact":            integerMap,
-		"missing_loc_keys":  stringArray,
-		"missing_resources": stringArray,
-		"scope_fix_hints":   stringArray,
+		"guidance":            stringArray,
+		"evidence":            arrayProperty("", evidence),
+		"suggestions":         arrayProperty("Low-confidence candidates that must not be treated as evidence.", evidence),
+		"recovered_query":     map[string]any{"type": "string"},
+		"recovery_confidence": map[string]any{"type": "string", "enum": []string{"high", "low"}},
+		"redacted":            map[string]any{"type": "integer", "minimum": 0},
+		"needs_refresh":       map[string]any{"type": "boolean"},
+		"needs_scan":          map[string]any{"type": "boolean"},
+		"impact":              integerMap,
+		"missing_loc_keys":    stringArray,
+		"missing_resources":   stringArray,
+		"scope_fix_hints":     stringArray,
 		"topology": nullableObjectSchema(map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -109,13 +123,15 @@ func llmResultOutputSchema() map[string]any {
 			"required": []string{"center", "direction", "include_on_actions", "max_depth", "nodes", "edges"},
 		}),
 		"truncated": map[string]any{"type": "boolean"},
-		"pagination": nullableObjectSchema(objectSchema(map[string]any{
-			"page":      map[string]any{"type": "integer", "minimum": 1},
-			"limit":     map[string]any{"type": "integer", "minimum": 1},
-			"returned":  map[string]any{"type": "integer", "minimum": 0},
-			"has_more":  map[string]any{"type": "boolean"},
-			"next_page": map[string]any{"type": "integer", "minimum": 1},
-		}, "page", "limit", "returned", "has_more")),
+		"truncation": map[string]any{
+			"type": "object",
+			"additionalProperties": objectSchema(map[string]any{
+				"original": map[string]any{"type": "integer", "minimum": 0},
+				"returned": map[string]any{"type": "integer", "minimum": 0},
+			}, "original", "returned"),
+		},
+		"pagination":            nullableObjectSchema(llmPaginationOutputSchema()),
+		"suggestion_pagination": nullableObjectSchema(llmPaginationOutputSchema()),
 		"next_actions": arrayProperty("", objectSchema(map[string]any{
 			"tool":            map[string]any{"type": "string"},
 			"arguments":       map[string]any{"type": "object", "additionalProperties": true},
@@ -125,6 +141,16 @@ func llmResultOutputSchema() map[string]any {
 			"stop_if":         map[string]any{},
 		}, "tool", "arguments")),
 	}, "intent", "summary")
+}
+
+func llmPaginationOutputSchema() map[string]any {
+	return objectSchema(map[string]any{
+		"page":      map[string]any{"type": "integer", "minimum": 1},
+		"limit":     map[string]any{"type": "integer", "minimum": 1},
+		"returned":  map[string]any{"type": "integer", "minimum": 0},
+		"has_more":  map[string]any{"type": "boolean"},
+		"next_page": map[string]any{"type": "integer", "minimum": 1},
+	}, "page", "limit", "returned", "has_more")
 }
 
 func llmEvidenceOutputSchema() map[string]any {

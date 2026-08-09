@@ -71,7 +71,10 @@ func workspaceCapabilities(ctx context.Context, runtime *Runtime, requestedDomai
 	if !mapAvailable {
 		mapReason = "the current index has no published map database"
 	}
-	gis := runtime.DB.GISSidecarStatus(ctx, runtime.Config)
+	// Capability discovery is a cheap read task. Report the GIS verification
+	// persisted with the published generation; deep health owns live sidecar
+	// hashing/publication and subprocess verification.
+	gis := runtime.DB.CachedGISSidecarStatus(ctx, runtime.Config)
 	gisAvailable := mapAvailable && gis.Available && gis.AnalysisStatus == "ready"
 	gisReason := ""
 	if !gisAvailable {

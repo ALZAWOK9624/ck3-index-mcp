@@ -24,23 +24,32 @@ var clampableArguments = map[string]bool{
 	"max_response_bytes": true,
 }
 
-// argumentAliases map a field the model reasonably reached for onto the field
-// the schema actually documents. Each entry was observed as a real rejected
-// call: province_id/subject for map_province_info's id, and history_year for
-// the year accepted by neighbouring map tools. canonicalizeNextActions already
-// treats history_year as an alias of year, so this only makes the inbound
-// direction agree with the outbound one.
-var argumentAliases = map[string]string{
-	"province_id":  "id",
-	"subject":      "id",
-	"history_year": "year",
+// argumentAliases are deliberately scoped by tool. A canonical field such as
+// id can mean a province, artifact, event, save character, or script object;
+// accepting province_id or subject everywhere merely because a schema happens
+// to contain id silently changes unrelated requests. Each alias below names
+// the exact tool whose semantics make the rewrite equivalent.
+var argumentAliases = map[string]map[string]string{
+	"map_province_info": {
+		"province_id":  "id",
+		"subject":      "id",
+		"history_year": "year",
+	},
+	"map_neighbors":           {"history_year": "year"},
+	"map_spatial_relation":    {"history_year": "year"},
+	"map_title_context":       {"history_year": "year"},
+	"map_assignment_plan":     {"history_year": "year"},
+	"map_building_candidates": {"history_year": "year"},
+	"map_build_metric":        {"history_year": "year"},
+	"map_route":               {"history_year": "year"},
+	"map_render":              {"history_year": "year"},
 }
 
 // repairToolArguments rewrites a tools/call argument object so that recoverable
 // caller mistakes become notices rather than errors. It runs before schema
 // validation and returns the notices to attach to the successful result, so the
 // caller still learns the documented bound and can send it correctly next time.
-func repairToolArguments(schema map[string]any, raw json.RawMessage) (json.RawMessage, []string) {
+func repairToolArguments(tool string, schema map[string]any, raw json.RawMessage) (json.RawMessage, []string) {
 	properties, _ := schema["properties"].(map[string]any)
 	if len(properties) == 0 {
 		return raw, nil
@@ -51,7 +60,7 @@ func repairToolArguments(schema map[string]any, raw json.RawMessage) (json.RawMe
 	}
 	var notices []string
 	changed := false
-	for alias, canonical := range argumentAliases {
+	for alias, canonical := range argumentAliases[tool] {
 		value, aliased := fields[alias]
 		if !aliased {
 			continue

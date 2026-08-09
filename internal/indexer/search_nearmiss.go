@@ -96,9 +96,9 @@ func isCommonQueryWord(word string) bool {
 }
 
 // searchNearMiss is only reached once every ordinary searcher has returned
-// nothing. It returns the evidence it recovered plus the spelling that
-// recovered it, so the caller can tell the requester which query actually
-// worked.
+// nothing. Mechanical case/separator/type-prefix rewrites are semantic
+// equivalents and may recover evidence with high confidence. The final
+// longest-token probe is lossy: its rows are low-confidence suggestions only.
 //
 // Every variant is looked up through the same indexed prefix searchers the
 // ordinary path uses, never through a substring scan. That matters: measured
@@ -109,31 +109,42 @@ func isCommonQueryWord(word string) bool {
 // prefix range is indexed, so the normalized spellings now cost roughly what
 // the original query cost -- and the normalization cases this exists for
 // ("Pale Knight" for pale_knight) land on an exact name anyway.
-func (db *DB) searchNearMiss(ctx context.Context, query string, opts SearchOptions, limit int) ([]LLMEvidence, string, error) {
+func (db *DB) searchNearMiss(ctx context.Context, query string, opts SearchOptions, limit int) ([]LLMEvidence, string, string, error) {
 	if limit <= 0 {
-		return nil, "", nil
+		return nil, "", "", nil
 	}
 	for _, variant := range nearMissQueryVariants(query) {
 		evidence, err := db.searchIndexedSpelling(ctx, variant, opts, limit)
 		if err != nil {
-			return nil, "", err
+			return nil, "", "", err
 		}
-		if len(evidence) > 0 {
-			return evidence, variant, nil
+		exact := exactNearMissEvidence(evidence, variant)
+		if len(exact) > 0 {
+			return exact, variant, "high", nil
 		}
 	}
 	token := longestQueryToken(query)
 	if token == "" || strings.EqualFold(token, strings.TrimSpace(query)) {
-		return nil, "", nil
+		return nil, "", "", nil
 	}
 	evidence, err := db.searchIndexedSpelling(ctx, token, opts, limit)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	if len(evidence) == 0 {
-		return nil, "", nil
+		return nil, "", "", nil
 	}
-	return evidence, token, nil
+	return evidence, token, "low", nil
+}
+
+func exactNearMissEvidence(items []LLMEvidence, spelling string) []LLMEvidence {
+	exact := make([]LLMEvidence, 0, len(items))
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item.Name), spelling) {
+			exact = append(exact, item)
+		}
+	}
+	return exact
 }
 
 // searchIndexedSpelling looks one alternative spelling up through the indexed

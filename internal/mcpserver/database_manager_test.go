@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +17,17 @@ import (
 
 	"ck3-index/internal/indexer"
 )
+
+func TestCanonicalMCPDatabasePathUsesHostCaseSemantics(t *testing.T) {
+	upper := canonicalMCPDatabasePath(filepath.Join(t.TempDir(), "Index.sqlite"))
+	lower := canonicalMCPDatabasePath(filepath.Join(filepath.Dir(upper), "index.sqlite"))
+	if runtime.GOOS == "windows" && upper != lower {
+		t.Fatalf("Windows database paths must compare case-insensitively: %q != %q", upper, lower)
+	}
+	if runtime.GOOS != "windows" && upper == lower {
+		t.Fatalf("case-sensitive host collapsed distinct database paths: %q", upper)
+	}
+}
 
 func TestMCPDatabaseManagerSwitchKeepsInflightLeasesAndReusesRetiredDatabase(t *testing.T) {
 	ctx := context.Background()
@@ -90,6 +103,239 @@ func TestMCPDatabaseManagerSwitchKeepsInflightLeasesAndReusesRetiredDatabase(t *
 	manager.mu.Unlock()
 	if secondStillLoaded {
 		t.Fatal("retired second database remained loaded after its final lease was released")
+	}
+}
+
+func TestMCPDatabaseLeaseReleaseIsSharedAndIdempotentAcrossCopies(t *testing.T) {
+	dir := t.TempDir()
+	firstPath := createReadyMCPDatabase(t, dir, "first.sqlite", 11)
+	secondPath := createReadyMCPDatabase(t, dir, "second.sqlite", 22)
+	cfg := databaseManagerTestConfig(firstPath, secondPath)
+	firstDB, err := indexer.OpenReadOnlyWithOptions(firstPath, cfg.SQLiteReadOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := newMCPDatabaseManager(cfg, firstPath, firstDB)
+	if err != nil {
+		_ = firstDB.Close()
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	lease, err := manager.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, err := manager.Acquire()
+	if err != nil {
+		lease.Release()
+		t.Fatal(err)
+	}
+	leaseCopy := lease
+	lease.Release()
+	leaseCopy.Release()
+
+	manager.mu.Lock()
+	refsAfterDuplicateRelease := manager.loaded["first"].refs
+	manager.mu.Unlock()
+	if refsAfterDuplicateRelease != 1 {
+		peer.Release()
+		t.Fatalf("duplicate release through a copied lease left refs=%d, want peer's one live ref", refsAfterDuplicateRelease)
+	}
+	if _, err := manager.Switch(context.Background(), "second"); err != nil {
+		peer.Release()
+		t.Fatal(err)
+	}
+	if state := mustMCPIndexState(t, peer.DB); state.Generation != 11 {
+		peer.Release()
+		t.Fatalf("copied lease release closed the peer's database: %+v", state)
+	}
+	manager.mu.Lock()
+	_, retained := manager.loaded["first"]
+	manager.mu.Unlock()
+	if !retained {
+		peer.Release()
+		t.Fatal("retired database was closed while the peer lease was still live")
+	}
+
+	peer.Release()
+	manager.mu.Lock()
+	_, retained = manager.loaded["first"]
+	manager.mu.Unlock()
+	if retained {
+		t.Fatal("retired database remained loaded after the real final lease release")
+	}
+}
+
+func TestMCPDatabaseManagerCancellationBeforeCommitDoesNotSwitch(t *testing.T) {
+	dir := t.TempDir()
+	firstPath := createReadyMCPDatabase(t, dir, "first.sqlite", 11)
+	secondPath := createReadyMCPDatabase(t, dir, "second.sqlite", 22)
+	cfg := databaseManagerTestConfig(firstPath, secondPath)
+	firstDB, err := indexer.OpenReadOnlyWithOptions(firstPath, cfg.SQLiteReadOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := newMCPDatabaseManager(cfg, firstPath, firstDB)
+	if err != nil {
+		_ = firstDB.Close()
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	manager.beforeSwitchCommit = cancel
+	before := manager.Current()
+	if _, err := manager.Switch(ctx, "second"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("pre-commit cancellation error=%v, want context.Canceled", err)
+	}
+	if after := manager.Current(); after != before {
+		t.Fatalf("pre-commit cancellation changed active database: before=%+v after=%+v", before, after)
+	}
+	if usage := manager.ResourceUsage(); usage.LoadedDatabaseCount != 1 || usage.RetiredDatabaseCount != 0 || usage.AggregateSQLiteCacheBudgetMB != 32 {
+		t.Fatalf("pre-commit cancellation leaked candidate reservation or pool: %+v", usage)
+	}
+
+	// The canceled attempt must release both the switch gate and its opening
+	// reservation so a later independent request can make progress.
+	if result, err := manager.Switch(context.Background(), "second"); err != nil || !result.Changed {
+		t.Fatalf("switch after canceled attempt = %+v, %v", result, err)
+	}
+}
+
+func TestMCPDatabaseManagerReportsRetiredLeaseResourceUsageInHealth(t *testing.T) {
+	dir := t.TempDir()
+	firstPath := createReadyMCPDatabase(t, dir, "first.sqlite", 11)
+	secondPath := createReadyMCPDatabase(t, dir, "second.sqlite", 22)
+	cfg := databaseManagerTestConfig(firstPath, secondPath)
+	cfg.MaxOpenDatabasePools = 2
+	cfg.MaxSQLiteCacheBudgetMB = 64
+	firstDB, err := indexer.OpenReadOnlyWithOptions(firstPath, cfg.SQLiteReadOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := newMCPDatabaseManager(cfg, firstPath, firstDB)
+	if err != nil {
+		_ = firstDB.Close()
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	firstLease, err := manager.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Switch(context.Background(), "second"); err != nil {
+		firstLease.Release()
+		t.Fatal(err)
+	}
+	usage := manager.ResourceUsage()
+	if usage.LoadedDatabaseCount != 2 || usage.RetiredDatabaseCount != 1 || usage.AggregateSQLiteCacheBudgetMB != 64 || usage.MaxOpenDatabasePools != 2 || usage.MaxSQLiteCacheBudgetMB != 64 {
+		firstLease.Release()
+		t.Fatalf("resource usage with retired lease = %+v", usage)
+	}
+
+	secondLease, err := manager.Acquire()
+	if err != nil {
+		firstLease.Release()
+		t.Fatal(err)
+	}
+	healthCtx := withMCPDatabaseContext(context.Background(), manager, secondLease.Identity)
+	result, err := callMCPTool(healthCtx, secondLease.DB, secondLease.Config, json.RawMessage(`{"name":"ck3_health","arguments":{"mode":"quick"}}`))
+	secondLease.Release()
+	if err != nil {
+		firstLease.Release()
+		t.Fatal(err)
+	}
+	health := result.(map[string]any)["structuredContent"].(map[string]any)
+	for key, want := range map[string]int{
+		"loaded_database_count": 2, "retired_database_count": 1,
+		"aggregate_sqlite_cache_budget_mb": 64, "max_open_database_pools": 2,
+		"max_sqlite_cache_budget_mb": 64,
+	} {
+		if got := int(health[key].(float64)); got != want {
+			firstLease.Release()
+			t.Fatalf("health %s=%d, want %d: %+v", key, got, want, health)
+		}
+	}
+
+	firstLease.Release()
+	usage = manager.ResourceUsage()
+	if usage.LoadedDatabaseCount != 1 || usage.RetiredDatabaseCount != 0 || usage.AggregateSQLiteCacheBudgetMB != 32 {
+		t.Fatalf("resource usage after retired lease release = %+v", usage)
+	}
+}
+
+func TestMCPDatabaseManagerRejectsCandidateBeforeExceedingProcessPoolBudgets(t *testing.T) {
+	tests := []struct {
+		name       string
+		maxPools   int
+		maxCacheMB int
+		detailKey  string
+		detailWant int
+	}{
+		{name: "pool count", maxPools: 2, maxCacheMB: 96, detailKey: "max_open_database_pools", detailWant: 2},
+		{name: "aggregate cache", maxPools: 3, maxCacheMB: 64, detailKey: "max_sqlite_cache_budget_mb", detailWant: 64},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			firstPath := createReadyMCPDatabase(t, dir, "first.sqlite", 1)
+			secondPath := createReadyMCPDatabase(t, dir, "second.sqlite", 2)
+			thirdPath := createReadyMCPDatabase(t, dir, "third.sqlite", 3)
+			cfg := databaseManagerTestConfig(firstPath, secondPath)
+			cfg.MCPDatabases = append(cfg.MCPDatabases, indexer.MCPDatabaseTarget{Name: "third", Description: "third fixture", Database: thirdPath})
+			cfg.MaxOpenDatabasePools = test.maxPools
+			cfg.MaxSQLiteCacheBudgetMB = test.maxCacheMB
+			firstDB, err := indexer.OpenReadOnlyWithOptions(firstPath, cfg.SQLiteReadOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			manager, err := newMCPDatabaseManager(cfg, firstPath, firstDB)
+			if err != nil {
+				_ = firstDB.Close()
+				t.Fatal(err)
+			}
+			defer manager.Close()
+
+			firstLease, err := manager.Acquire()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := manager.Switch(context.Background(), "second"); err != nil {
+				firstLease.Release()
+				t.Fatal(err)
+			}
+			before := manager.Current()
+			_, err = manager.Switch(context.Background(), "third")
+			if err == nil {
+				firstLease.Release()
+				t.Fatal("candidate exceeded the configured process budget but switch succeeded")
+			}
+			toolErr := toolErrorFrom(err)
+			detailValue, detailOK := toolErr.Details[test.detailKey].(int)
+			if toolErr.Code != ErrorServerBusy || toolErr.Details["reason"] != "database_pool_budget_exceeded" || !detailOK || detailValue != test.detailWant {
+				firstLease.Release()
+				t.Fatalf("budget rejection = %+v", toolErr)
+			}
+			if after := manager.Current(); after != before {
+				firstLease.Release()
+				t.Fatalf("rejected switch changed active database: before=%+v after=%+v", before, after)
+			}
+			usage := manager.ResourceUsage()
+			if usage.LoadedDatabaseCount != 2 || usage.RetiredDatabaseCount != 1 || usage.AggregateSQLiteCacheBudgetMB != 64 {
+				firstLease.Release()
+				t.Fatalf("rejected candidate leaked resources: usage=%+v", usage)
+			}
+
+			firstLease.Release()
+			if _, err := manager.Switch(context.Background(), "third"); err != nil {
+				t.Fatalf("switch remained blocked after retired lease release: %v", err)
+			}
+			if active := manager.Current(); active.Name != "third" {
+				t.Fatalf("active database after budget became available = %+v", active)
+			}
+		})
 	}
 }
 
@@ -209,6 +455,9 @@ func TestMCPDatabaseManagerRejectsHealthReportThatIsNotQueryReady(t *testing.T) 
 	if current := manager.Current(); current.Name != "first" || current.Epoch != 1 {
 		t.Fatalf("failed switch changed active database: %+v", current)
 	}
+	if usage := manager.ResourceUsage(); usage.LoadedDatabaseCount != 1 || usage.RetiredDatabaseCount != 0 || usage.AggregateSQLiteCacheBudgetMB != 32 {
+		t.Fatalf("non-ready candidate leaked its pool reservation: %+v", usage)
+	}
 }
 
 func TestMCPDatabaseManagerReportsStableTargetErrors(t *testing.T) {
@@ -231,6 +480,9 @@ func TestMCPDatabaseManagerReportsStableTargetErrors(t *testing.T) {
 	}
 	if _, err := manager.Switch(context.Background(), "second"); toolErrorFrom(err).Code != ErrorDatabaseTargetUnavailable {
 		t.Fatalf("missing target error = %+v", err)
+	}
+	if usage := manager.ResourceUsage(); usage.LoadedDatabaseCount != 1 || usage.RetiredDatabaseCount != 0 || usage.AggregateSQLiteCacheBudgetMB != 32 {
+		t.Fatalf("missing target leaked its pool reservation: %+v", usage)
 	}
 	items := manager.List()
 	if len(items) != 2 || !items[0].Active || !items[0].Available || items[1].Available {
@@ -311,6 +563,59 @@ func TestMCPDatabaseManagerConcurrentAcquireAndSwitch(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestMCPDatabaseManagerSerializesConcurrentSwitchesWithinPoolBudget(t *testing.T) {
+	dir := t.TempDir()
+	firstPath := createReadyMCPDatabase(t, dir, "first.sqlite", 101)
+	secondPath := createReadyMCPDatabase(t, dir, "second.sqlite", 202)
+	thirdPath := createReadyMCPDatabase(t, dir, "third.sqlite", 303)
+	cfg := databaseManagerTestConfig(firstPath, secondPath)
+	cfg.MCPDatabases = append(cfg.MCPDatabases, indexer.MCPDatabaseTarget{Name: "third", Database: thirdPath})
+	cfg.MaxOpenDatabasePools = 2
+	cfg.MaxSQLiteCacheBudgetMB = 64
+	firstDB, err := indexer.OpenReadOnlyWithOptions(firstPath, cfg.SQLiteReadOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := newMCPDatabaseManager(cfg, firstPath, firstDB)
+	if err != nil {
+		_ = firstDB.Close()
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	names := []string{"first", "second", "third"}
+	start := make(chan struct{})
+	errs := make(chan error, 8)
+	var wg sync.WaitGroup
+	for worker := 0; worker < 8; worker++ {
+		worker := worker
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for attempt := 0; attempt < 6; attempt++ {
+				name := names[(worker+attempt)%len(names)]
+				if _, err := manager.Switch(context.Background(), name); err != nil {
+					errs <- fmt.Errorf("switch to %s: %w", name, err)
+					return
+				}
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	usage := manager.ResourceUsage()
+	if usage.LoadedDatabaseCount != 1 || usage.RetiredDatabaseCount != 0 || usage.AggregateSQLiteCacheBudgetMB != 32 {
+		t.Fatalf("concurrent switches leaked a live or opening pool: %+v", usage)
 	}
 }
 
@@ -429,7 +734,9 @@ func TestServeMCPHotSwitchesNamedDatabaseForSubsequentCalls(t *testing.T) {
 		t.Fatalf("health database metadata = %+v", healthResponse["database"])
 	}
 	health := healthResponse["structuredContent"].(map[string]any)
-	if health["scan_generation"].(float64) != 42 || health["active_database"].(map[string]any)["name"] != "second" || health["configured_database_count"].(float64) != 2 {
+	if health["scan_generation"].(float64) != 42 || health["active_database"].(map[string]any)["name"] != "second" || health["configured_database_count"].(float64) != 2 ||
+		health["loaded_database_count"].(float64) != 1 || health["retired_database_count"].(float64) != 0 || health["aggregate_sqlite_cache_budget_mb"].(float64) != 32 ||
+		health["max_open_database_pools"].(float64) != indexer.DefaultMaxOpenDatabasePools || health["max_sqlite_cache_budget_mb"].(float64) != indexer.DefaultMaxSQLiteCacheBudgetMB {
 		t.Fatalf("health after switch = %+v", health)
 	}
 }

@@ -397,6 +397,78 @@ rank = 3
 	}
 }
 
+func TestLIOSObjectCountCacheSeparatesSameSHADifferentRelPath(t *testing.T) {
+	dir := t.TempDir()
+	write := func(path, text string) {
+		t.Helper()
+		full := filepath.Join(dir, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(text), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// These upstream files deliberately have the same SHA. Directory
+	// semantics extract three law objects from the first and one trait object
+	// from the second.
+	upstream := "group = { law_one = { } law_two = { } }\n"
+	write("game/common/laws/shared.txt", upstream)
+	write("game/common/traits/shared.txt", upstream)
+	write("project/common/laws/shared.txt", "group = { law_one = { } }\n")
+	write("project/common/traits/shared.txt", "project_trait = { }\n")
+
+	cfgPath := filepath.Join(dir, "ck3-index.toml")
+	cfgText := `database = "cache/test.sqlite"
+[[source]]
+name = "project"
+path = "project"
+rank = 1
+[[source]]
+name = "game"
+path = "game"
+rank = 3
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgText), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Scan(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(filepath.Join(dir, "cache", "test.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	report, err := db.Validate(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lios []Diagnostic
+	for _, diagnostic := range report.Diagnostics {
+		if diagnostic.Code == "lios_partial_override" {
+			lios = append(lios, diagnostic)
+		}
+	}
+	if len(lios) != 1 || !strings.Contains(lios[0].Message, "common/laws/shared.txt") || strings.Contains(lios[0].Message, "common/traits/shared.txt") {
+		t.Fatalf("same-SHA path-specific LIOS diagnostics=%+v", lios)
+	}
+}
+
+func TestLIOSObjectCountCacheKeyNormalizesRelativePath(t *testing.T) {
+	sha := strings.Repeat("a", 64)
+	if got, want := liosObjectCountCacheKey(sha, `COMMON\TRAITS\Shared.TXT`), liosObjectCountCacheKey(sha, "common/traits/shared.txt"); got != want {
+		t.Fatalf("normalized cache keys differ: %q != %q", got, want)
+	}
+	if got, other := liosObjectCountCacheKey(sha, "common/traits/shared.txt"), liosObjectCountCacheKey(sha, "common/laws/shared.txt"); got == other {
+		t.Fatalf("different extraction paths shared cache key %q", got)
+	}
+}
+
 func TestScanHonorsModReplacePaths(t *testing.T) {
 	dir := t.TempDir()
 	write := func(path, text string) {

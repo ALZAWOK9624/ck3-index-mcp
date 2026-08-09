@@ -19,24 +19,28 @@ type LLMOptions struct {
 }
 
 type LLMResult struct {
-	Query            string                   `json:"query,omitempty"`
-	Intent           string                   `json:"intent"`
-	Summary          string                   `json:"summary"`
-	Counts           map[string]int           `json:"counts,omitempty"`
-	Hotspots         map[string][]LLMEvidence `json:"hotspots,omitempty"`
-	Guidance         []string                 `json:"guidance,omitempty"`
-	Evidence         []LLMEvidence            `json:"evidence,omitempty"`
-	NextQueries      []LLMNextQuery           `json:"next_queries,omitempty"`
-	Redacted         int                      `json:"redacted,omitempty"`
-	NeedsRefresh     bool                     `json:"needs_refresh,omitempty"`
-	NeedsScan        bool                     `json:"needs_scan,omitempty"`
-	Impact           map[string]int           `json:"impact,omitempty"`
-	MissingLocKeys   []string                 `json:"missing_loc_keys,omitempty"`
-	MissingResources []string                 `json:"missing_resources,omitempty"`
-	ScopeFixHints    []string                 `json:"scope_fix_hints,omitempty"`
-	Topology         *LLMTopology             `json:"topology,omitempty"`
-	Truncated        bool                     `json:"truncated,omitempty"`
-	Pagination       *LLMPagination           `json:"pagination,omitempty"`
+	Query                string                   `json:"query,omitempty"`
+	Intent               string                   `json:"intent"`
+	Summary              string                   `json:"summary"`
+	Counts               map[string]int           `json:"counts,omitempty"`
+	Hotspots             map[string][]LLMEvidence `json:"hotspots,omitempty"`
+	Guidance             []string                 `json:"guidance,omitempty"`
+	Evidence             []LLMEvidence            `json:"evidence,omitempty"`
+	Suggestions          []LLMEvidence            `json:"suggestions,omitempty"`
+	RecoveredQuery       string                   `json:"recovered_query,omitempty"`
+	RecoveryConfidence   string                   `json:"recovery_confidence,omitempty"`
+	NextQueries          []LLMNextQuery           `json:"next_queries,omitempty"`
+	Redacted             int                      `json:"redacted,omitempty"`
+	NeedsRefresh         bool                     `json:"needs_refresh,omitempty"`
+	NeedsScan            bool                     `json:"needs_scan,omitempty"`
+	Impact               map[string]int           `json:"impact,omitempty"`
+	MissingLocKeys       []string                 `json:"missing_loc_keys,omitempty"`
+	MissingResources     []string                 `json:"missing_resources,omitempty"`
+	ScopeFixHints        []string                 `json:"scope_fix_hints,omitempty"`
+	Topology             *LLMTopology             `json:"topology,omitempty"`
+	Truncated            bool                     `json:"truncated,omitempty"`
+	Pagination           *LLMPagination           `json:"pagination,omitempty"`
+	SuggestionPagination *LLMPagination           `json:"suggestion_pagination,omitempty"`
 }
 
 // LLMPagination describes a bounded evidence page. It deliberately reports
@@ -175,23 +179,34 @@ func paginateLLMResult(r LLMResult, page, limit int) LLMResult {
 	if limit <= 0 {
 		limit = defaultLLMLimit
 	}
+	items := &r.Evidence
+	suggestionsOnly := len(r.Evidence) == 0 && len(r.Suggestions) > 0
+	if suggestionsOnly {
+		items = &r.Suggestions
+	}
 	start := (page - 1) * limit
-	if start > len(r.Evidence) {
-		start = len(r.Evidence)
+	if start > len(*items) {
+		start = len(*items)
 	}
 	end := start + limit
-	if end > len(r.Evidence) {
-		end = len(r.Evidence)
+	if end > len(*items) {
+		end = len(*items)
 	}
-	hasMore := end < len(r.Evidence)
-	r.Evidence = r.Evidence[start:end]
+	hasMore := end < len(*items)
+	*items = (*items)[start:end]
 	// A later page has intentionally omitted earlier evidence even when it is
 	// the last page. Keep Truncated true for either direction of pagination so
 	// clients never mistake page N for the complete result set.
 	r.Truncated = r.Truncated || start > 0 || hasMore
-	r.Pagination = &LLMPagination{Page: page, Limit: limit, Returned: len(r.Evidence), HasMore: hasMore}
+	pagination := &LLMPagination{Page: page, Limit: limit, Returned: len(*items), HasMore: hasMore}
 	if hasMore {
-		r.Pagination.NextPage = page + 1
+		pagination.NextPage = page + 1
+	}
+	if suggestionsOnly {
+		r.SuggestionPagination = pagination
+		r.Pagination = nil
+	} else {
+		r.Pagination = pagination
 	}
 	return r
 }
@@ -219,6 +234,12 @@ func (r LLMResult) withPublicFilter(opts LLMOptions) LLMResult {
 	var redacted int
 	r.Evidence, redacted = filterEvidence(r.Evidence)
 	r.Redacted += redacted
+	r.Suggestions, redacted = filterEvidence(r.Suggestions)
+	r.Redacted += redacted
+	if len(r.Suggestions) == 0 && len(r.Evidence) == 0 {
+		r.RecoveredQuery = ""
+		r.RecoveryConfidence = ""
+	}
 	if r.Hotspots != nil {
 		filtered := make(map[string][]LLMEvidence, len(r.Hotspots))
 		for group, items := range r.Hotspots {

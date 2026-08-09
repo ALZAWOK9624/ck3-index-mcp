@@ -57,6 +57,9 @@ resource_only = true
 
 ```toml
 sqlite_read_connections = 8
+sqlite_cache_mb_per_connection = 64
+max_open_database_pools = 2
+max_sqlite_cache_budget_mb = 1024
 mcp_max_tasks = 12
 mcp_max_heavy_tasks = 2       # 共享高成本任务限额，必须小于总任务数和 SQLite 连接数
 mcp_max_raster_tasks = 1      # 同时受 mcp_max_heavy_tasks 约束
@@ -65,7 +68,9 @@ mcp_queue_timeout_seconds = 15
 mcp_execution_timeout_seconds = 900
 ```
 
-`ck3_health` 会报告活动/排队任务、各类上限、两段超时以及为普通查询保留的 SQLite 连接数。调用方仍应串行提交重型任务；服务端队列是故障边界，不是批处理接口。
+`ck3_health mode=quick` 和 `ck3_database` 的 `list/status` 属于普通读任务；`ck3_health mode=deep` 和数据库 `switch` 占用共享高成本任务限额，因此它们使用同一套并发、排队和执行超时诊断。`ck3_health` 会报告活动/排队任务、各类上限、两段超时以及为普通查询保留的 SQLite 连接数。调用方仍应串行提交重型任务；服务端队列是故障边界，不是批处理接口。
+
+旧配置若省略新的 `max_sqlite_cache_budget_mb`，默认仍为 1024 MB，但会自动提高到足以容纳其既有单个 SQLite 连接池，避免仅因升级而无法启动；要同时保留或切换到额外连接池，仍需显式配置足够的进程总预算。
 
 ### MCP 运行时数据库热切换
 
@@ -87,7 +92,7 @@ description = "当前工作区的上一份索引快照"
 database = "cache/project-previous.sqlite"
 ```
 
-切换无需重启 MCP，只影响切换完成后开始的调用。已经运行的查询继续持有原数据库租约，最后一个旧租约释放后旧连接池才会关闭；如果期间切回旧库，会安全复用仍存活的连接池。所有工具结果都带有 `database.name` 与 `database.epoch`，`ck3_health` 还报告当前库和已配置库数量，避免把两个索引的证据混在一起。
+切换无需重启 MCP，只影响切换完成后开始的调用。已经运行的查询继续持有原数据库租约，最后一个旧租约释放后旧连接池才会关闭；如果期间切回旧库，会安全复用仍存活的连接池。候选库在打开前同时受 `max_open_database_pools` 和 `max_sqlite_cache_budget_mb` 的进程总预算约束，旧 lease 持有的 retired 池仍计入预算，超限时保持当前活动库不变并返回可重试诊断。所有工具结果都带有 `database.name` 与 `database.epoch`；`ck3_health` 还报告 `loaded_database_count`、`retired_database_count`、`aggregate_sqlite_cache_budget_mb` 及两项上限，避免把两个索引的证据或内存预算混在一起。
 
 `role` 表示来源身份，`rank` 只表示覆盖优先级；配置必须恰好有一个 `project` 来源。`private = true` 的来源不会进入公开可见性结果。`resource_only = true` 只遍历 `gfx/`、`map_data/` 和 `sound/`，适合把 CK3 安装目录中的 `game`、`clausewitz`、`jomini` 资源补入解析，而不重复索引其脚本定义；它不能用于 `project` 来源。
 
@@ -117,6 +122,8 @@ base 必须用一份**工程来源指向空目录**、其余来源与本配置�
 `ck3-index` 的职责是把 CK3 文本、索引快照和有限运行时日志组织成可追溯证据，而不是替调用方生成或修改 Mod 内容。来源层由 `role`、`private` 和覆盖 `rank` 三项独立描述；扫描将这份策略写进可重建 SQLite 缓存，MCP 再以相同策略过滤公开结果。
 
 读取工具只消费已发布的索引代次。`ck3_refresh status` 可在未建索引时安全调用，`files` 只对明确列出的工程相对路径做事务性增量更新；任何会改变全局解析语义、暴露低优先级文件或依赖完整地图重建的情况都会返回可恢复的完整扫描要求。`full` 会先在旁路 SQLite 缓存完成新代次，再用一次事务发布到当前缓存；扫描异常或取消只丢弃旁路结果，旧的 ready generation 会继续可读，绝不静默退化。
+
+`ck3_search` 只会把机械等价的大小写、分隔符或类型前缀修正提升为高置信度证据；仅共享最长 token 前缀的近似项放在 `suggestions`，并带 `recovered_query`、`recovery_confidence=low` 与独立的 `suggestion_pagination`。调用方不得把这些候选当作证据或自动执行后续动作。
 
 第一次建立索引：
 
@@ -187,8 +194,8 @@ ck3-index 仅公开一套规范 MCP 工具；细分能力通过受限 operation 
 | `ck3_save` | 读取单个 CK3 存档文件。card 报告存档身份：版本、游戏内日期、玩家角色、主头衔、家族、政体与玩家人数。compatibility 报告存档声明的 mod、DLC 与游戏规则，供调用方与自己的配置比对。audit 流式扫描 gamestate，列出存档携带但已索引来源不再定义的 ID。character 提取单个角色的属性、特质、家族与头衔。工具只陈述事实，不判断存档能否载入，也不生成文本。 |
 | `ck3_refresh` | 在 Mod 源文件变动后刷新已配置工程层的索引。status 只报告就绪状态；files 只增量更新显式给出的相对路径；full 通过旁路扫描和事务发布完整重建，不会悄悄降级。 |
 | `ck3_script_reference` | 查询一项本地引擎或脚本规则事实。通过 kind 选择作用域、数据类型、值形状、define、on_action、迭代器、示例或修正值。 |
-| `ck3_health` | 检查数据库、结构、索引与 MCP 注册是否可信，并报告 SQLite 读取连接、缓存预算、当前重型/栅格任务和估算任务内存。配置与来源根可辨识，数据库绝对路径保持隐藏。 |
-| `ck3_database` | 列出管理员配置的 SQLite 索引、报告当前数据库，或在不重启 MCP 的情况下按名称热切换后续调用。运行中的调用继续持有原数据库租约，调用方不能提交文件路径。 |
+| `ck3_health` | 检查数据库、结构、索引与 MCP 注册是否可信，并报告 SQLite 读取连接、已加载/退役连接池、进程总缓存预算及限额、当前重型/栅格任务和估算任务内存。配置与来源根可辨识，数据库绝对路径保持隐藏。 |
+| `ck3_database` | 列出管理员配置的 SQLite 索引、报告当前数据库，或在不重启 MCP 的情况下按名称热切换后续调用。运行中的调用继续持有原数据库租约及连接池预算；候选库超出进程总预算时保持当前数据库不变。调用方不能提交文件路径。 |
 | `ck3_package` | 严格验证模型生成的 CK3 文本与二进制文件，统一生成双描述文件，并在受限临时区创建可直接手动安装的 ZIP；不会安装或修改真实 Mod 目录。 |
 | `ck3_gui` | 通过现有索引检查生效中的 CK3 GUI 文件，解析跨文件继承、模板和区块覆盖，并输出有界 PNG 或自包含 HTML。检查器支持控件树、裁剪滚动视口、网格布局、英中本地化切换、已索引动态纹理样例与受控行为模拟；model_samples 可从唯一 item 模板实例化有界调用方列表行，绝不执行任意 Jomini 代码。 |
 

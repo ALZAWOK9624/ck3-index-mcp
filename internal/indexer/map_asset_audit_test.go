@@ -70,6 +70,35 @@ func TestAuditMapAssetsOperationAndUnavailableWorkspace(t *testing.T) {
 	}
 }
 
+func TestAuditMapAssetsReportsDuplicateDefinitionIDAndRGB(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	mapData := filepath.Join(project, "map_data")
+	if err := os.MkdirAll(mapData, 0755); err != nil {
+		t.Fatal(err)
+	}
+	definition := "1;1;2;3;one;x\n1;4;5;6;duplicate-id;x\n2;1;2;3;duplicate-rgb;x\n"
+	if err := os.WriteFile(filepath.Join(mapData, "definition.csv"), []byte(definition), 0644); err != nil {
+		t.Fatal(err)
+	}
+	provinceImage := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	provinceImage.Set(0, 0, color.RGBA{R: 1, G: 2, B: 3, A: 255})
+	writePNGForAuditTest(t, filepath.Join(mapData, "provinces.png"), provinceImage)
+
+	result, err := AuditMapAssets(context.Background(), Config{Sources: []Source{{Name: "project", Path: project, Rank: 1}}}, "provinces", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idFinding := mapAuditFinding(result, "map_definition_duplicate_ids")
+	colorFinding := mapAuditFinding(result, "map_definition_duplicate_colors")
+	if idFinding == nil || idFinding.Count != 1 || len(idFinding.Samples) != 1 {
+		t.Fatalf("duplicate ID finding=%+v", idFinding)
+	}
+	if colorFinding == nil || colorFinding.Count != 1 || len(colorFinding.Samples) != 1 {
+		t.Fatalf("duplicate RGB finding=%+v", colorFinding)
+	}
+}
+
 func writePNGForAuditTest(t *testing.T, path string, img image.Image) {
 	t.Helper()
 	f, err := os.Create(path)
@@ -86,10 +115,14 @@ func writePNGForAuditTest(t *testing.T, path string, img image.Image) {
 }
 
 func mapAuditHasCode(result MapAssetAuditResult, code string) bool {
+	return mapAuditFinding(result, code) != nil
+}
+
+func mapAuditFinding(result MapAssetAuditResult, code string) *MapAssetAuditFinding {
 	for _, finding := range result.Findings {
 		if finding.Code == code {
-			return true
+			return &finding
 		}
 	}
-	return false
+	return nil
 }

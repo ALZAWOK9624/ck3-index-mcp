@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -45,6 +46,20 @@ type mcpDatabaseController interface {
 	List() []mcpDatabaseSummary
 	Current() mcpDatabaseIdentity
 	Switch(context.Context, string) (mcpDatabaseSwitchResult, error)
+}
+
+type mcpDatabaseResourceReporter interface {
+	ResourceUsage() mcpDatabaseResourceUsage
+}
+
+type mcpDatabaseResourceUsage struct {
+	Active                       mcpDatabaseIdentity
+	ConfiguredDatabaseCount      int
+	LoadedDatabaseCount          int
+	RetiredDatabaseCount         int
+	AggregateSQLiteCacheBudgetMB int
+	MaxOpenDatabasePools         int
+	MaxSQLiteCacheBudgetMB       int
 }
 
 type mcpDatabaseContext struct {
@@ -92,14 +107,22 @@ func (lease mcpDatabaseLease) Release() {
 }
 
 type mcpDatabaseManager struct {
-	mu         sync.Mutex
-	switchGate chan struct{}
-	specs      map[string]mcpDatabaseSpec
-	order      []string
-	loaded     map[string]*managedMCPDatabase
-	active     *managedMCPDatabase
-	epoch      uint64
-	closed     bool
+	mu                         sync.Mutex
+	switchGate                 chan struct{}
+	specs                      map[string]mcpDatabaseSpec
+	order                      []string
+	loaded                     map[string]*managedMCPDatabase
+	active                     *managedMCPDatabase
+	epoch                      uint64
+	closed                     bool
+	openingDatabaseCount       int
+	openingSQLiteCacheBudgetMB int
+	maxOpenDatabasePools       int
+	maxSQLiteCacheBudgetMB     int
+	// beforeSwitchCommit is a deterministic test seam for the narrow boundary
+	// between successful candidate validation and the atomic activation lock.
+	// Production managers leave it nil.
+	beforeSwitchCommit func()
 }
 
 func newMCPDatabaseManager(cfg indexer.Config, dbPath string, db *indexer.DB) (*mcpDatabaseManager, error) {
@@ -109,18 +132,30 @@ func newMCPDatabaseManager(cfg indexer.Config, dbPath string, db *indexer.DB) (*
 	}
 	primary := specs[order[0]]
 	active := &managedMCPDatabase{spec: primary, db: db}
+	initialCacheBudget := mcpDatabaseCacheBudget(primary)
+	if primary.config.MaxOpenDatabasePools < 1 || initialCacheBudget > primary.config.MaxSQLiteCacheBudgetMB {
+		return nil, fmt.Errorf("active MCP database exceeds the configured process SQLite pool budget")
+	}
 	return &mcpDatabaseManager{
-		switchGate: make(chan struct{}, 1),
-		specs:      specs,
-		order:      order,
-		loaded:     map[string]*managedMCPDatabase{primary.name: active},
-		active:     active,
-		epoch:      1,
+		switchGate:             make(chan struct{}, 1),
+		specs:                  specs,
+		order:                  order,
+		loaded:                 map[string]*managedMCPDatabase{primary.name: active},
+		active:                 active,
+		epoch:                  1,
+		maxOpenDatabasePools:   primary.config.MaxOpenDatabasePools,
+		maxSQLiteCacheBudgetMB: primary.config.MaxSQLiteCacheBudgetMB,
 	}, nil
 }
 
 func resolveMCPDatabaseSpecs(root indexer.Config, dbPath string) (map[string]mcpDatabaseSpec, []string, error) {
 	root = effectiveMCPDatabaseConfig(root)
+	if len(root.MCPDatabases) > 0 && root.MaxOpenDatabasePools < 2 {
+		return nil, nil, fmt.Errorf("max_open_database_pools must be at least 2 when MCP database targets are configured")
+	}
+	if !mcpDatabaseFitsCacheBudget(root, root.MaxSQLiteCacheBudgetMB) {
+		return nil, nil, fmt.Errorf("the primary MCP database pool exceeds max_sqlite_cache_budget_mb")
+	}
 	primaryName := strings.ToLower(strings.TrimSpace(root.MCPDatabaseName))
 	if primaryName == "" {
 		primaryName = "default"
@@ -158,6 +193,9 @@ func resolveMCPDatabaseSpecs(root indexer.Config, dbPath string) (map[string]mcp
 		targetConfig.MCPDatabaseDescription = target.Description
 		targetConfig.MCPDatabases = nil
 		applyMCPServiceLimits(&targetConfig, root)
+		if !mcpDatabaseFitsCacheBudget(targetConfig, root.MaxSQLiteCacheBudgetMB) {
+			return nil, nil, fmt.Errorf("MCP database target %q requires more SQLite page cache than max_sqlite_cache_budget_mb", target.Name)
+		}
 		if targetConfig.SQLiteReadConnections <= root.MCPMaxHeavyTasks {
 			return nil, nil, fmt.Errorf("MCP database target %q has %d SQLite connections but the service allows %d expensive tasks; at least one ordinary-query connection must remain", target.Name, targetConfig.SQLiteReadConnections, root.MCPMaxHeavyTasks)
 		}
@@ -184,6 +222,12 @@ func effectiveMCPDatabaseConfig(cfg indexer.Config) indexer.Config {
 	cfg.SQLiteReadConnections = options.Connections
 	cfg.SQLiteCacheMBPerConnection = options.CacheMBPerConnection
 	cfg.SQLiteMMapLimitMB = options.MMapLimitMB
+	if cfg.MaxOpenDatabasePools <= 0 {
+		cfg.MaxOpenDatabasePools = indexer.DefaultMaxOpenDatabasePools
+	}
+	if cfg.MaxSQLiteCacheBudgetMB <= 0 {
+		cfg.MaxSQLiteCacheBudgetMB = indexer.DefaultMaxSQLiteCacheBudgetMB
+	}
 	limiter := newMCPTaskLimiter(cfg)
 	cfg.MCPMaxTasks, cfg.MCPMaxHeavyTasks, cfg.MCPMaxRasterTasks = limiter.limits()
 	cfg.MCPMaxQueuedTasks = limiter.queueLimit()
@@ -193,6 +237,8 @@ func effectiveMCPDatabaseConfig(cfg indexer.Config) indexer.Config {
 }
 
 func applyMCPServiceLimits(target *indexer.Config, service indexer.Config) {
+	target.MaxOpenDatabasePools = service.MaxOpenDatabasePools
+	target.MaxSQLiteCacheBudgetMB = service.MaxSQLiteCacheBudgetMB
 	target.MCPMaxTasks = service.MCPMaxTasks
 	target.MCPMaxHeavyTasks = service.MCPMaxHeavyTasks
 	target.MCPMaxRasterTasks = service.MCPMaxRasterTasks
@@ -201,8 +247,22 @@ func applyMCPServiceLimits(target *indexer.Config, service indexer.Config) {
 	target.MCPExecutionTimeoutSeconds = service.MCPExecutionTimeoutSeconds
 }
 
+func mcpDatabaseFitsCacheBudget(cfg indexer.Config, budgetMB int) bool {
+	options := cfg.SQLiteReadOptions()
+	return budgetMB > 0 && options.CacheMBPerConnection > 0 && options.Connections <= budgetMB/options.CacheMBPerConnection
+}
+
+func mcpDatabaseCacheBudget(spec mcpDatabaseSpec) int {
+	options := spec.config.SQLiteReadOptions()
+	return options.Connections * options.CacheMBPerConnection
+}
+
 func canonicalMCPDatabasePath(path string) string {
-	return strings.ToLower(filepath.Clean(path))
+	clean := filepath.Clean(path)
+	if runtime.GOOS == "windows" {
+		return strings.ToLower(clean)
+	}
+	return clean
 }
 
 func redactedMCPPath(path string) string {
@@ -232,6 +292,30 @@ func (manager *mcpDatabaseManager) Current() mcpDatabaseIdentity {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	return manager.identityLocked(manager.active)
+}
+
+func (manager *mcpDatabaseManager) ResourceUsage() mcpDatabaseResourceUsage {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	return manager.resourceUsageLocked()
+}
+
+func (manager *mcpDatabaseManager) resourceUsageLocked() mcpDatabaseResourceUsage {
+	usage := mcpDatabaseResourceUsage{
+		Active:                       manager.identityLocked(manager.active),
+		ConfiguredDatabaseCount:      len(manager.order),
+		LoadedDatabaseCount:          len(manager.loaded) + manager.openingDatabaseCount,
+		AggregateSQLiteCacheBudgetMB: manager.openingSQLiteCacheBudgetMB,
+		MaxOpenDatabasePools:         manager.maxOpenDatabasePools,
+		MaxSQLiteCacheBudgetMB:       manager.maxSQLiteCacheBudgetMB,
+	}
+	for _, database := range manager.loaded {
+		usage.AggregateSQLiteCacheBudgetMB += mcpDatabaseCacheBudget(database.spec)
+		if database.retired {
+			usage.RetiredDatabaseCount++
+		}
+	}
+	return usage
 }
 
 func (manager *mcpDatabaseManager) List() []mcpDatabaseSummary {
@@ -275,9 +359,13 @@ func (manager *mcpDatabaseManager) Acquire() (mcpDatabaseLease, error) {
 	}
 	database := manager.active
 	database.refs++
+	var releaseOnce sync.Once
 	return mcpDatabaseLease{
 		DB: database.db, Config: database.spec.config, Identity: manager.identityLocked(database),
-		release: func() { manager.release(database) },
+		// A lease is a value and can be copied by callers. Keep the once state
+		// inside the shared closure so every copy releases the database ref at
+		// most once in total, rather than decrementing another in-flight lease.
+		release: func() { releaseOnce.Do(func() { manager.release(database) }) },
 	}, nil
 }
 
@@ -327,11 +415,38 @@ func (manager *mcpDatabaseManager) Switch(ctx context.Context, rawName string) (
 			Guidance: []string{"The requested database was already active; subsequent calls continue to use it."},
 		}, nil
 	}
+	beforeCommit := manager.beforeSwitchCommit
 	candidate := manager.loaded[name]
 	if candidate != nil {
 		candidate.refs++ // Pin a retired database while it is revalidated.
 	}
+	reservedCacheBudgetMB := 0
+	if candidate == nil {
+		reservedCacheBudgetMB = mcpDatabaseCacheBudget(spec)
+		usage := manager.resourceUsageLocked()
+		projectedPools := usage.LoadedDatabaseCount + 1
+		projectedCacheBudgetMB := uint64(usage.AggregateSQLiteCacheBudgetMB) + uint64(reservedCacheBudgetMB)
+		cacheBudgetExceeded := usage.AggregateSQLiteCacheBudgetMB > manager.maxSQLiteCacheBudgetMB ||
+			reservedCacheBudgetMB > manager.maxSQLiteCacheBudgetMB-usage.AggregateSQLiteCacheBudgetMB
+		if projectedPools > manager.maxOpenDatabasePools || cacheBudgetExceeded {
+			manager.mu.Unlock()
+			return mcpDatabaseSwitchResult{}, databaseResourceBudgetExceeded(name, usage, projectedPools, projectedCacheBudgetMB)
+		}
+		manager.openingDatabaseCount++
+		manager.openingSQLiteCacheBudgetMB += reservedCacheBudgetMB
+	}
 	manager.mu.Unlock()
+	reservationActive := reservedCacheBudgetMB > 0
+	releaseReservation := func() {
+		if !reservationActive {
+			return
+		}
+		manager.mu.Lock()
+		manager.releaseOpeningReservationLocked(reservedCacheBudgetMB)
+		manager.mu.Unlock()
+		reservationActive = false
+	}
+	defer releaseReservation()
 
 	newlyOpened := false
 	if candidate == nil {
@@ -367,9 +482,21 @@ func (manager *mcpDatabaseManager) Switch(ctx context.Context, rawName string) (
 		}
 		return mcpDatabaseSwitchResult{}, err
 	}
+	if beforeCommit != nil {
+		beforeCommit()
+	}
 
 	var closeOld *indexer.DB
 	manager.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		manager.mu.Unlock()
+		if newlyOpened {
+			_ = candidate.db.Close()
+		} else {
+			manager.release(candidate)
+		}
+		return mcpDatabaseSwitchResult{}, err
+	}
 	if manager.closed {
 		manager.mu.Unlock()
 		if newlyOpened {
@@ -382,6 +509,10 @@ func (manager *mcpDatabaseManager) Switch(ctx context.Context, rawName string) (
 	old := manager.active
 	old.retired = true
 	candidate.retired = false
+	if reservationActive {
+		manager.releaseOpeningReservationLocked(reservedCacheBudgetMB)
+		reservationActive = false
+	}
 	if !newlyOpened && candidate.refs > 0 {
 		candidate.refs-- // Release the switch pin after reactivation.
 	}
@@ -405,6 +536,17 @@ func (manager *mcpDatabaseManager) Switch(ctx context.Context, rawName string) (
 		DatabaseFingerprint: health.DatabaseFingerprint,
 		Guidance:            []string{"The switch is complete. Calls already running remain bound to their original database; subsequent calls use the active database named here."},
 	}, nil
+}
+
+func (manager *mcpDatabaseManager) releaseOpeningReservationLocked(cacheBudgetMB int) {
+	if manager.openingDatabaseCount > 0 {
+		manager.openingDatabaseCount--
+	}
+	if cacheBudgetMB >= manager.openingSQLiteCacheBudgetMB {
+		manager.openingSQLiteCacheBudgetMB = 0
+	} else {
+		manager.openingSQLiteCacheBudgetMB -= cacheBudgetMB
+	}
 }
 
 func openManagedMCPDatabase(ctx context.Context, spec mcpDatabaseSpec) (*managedMCPDatabase, error) {
@@ -431,6 +573,22 @@ func databaseTargetUnavailable(name, reason string) error {
 	return newToolError(ErrorDatabaseTargetUnavailable, "database", "the configured MCP database could not be opened safely", true,
 		map[string]any{"name": name, "reason": reason},
 		map[string]any{"guidance": "Check the administrator-configured database or config file, rebuild that index if needed, then retry by name."})
+}
+
+func databaseResourceBudgetExceeded(name string, usage mcpDatabaseResourceUsage, projectedPools int, projectedCacheBudgetMB uint64) error {
+	return newToolError(ErrorServerBusy, "database",
+		"opening the configured MCP database would exceed the process SQLite pool budget", true,
+		map[string]any{
+			"name": name, "reason": "database_pool_budget_exceeded",
+			"loaded_database_count":            usage.LoadedDatabaseCount,
+			"retired_database_count":           usage.RetiredDatabaseCount,
+			"aggregate_sqlite_cache_budget_mb": usage.AggregateSQLiteCacheBudgetMB,
+			"projected_loaded_database_count":  projectedPools,
+			"projected_sqlite_cache_budget_mb": projectedCacheBudgetMB,
+			"max_open_database_pools":          usage.MaxOpenDatabasePools,
+			"max_sqlite_cache_budget_mb":       usage.MaxSQLiteCacheBudgetMB,
+		},
+		map[string]any{"guidance": "Wait for calls holding retired database leases to finish, or have the administrator raise both process limits after reviewing memory capacity."})
 }
 
 func databaseTargetHealthUnavailable(name string, health indexer.HealthReport) error {

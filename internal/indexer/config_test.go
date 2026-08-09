@@ -58,6 +58,7 @@ resource_only = true
 		t.Fatalf("GIS cache root = %q, want %q", cfg.GISCacheRoot, wantGISCache)
 	}
 	if cfg.SQLiteReadConnections != DefaultSQLiteReadConnections || cfg.SQLiteCacheMBPerConnection != DefaultSQLiteCacheMBPerConnection || cfg.SQLiteMMapLimitMB != DefaultSQLiteMMapLimitMB ||
+		cfg.MaxOpenDatabasePools != DefaultMaxOpenDatabasePools || cfg.MaxSQLiteCacheBudgetMB != DefaultMaxSQLiteCacheBudgetMB ||
 		cfg.MCPMaxTasks != DefaultMCPMaxTasks || cfg.MCPMaxHeavyTasks != DefaultMCPMaxHeavyTasks || cfg.MCPMaxRasterTasks != DefaultMCPMaxRasterTasks ||
 		cfg.MCPMaxQueuedTasks != DefaultMCPMaxQueuedTasks || cfg.MCPQueueTimeoutSeconds != DefaultMCPQueueTimeoutSeconds || cfg.MCPExecutionTimeoutSeconds != DefaultMCPExecutionTimeoutSeconds {
 		t.Fatalf("resource defaults changed: %+v", cfg)
@@ -175,6 +176,8 @@ func TestLoadConfigAcceptsLowMemoryResourceLimits(t *testing.T) {
 sqlite_read_connections = 2
 sqlite_cache_mb_per_connection = 16
 sqlite_mmap_limit_mb = 256
+max_open_database_pools = 2
+max_sqlite_cache_budget_mb = 64
 mcp_max_tasks = 4
 mcp_max_heavy_tasks = 1
 mcp_max_raster_tasks = 1
@@ -194,12 +197,38 @@ role = "project"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.SQLiteReadConnections != 2 || cfg.SQLiteCacheMBPerConnection != 16 || cfg.SQLiteMMapLimitMB != 256 || cfg.MCPMaxTasks != 4 || cfg.MCPMaxHeavyTasks != 1 || cfg.MCPMaxRasterTasks != 1 || cfg.MCPMaxQueuedTasks != 8 || cfg.MCPQueueTimeoutSeconds != 3 || cfg.MCPExecutionTimeoutSeconds != 60 {
+	if cfg.SQLiteReadConnections != 2 || cfg.SQLiteCacheMBPerConnection != 16 || cfg.SQLiteMMapLimitMB != 256 || cfg.MaxOpenDatabasePools != 2 || cfg.MaxSQLiteCacheBudgetMB != 64 || cfg.MCPMaxTasks != 4 || cfg.MCPMaxHeavyTasks != 1 || cfg.MCPMaxRasterTasks != 1 || cfg.MCPMaxQueuedTasks != 8 || cfg.MCPQueueTimeoutSeconds != 3 || cfg.MCPExecutionTimeoutSeconds != 60 {
 		t.Fatalf("resource limits=%+v", cfg)
 	}
 	options := cfg.SQLiteReadOptions()
 	if options.Connections != 2 || options.CacheMBPerConnection != 16 || options.MMapLimitMB != 256 {
 		t.Fatalf("SQLite options=%+v", options)
+	}
+}
+
+func TestLoadConfigKeepsLegacyLargeSQLitePoolWithoutNewAggregateBudget(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "ck3-index.toml")
+	configText := `
+database = "cache/index.sqlite"
+sqlite_read_connections = 16
+sqlite_cache_mb_per_connection = 128
+
+[[source]]
+name = "project"
+path = "project"
+rank = 100
+role = "project"
+`
+	if err := os.WriteFile(configPath, []byte(configText), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("legacy large SQLite pool became invalid after aggregate budgets were added: %v", err)
+	}
+	if cfg.MaxSQLiteCacheBudgetMB != 16*128 {
+		t.Fatalf("implicit aggregate cache budget = %d, want one legacy pool (%d)", cfg.MaxSQLiteCacheBudgetMB, 16*128)
 	}
 }
 
@@ -228,6 +257,20 @@ func TestLoadConfigRejectsInconsistentResourceLimits(t *testing.T) {
 			name:   "queue timeout is positive",
 			limits: "mcp_queue_timeout_seconds = -1\n",
 			want:   "mcp_queue_timeout_seconds must be a positive integer",
+		},
+		{
+			name:   "aggregate cache covers one pool",
+			limits: "sqlite_read_connections = 4\nsqlite_cache_mb_per_connection = 16\nmax_sqlite_cache_budget_mb = 32\n",
+			want:   "max_sqlite_cache_budget_mb must cover",
+		},
+		{
+			name: "hot switch needs candidate pool",
+			limits: `max_open_database_pools = 1
+[[mcp_database]]
+name = "other"
+database = "other.sqlite"
+`,
+			want: "max_open_database_pools must be at least 2",
 		},
 	}
 	for _, tt := range tests {

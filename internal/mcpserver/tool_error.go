@@ -24,8 +24,9 @@ const (
 	ErrorIndexStale              = "INDEX_STALE"
 	ErrorIndexRefreshRequired    = "INDEX_REFRESH_REQUIRED"
 	ErrorFullScanRequired        = "FULL_SCAN_REQUIRED"
-	// Truncation is not an error: an oversize result is trimmed and returned
-	// with truncated=true, so no code is emitted for it.
+	// Relevance-ordered evidence can be trimmed and returned with
+	// truncated=true. Complete contracts, binary payloads, and results that
+	// cannot be reduced safely use this stable error instead.
 	ErrorResponseTooLarge           = "RESPONSE_TOO_LARGE"
 	ErrorMapDatabaseUnavailable     = "MAP_DATABASE_UNAVAILABLE"
 	ErrorGISUnavailable             = "GIS_UNAVAILABLE"

@@ -71,7 +71,7 @@ func TestHealthReportsSQLiteReadMemoryBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.SQLiteReadConnections != maxReadConnections || report.SQLiteCachePerConnMB != readCacheMiBPerConnection || report.SQLiteCacheBudgetMB != estimatedSQLiteReadCacheBudgetMiB || report.SQLiteMMapLimitMB != readMMapLimitMiB {
+	if report.SQLiteReadConnections != maxReadConnections || report.SQLiteCachePerConnMB != readCacheMiBPerConnection || report.SQLiteCacheBudgetMB != estimatedSQLiteReadCacheBudgetMiB || report.SQLiteMMapLimitMB != readMMapLimitMiB || report.LoadedDatabaseCount != 1 || report.RetiredDatabaseCount != 0 || report.AggregateSQLiteCacheBudgetMB != estimatedSQLiteReadCacheBudgetMiB {
 		t.Fatalf("health SQLite memory budget is incomplete: %+v", report)
 	}
 }
@@ -89,7 +89,7 @@ func TestHealthReportsConfiguredSQLiteReadMemoryBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.SQLiteReadConnections != 2 || report.SQLiteCachePerConnMB != 16 || report.SQLiteCacheBudgetMB != 32 || report.SQLiteMMapLimitMB != 256 {
+	if report.SQLiteReadConnections != 2 || report.SQLiteCachePerConnMB != 16 || report.SQLiteCacheBudgetMB != 32 || report.SQLiteMMapLimitMB != 256 || report.LoadedDatabaseCount != 1 || report.RetiredDatabaseCount != 0 || report.AggregateSQLiteCacheBudgetMB != 32 {
 		t.Fatalf("configured health SQLite memory budget is incomplete: %+v", report)
 	}
 	if stats := db.sql.Stats(); stats.MaxOpenConnections != 2 {

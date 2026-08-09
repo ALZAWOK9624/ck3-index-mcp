@@ -15,6 +15,10 @@ import (
 // that pushes a small VPS into swap.
 type provinceLabel = int32
 
+// Keep the parser's public ceiling mechanically tied to the raster storage
+// type. Raising MaxProvinceID without widening provinceLabel must not compile.
+const _ provinceLabel = MaxProvinceID
+
 // packedRowReader fills one row with 24-bit RGB keys. Reading through
 // image.Image.At allocates a color.Color and returns four 16-bit components
 // per pixel, all to recover three bytes that are already contiguous in memory.

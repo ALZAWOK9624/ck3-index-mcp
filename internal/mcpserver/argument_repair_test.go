@@ -34,7 +34,7 @@ func TestRepairToolArgumentsClampsAdvisoryBounds(t *testing.T) {
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			repaired, notices := repairToolArguments(definition.InputSchema, json.RawMessage(testCase.in))
+			repaired, notices := repairToolArguments(definition.Name, definition.InputSchema, json.RawMessage(testCase.in))
 			if !strings.Contains(string(repaired), testCase.wantJSON) {
 				t.Fatalf("repaired arguments %s do not contain %s", repaired, testCase.wantJSON)
 			}
@@ -53,6 +53,10 @@ func TestRepairToolArgumentsClampsAdvisoryBounds(t *testing.T) {
 func TestClampedArgumentIsReportedOnTheResult(t *testing.T) {
 	db, cfg := newSearchFixture(t)
 	defer db.Close()
+	definition, ok := findCanonicalTool("ck3_search")
+	if !ok {
+		t.Fatal("ck3_search is not registered")
+	}
 
 	result := callToolForTest(t, db, cfg, "ck3_search", map[string]any{
 		"query": "nearmiss_target",
@@ -78,13 +82,14 @@ func TestClampedArgumentIsReportedOnTheResult(t *testing.T) {
 	if !strings.Contains(items[0]["text"].(string), "argument_notices") {
 		t.Fatalf("text content lost the argument notice: %v", items[0]["text"])
 	}
+	assertDecodedValueMatchesSchema(t, "clamped ck3_search result", body, definition.OutputSchema)
 }
 
 // Out-of-range values on fields that are not advisory knobs still fail: page 99
 // clamped to the last page would answer a different question than the one asked.
 func TestRepairToolArgumentsLeavesNonAdvisoryBoundsAlone(t *testing.T) {
 	definition, _ := findCanonicalTool("ck3_search")
-	repaired, notices := repairToolArguments(definition.InputSchema, json.RawMessage(`{"query":"x","page":99}`))
+	repaired, notices := repairToolArguments(definition.Name, definition.InputSchema, json.RawMessage(`{"query":"x","page":99}`))
 	if len(notices) != 0 {
 		t.Fatalf("page was silently repaired: %v", notices)
 	}
@@ -97,7 +102,7 @@ func TestRepairToolArgumentsLeavesNonAdvisoryBoundsAlone(t *testing.T) {
 // validator with its original value so the caller learns the real problem.
 func TestRepairToolArgumentsIgnoresNonNumericKnobs(t *testing.T) {
 	definition, _ := findCanonicalTool("ck3_search")
-	repaired, notices := repairToolArguments(definition.InputSchema, json.RawMessage(`{"query":"x","limit":"many"}`))
+	repaired, notices := repairToolArguments(definition.Name, definition.InputSchema, json.RawMessage(`{"query":"x","limit":"many"}`))
 	if len(notices) != 0 {
 		t.Fatalf("a string limit was treated as a clamp: %v", notices)
 	}
@@ -115,7 +120,7 @@ func TestRepairToolArgumentsAppliesObservedAliases(t *testing.T) {
 		t.Fatal("map_province_info is not registered")
 	}
 	for _, alias := range []string{"province_id", "subject"} {
-		repaired, notices := repairToolArguments(definition.InputSchema, json.RawMessage(`{"`+alias+`":"3602","year":1254}`))
+		repaired, notices := repairToolArguments(definition.Name, definition.InputSchema, json.RawMessage(`{"`+alias+`":"3602","year":1254}`))
 		if !strings.Contains(string(repaired), `"id":"3602"`) {
 			t.Fatalf("%s was not read as id: %s", alias, repaired)
 		}
@@ -128,9 +133,69 @@ func TestRepairToolArgumentsAppliesObservedAliases(t *testing.T) {
 // An alias must never overwrite a value the caller stated explicitly.
 func TestRepairToolArgumentsKeepsExplicitCanonicalField(t *testing.T) {
 	definition, _ := findCanonicalTool("map_province_info")
-	repaired, _ := repairToolArguments(definition.InputSchema, json.RawMessage(`{"id":"111","province_id":"222","year":1254}`))
+	repaired, _ := repairToolArguments(definition.Name, definition.InputSchema, json.RawMessage(`{"id":"111","province_id":"222","year":1254}`))
 	if !strings.Contains(string(repaired), `"id":"111"`) {
 		t.Fatalf("explicit id was overwritten by the alias: %s", repaired)
+	}
+}
+
+func TestRepairToolArgumentsDoesNotApplyProvinceAliasesToUnrelatedIDs(t *testing.T) {
+	for _, tool := range []string{"ck3_inspect", "ck3_script_reference", "map_artifact"} {
+		t.Run(tool, func(t *testing.T) {
+			definition, ok := findCanonicalTool(tool)
+			if !ok {
+				t.Fatalf("%s is not registered", tool)
+			}
+			for _, alias := range []string{"province_id", "subject"} {
+				raw := json.RawMessage(`{"` + alias + `":"3602"}`)
+				repaired, notices := repairToolArguments(definition.Name, definition.InputSchema, raw)
+				if string(repaired) != string(raw) || len(notices) != 0 {
+					t.Fatalf("%s rewrote unrelated %s: repaired=%s notices=%v", tool, alias, repaired, notices)
+				}
+				if err := validateArguments(repaired, definition.InputSchema, definition.CompatibilityProperties); err == nil {
+					t.Fatalf("%s accepted unrelated alias %s", tool, alias)
+				}
+			}
+		})
+	}
+}
+
+func TestRepairToolArgumentsScopesHistoryYearToMapTools(t *testing.T) {
+	mapDefinition, _ := findCanonicalTool("map_neighbors")
+	repaired, notices := repairToolArguments(mapDefinition.Name, mapDefinition.InputSchema, json.RawMessage(`{"id":"3602","history_year":1254}`))
+	if !strings.Contains(string(repaired), `"year":1254`) || len(notices) != 1 {
+		t.Fatalf("map history_year was not repaired: %s notices=%v", repaired, notices)
+	}
+
+	searchDefinition, _ := findCanonicalTool("ck3_search")
+	raw := json.RawMessage(`{"query":"year","history_year":1254}`)
+	repaired, notices = repairToolArguments(searchDefinition.Name, searchDefinition.InputSchema, raw)
+	if string(repaired) != string(raw) || len(notices) != 0 {
+		t.Fatalf("ck3_search rewrote map-only history_year: %s notices=%v", repaired, notices)
+	}
+}
+
+func TestHistoryYearAliasCoversEveryUndocumentedMapYearField(t *testing.T) {
+	for _, definition := range registry() {
+		if !strings.HasPrefix(definition.Name, "map_") {
+			continue
+		}
+		properties, _ := definition.InputSchema["properties"].(map[string]any)
+		if _, acceptsYear := properties["year"]; !acceptsYear {
+			continue
+		}
+		if _, documentsLegacyAlias := properties["history_year"]; documentsLegacyAlias {
+			continue
+		}
+		if canonical := argumentAliases[definition.Name]["history_year"]; canonical != "year" {
+			t.Errorf("%s accepts year but has no tool-scoped history_year alias", definition.Name)
+		}
+	}
+
+	metric, _ := findCanonicalTool("map_build_metric")
+	repaired, notices := repairToolArguments(metric.Name, metric.InputSchema, json.RawMessage(`{"recipe":"development_network","history_year":1254}`))
+	if !strings.Contains(string(repaired), `"year":1254`) || len(notices) != 1 {
+		t.Fatalf("map_build_metric history_year was not repaired: %s notices=%v", repaired, notices)
 	}
 }
 

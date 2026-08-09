@@ -60,7 +60,7 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 		return nil, unknownToolError(call.Name)
 	}
 	call.Arguments = adaptRetainedCanonicalArguments(call.Name, call.Arguments)
-	repairedArguments, argumentNotices := repairToolArguments(definition.InputSchema, call.Arguments)
+	repairedArguments, argumentNotices := repairToolArguments(definition.Name, definition.InputSchema, call.Arguments)
 	call.Arguments = repairedArguments
 
 	if err := validateArguments(call.Arguments, definition.InputSchema, definition.CompatibilityProperties); err != nil {
@@ -138,7 +138,7 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 			}
 		}
 	}
-	result, err := encodeToolResultWithBudget(output.Value, output.Visibility, responseControl.MaxResponseBytes)
+	result, err := encodeToolResultWithBudget(output.Value, output.Visibility, responseControl.MaxResponseBytes, definition.TrimmableFields...)
 	if err != nil {
 		return encodeToolError(err, runtime), nil
 	}
@@ -170,10 +170,11 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 	// Index-state metadata is attached afterwards, so verify
 	// the final wire object as well rather than letting those common envelopes
 	// silently exceed the caller's declared response budget.
-	if _, err := enforceResponseBudget(result, responseControl.MaxResponseBytes); err != nil {
+	boundedResult, err := enforceResponseBudget(result, responseControl.MaxResponseBytes, definition.TrimmableFields...)
+	if err != nil {
 		return encodeToolError(err, runtime), nil
 	}
-	return result, nil
+	return boundedResult, nil
 }
 
 func indexStateChanged(before, after indexer.IndexState) bool {

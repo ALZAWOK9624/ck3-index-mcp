@@ -1,10 +1,8 @@
 package indexer
 
 import (
-	"bufio"
 	"context"
 	"encoding/binary"
-	"encoding/csv"
 	"fmt"
 	"image"
 	_ "image/png"
@@ -71,15 +69,6 @@ type pngMetadata struct {
 	BitDepth      byte
 	ColorType     byte
 	Palette       [][3]byte
-}
-
-type provinceDefinitionAudit struct {
-	ColorToID       map[uint32]int
-	IDToColor       map[int]uint32
-	InvalidRows     int
-	DuplicateIDs    int
-	DuplicateColors int
-	Samples         []string
 }
 
 // AuditMapAssets performs a bounded, read-only audit of the active map files.
@@ -183,10 +172,10 @@ func auditProvinceAssets(ctx context.Context, active map[string]activeMapFile, l
 		addMapAuditFinding(result, MapAssetAuditFinding{Code: "map_definition_invalid_rows", Severity: "error", Path: definition.Rel, Source: definition.Src.Name, Message: "definition.csv contains malformed province rows", Count: defs.InvalidRows, Samples: defs.Samples})
 	}
 	if defs.DuplicateIDs > 0 {
-		addMapAuditFinding(result, MapAssetAuditFinding{Code: "map_definition_duplicate_ids", Severity: "error", Path: definition.Rel, Source: definition.Src.Name, Message: "definition.csv assigns one province id more than once", Count: defs.DuplicateIDs})
+		addMapAuditFinding(result, MapAssetAuditFinding{Code: "map_definition_duplicate_ids", Severity: "error", Path: definition.Rel, Source: definition.Src.Name, Message: "definition.csv assigns one province id more than once", Count: defs.DuplicateIDs, Samples: defs.DuplicateIDSamples})
 	}
 	if defs.DuplicateColors > 0 {
-		addMapAuditFinding(result, MapAssetAuditFinding{Code: "map_definition_duplicate_colors", Severity: "error", Path: definition.Rel, Source: definition.Src.Name, Message: "definition.csv assigns one RGB color to multiple province ids", Count: defs.DuplicateColors})
+		addMapAuditFinding(result, MapAssetAuditFinding{Code: "map_definition_duplicate_colors", Severity: "error", Path: definition.Rel, Source: definition.Src.Name, Message: "definition.csv assigns one RGB color more than once", Count: defs.DuplicateColors, Samples: defs.DuplicateColorSamples})
 	}
 
 	meta, err := readPNGMetadata(provinces.Path)
@@ -434,67 +423,6 @@ func auditRiversLeavingLand(ctx context.Context, active map[string]activeMapFile
 			Count:   offshore, Samples: samples,
 		})
 	}
-}
-
-func parseProvinceDefinitionsForAudit(path string, limit int) (provinceDefinitionAudit, error) {
-	result := provinceDefinitionAudit{ColorToID: map[uint32]int{}, IDToColor: map[int]uint32{}}
-	f, err := os.Open(path)
-	if err != nil {
-		return result, err
-	}
-	defer f.Close()
-	r := csv.NewReader(bufio.NewReader(f))
-	r.Comma = ';'
-	r.FieldsPerRecord = -1
-	line := 0
-	for {
-		record, err := r.Read()
-		if err == io.EOF {
-			break
-		}
-		line++
-		if err != nil || len(record) < 4 {
-			result.InvalidRows++
-			if len(result.Samples) < limit {
-				result.Samples = append(result.Samples, fmt.Sprintf("line %d: malformed row", line))
-			}
-			continue
-		}
-		id, idErr := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(record[0], "\ufeff")))
-		rr, rErr := strconv.Atoi(strings.TrimSpace(record[1]))
-		gg, gErr := strconv.Atoi(strings.TrimSpace(record[2]))
-		bb, bErr := strconv.Atoi(strings.TrimSpace(record[3]))
-		if idErr != nil || rErr != nil || gErr != nil || bErr != nil {
-			if line == 1 { // Header rows are common and harmless.
-				continue
-			}
-			result.InvalidRows++
-			if len(result.Samples) < limit {
-				result.Samples = append(result.Samples, fmt.Sprintf("line %d: non-numeric id or RGB", line))
-			}
-			continue
-		}
-		if id == 0 { // CK3 definition.csv sentinel.
-			continue
-		}
-		if id < 0 || rr < 0 || rr > 255 || gg < 0 || gg > 255 || bb < 0 || bb > 255 {
-			result.InvalidRows++
-			if len(result.Samples) < limit {
-				result.Samples = append(result.Samples, fmt.Sprintf("line %d: id or RGB outside valid range", line))
-			}
-			continue
-		}
-		color := uint32(rr)<<16 | uint32(gg)<<8 | uint32(bb)
-		if previous, exists := result.IDToColor[id]; exists && previous != color {
-			result.DuplicateIDs++
-		}
-		if previous, exists := result.ColorToID[color]; exists && previous != id {
-			result.DuplicateColors++
-		}
-		result.IDToColor[id] = color
-		result.ColorToID[color] = id
-	}
-	return result, nil
 }
 
 func readPNGMetadata(path string) (pngMetadata, error) {

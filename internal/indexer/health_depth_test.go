@@ -60,6 +60,8 @@ func TestQuickAndDeepHealthAgreeOnStatus(t *testing.T) {
 	if quick.MCPMaxTasks != DefaultMCPMaxTasks || quick.MCPMaxHeavyTasks != DefaultMCPMaxHeavyTasks ||
 		quick.MCPMaxRasterTasks != DefaultMCPMaxRasterTasks || quick.MCPMaxQueuedTasks != DefaultMCPMaxQueuedTasks ||
 		quick.MCPQueueTimeoutSecs != DefaultMCPQueueTimeoutSeconds || quick.MCPExecutionTimeoutSecs != DefaultMCPExecutionTimeoutSeconds ||
+		quick.MaxOpenDatabasePools != DefaultMaxOpenDatabasePools || quick.MaxSQLiteCacheBudgetMB != DefaultMaxSQLiteCacheBudgetMB ||
+		quick.LoadedDatabaseCount != 1 || quick.RetiredDatabaseCount != 0 || quick.AggregateSQLiteCacheBudgetMB != DefaultSQLiteReadConnections*DefaultSQLiteCacheMBPerConnection ||
 		quick.SQLiteOrdinaryReserve != DefaultSQLiteReadConnections-DefaultMCPMaxHeavyTasks {
 		t.Fatalf("configured health omitted normalized MCP resource limits: %+v", quick)
 	}
@@ -117,34 +119,42 @@ func TestQuickHealthCountsMatchTheRealCounts(t *testing.T) {
 	}
 }
 
-// Verifying the sidecar costs a 512 MiB hash and a subprocess. Repeating it on
-// every health call is what made the audited median 1.17 s.
-func TestGISSidecarVerificationIsMemoizedPerIdentity(t *testing.T) {
+// Verifying the sidecar may hash 512 MiB and launch a subprocess. The memo is
+// keyed by the trusted content address, not mutable source metadata: once
+// published, replacing the installation source must not redirect execution.
+// Memo hits still hash the published copy, but do not repeat the subprocess.
+func TestGISSidecarVerificationMemoUsesTrustedContentAddress(t *testing.T) {
 	dir := t.TempDir()
 	sidecar := filepath.Join(dir, "whitebox_tools")
 	if err := os.WriteFile(sidecar, []byte("not a real binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{GISEnabled: true, GISSidecarPath: sidecar, GISSidecarSHA256: "deadbeef", GISAnalysis: "terrain"}
+	cfg := Config{
+		GISEnabled:       true,
+		GISSidecarPath:   sidecar,
+		GISSidecarSHA256: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+		GISAnalysis:      "terrain",
+		GISCacheRoot:     filepath.Join(dir, "cache"),
+	}
 
-	first, ok := gisSidecarIdentity(cfg)
+	first, ok := gisSidecarMemoKey(cfg)
 	if !ok {
-		t.Fatal("an existing sidecar has no identity")
+		t.Fatal("a pinned sidecar has no memo key")
 	}
-	if same, _ := gisSidecarIdentity(cfg); same != first {
-		t.Fatal("identity is not stable for an unchanged file")
+	if same, _ := gisSidecarMemoKey(cfg); same != first {
+		t.Fatal("memo key is not stable for an unchanged trust configuration")
 	}
-	// Rewriting the file must miss the memo even when the path is unchanged.
+	// Rewriting the source must not change the trusted published identity.
 	if err := os.WriteFile(sidecar, []byte("a different binary entirely"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if changed, _ := gisSidecarIdentity(cfg); changed == first {
-		t.Fatal("replacing the sidecar did not change its identity")
+	if changed, _ := gisSidecarMemoKey(cfg); changed != first {
+		t.Fatal("mutable source metadata leaked into the published content identity")
 	}
 	// A re-pinned release hash must also miss.
 	repinned := cfg
-	repinned.GISSidecarSHA256 = "cafebabe"
-	if other, _ := gisSidecarIdentity(repinned); other == first {
+	repinned.GISSidecarSHA256 = "cafebabecafebabecafebabecafebabecafebabecafebabecafebabecafebabe"
+	if other, _ := gisSidecarMemoKey(repinned); other == first {
 		t.Fatal("re-pinning the release hash did not change the identity")
 	}
 	// A failed verification must never be memoized: this sidecar cannot match
@@ -153,8 +163,9 @@ func TestGISSidecarVerificationIsMemoizedPerIdentity(t *testing.T) {
 	if status.Available {
 		t.Fatal("a hash mismatch reported an available sidecar")
 	}
+	key, _ := gisSidecarMemoKey(cfg)
 	gisSidecarMemo.Lock()
-	memoized := gisSidecarMemo.valid
+	_, memoized := gisSidecarMemo.entries[key]
 	gisSidecarMemo.Unlock()
 	if memoized {
 		t.Fatal("a failed verification was pinned in the memo")

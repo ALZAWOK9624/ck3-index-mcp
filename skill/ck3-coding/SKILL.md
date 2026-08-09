@@ -99,6 +99,8 @@ Three outcomes, three different next moves. Do not treat them the same.
 
 **Truncated or `pagination.has_more`.** Judge the results you already have. If they are relevant and you need more of the same, request the next `page`. If they are not relevant, paging returns more of the same irrelevance — change the query instead.
 
+**Low-confidence search suggestions.** `suggestions` are candidates only, never evidence. Check `recovered_query` and `recovery_confidence`, and page them with `suggestion_pagination.next_page` rather than `pagination`; inspect a candidate only after its identity is plausible for the task.
+
 **`RESPONSE_TOO_LARGE`.** Lower `limit` first, then narrow with `kind` or `path_prefix`. Raising `max_response_bytes` only moves the ceiling and usually returns more than the answer needs.
 
 ### When to stop

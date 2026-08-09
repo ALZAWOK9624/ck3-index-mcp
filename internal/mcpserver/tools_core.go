@@ -458,8 +458,12 @@ func handleHealth(ctx context.Context, runtime *Runtime, definition *ToolDefinit
 		depth = indexer.HealthDeep
 	}
 	health, err := runtime.DB.HealthConfiguredDepth(ctx, runtime.Config, depth)
+	var databaseUsage *mcpDatabaseResourceUsage
 	if err == nil {
-		gis := runtime.DB.GISSidecarStatus(ctx, runtime.Config)
+		gis := runtime.DB.CachedGISSidecarStatus(ctx, runtime.Config)
+		if depth == indexer.HealthDeep {
+			gis = runtime.DB.GISSidecarStatus(ctx, runtime.Config)
+		}
 		health.GIS = &gis
 		usage := currentMCPTaskUsage()
 		health.ActiveTasks = usage.Active
@@ -471,12 +475,25 @@ func handleHealth(ctx context.Context, runtime *Runtime, definition *ToolDefinit
 		health.QueuedHeavyTasks = usage.QueuedHeavy
 		health.QueuedRasterTasks = usage.QueuedRaster
 		health.EstimatedTaskMemoryMB = usage.EstimatedMemoryMB
+		if resources, ok := runtime.DatabaseController.(mcpDatabaseResourceReporter); ok {
+			usage := resources.ResourceUsage()
+			databaseUsage = &usage
+			health.LoadedDatabaseCount = usage.LoadedDatabaseCount
+			health.RetiredDatabaseCount = usage.RetiredDatabaseCount
+			health.AggregateSQLiteCacheBudgetMB = usage.AggregateSQLiteCacheBudgetMB
+			health.MaxOpenDatabasePools = usage.MaxOpenDatabasePools
+			health.MaxSQLiteCacheBudgetMB = usage.MaxSQLiteCacheBudgetMB
+		}
 	}
 	if err != nil {
 		return toolOutput{}, err
 	}
 	report := mcpHealthReport(health)
-	if runtime.DatabaseController != nil {
+	if databaseUsage != nil {
+		report["queried_database"] = runtime.databaseIdentity()
+		report["active_database"] = databaseUsage.Active
+		report["configured_database_count"] = databaseUsage.ConfiguredDatabaseCount
+	} else if runtime.DatabaseController != nil {
 		active, databases := runtime.DatabaseController.Catalog()
 		report["queried_database"] = runtime.databaseIdentity()
 		report["active_database"] = active

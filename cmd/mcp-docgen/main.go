@@ -147,11 +147,28 @@ func filterTools(tools []mcpserver.ToolDocumentation, maps bool) []mcpserver.Too
 
 func writeToolTable(builder *strings.Builder, title string, tools []mcpserver.ToolDocumentation) {
 	fmt.Fprintf(builder, "### %s\n\n", title)
-	builder.WriteString("| Tool | Purpose |\n|---|---|\n")
+	builder.WriteString("| Tool | Reach for it when |\n|---|---|\n")
 	for _, tool := range tools {
-		fmt.Fprintf(builder, "| `%s` | %s |\n", tool.Name, markdownCell(tool.Description))
+		fmt.Fprintf(builder, "| `%s` | %s |\n", tool.Name, markdownCell(routingSummary(tool.Description)))
 	}
 	builder.WriteString("\n")
+}
+
+// routingSummary keeps only the sentence that decides which tool to call. The
+// model already receives every full description in the MCP catalog, so
+// reproducing them here made the skill restate roughly 24 KB it was going to
+// read anyway -- and the skill is what a caller reads when choosing, not when
+// filling in arguments. Each canonical description opens with "Use when X. Do
+// not use Y; use Z instead.", so the routing decision is the leading sentence.
+func routingSummary(description string) string {
+	description = strings.TrimSpace(description)
+	if cut, _, found := strings.Cut(description, ". Do not use "); found {
+		return strings.TrimSpace(cut) + "."
+	}
+	if cut, _, found := strings.Cut(description, ". "); found {
+		return strings.TrimSpace(cut) + "."
+	}
+	return description
 }
 
 func writeChineseToolTable(builder *strings.Builder, title string, tools []mcpserver.ToolDocumentation) {

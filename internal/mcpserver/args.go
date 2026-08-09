@@ -171,7 +171,9 @@ type ck3ScriptReferenceArgs struct {
 	ID   string `json:"id"`
 }
 
-type ck3HealthArgs struct{}
+type ck3HealthArgs struct {
+	Mode string `json:"mode,omitempty"`
+}
 
 type ck3PackageArgs struct {
 	Metadata packager.Metadata    `json:"metadata"`

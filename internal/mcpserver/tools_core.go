@@ -450,7 +450,14 @@ func handleHealth(ctx context.Context, runtime *Runtime, definition *ToolDefinit
 	if err := decodeToolArgs(raw, definition.InputSchema, definition.CompatibilityProperties, &args); err != nil {
 		return toolOutput{}, err
 	}
-	health, err := runtime.DB.HealthConfigured(ctx, runtime.Config)
+	// An agent calls ck3_health to decide whether the server is usable, which no
+	// table total answers. Deep stays available for the times someone is
+	// actually inspecting the database.
+	depth := indexer.HealthQuick
+	if args.Mode == "deep" {
+		depth = indexer.HealthDeep
+	}
+	health, err := runtime.DB.HealthConfiguredDepth(ctx, runtime.Config, depth)
 	if err == nil {
 		gis := runtime.DB.GISSidecarStatus(ctx, runtime.Config)
 		health.GIS = &gis

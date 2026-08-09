@@ -34,7 +34,58 @@ type GISSidecarStatus struct {
 	Reason         string   `json:"unavailable_reason,omitempty"`
 }
 
+// Verifying the sidecar means hashing up to 512 MiB and starting WhiteboxTools
+// with a five second timeout. That is the right price to pay once, and the
+// wrong price to pay on every ck3_health and every capabilities probe: the
+// audited sessions show 56 health calls at a median of 1.17 s and a worst case
+// of 12.6 s. The result is memoized against the identity of the file that was
+// actually verified, so replacing or upgrading the sidecar still re-verifies.
+var gisSidecarMemo struct {
+	sync.Mutex
+	identity string
+	status   GISSidecarStatus
+	valid    bool
+}
+
+// gisSidecarIdentity is deliberately built from the same inputs the
+// verification consumes. A sidecar swapped in place changes size or mtime; a
+// re-pinned release changes the configured hash; a config change changes the
+// path or the analysis mode. Any of those misses the memo.
+func gisSidecarIdentity(cfg Config) (string, bool) {
+	info, err := os.Stat(cfg.GISSidecarPath)
+	if err != nil {
+		return "", false
+	}
+	return fmt.Sprintf("%s\x00%d\x00%d\x00%s\x00%s\x00%t",
+		cfg.GISSidecarPath, info.Size(), info.ModTime().UnixNano(),
+		cfg.GISSidecarSHA256, cfg.GISAnalysis, cfg.GISEnabled), true
+}
+
 func InspectGISSidecar(ctx context.Context, cfg Config) GISSidecarStatus {
+	identity, addressable := gisSidecarIdentity(cfg)
+	if addressable {
+		gisSidecarMemo.Lock()
+		if gisSidecarMemo.valid && gisSidecarMemo.identity == identity {
+			cached := gisSidecarMemo.status
+			gisSidecarMemo.Unlock()
+			cached.AllowedTools = append([]string(nil), cached.AllowedTools...)
+			return cached
+		}
+		gisSidecarMemo.Unlock()
+	}
+	status := inspectGISSidecarUncached(ctx, cfg)
+	// Only a completed verification is worth remembering. A failure caused by a
+	// transient condition -- a busy machine missing the five second version
+	// timeout -- must not be pinned for the life of the process.
+	if addressable && status.Available {
+		gisSidecarMemo.Lock()
+		gisSidecarMemo.identity, gisSidecarMemo.status, gisSidecarMemo.valid = identity, status, true
+		gisSidecarMemo.Unlock()
+	}
+	return status
+}
+
+func inspectGISSidecarUncached(ctx context.Context, cfg Config) GISSidecarStatus {
 	status := GISSidecarStatus{Enabled: cfg.GISEnabled, Platform: gisPlatform(), Analysis: cfg.GISAnalysis, AnalysisStatus: "not_cached"}
 	for name := range whiteboxAllowedTools {
 		status.AllowedTools = append(status.AllowedTools, name)

@@ -295,6 +295,7 @@ var chineseFieldDescriptions = map[string]string{
 	"Traversal radius.": "遍历半径。",
 	"public limits evidence to non-private sources.": "public 仅返回非私有来源的证据。",
 	"private only; the map cache records no per-source provenance.": "仅支持 private；地图缓存不记录来源级出处。",
+	"quick answers from recorded scan totals; deep re-counts every table and re-verifies the GIS sidecar.": "quick 直接读取扫描时记录的统计值；deep 重新逐表计数并重新校验 GIS sidecar。",
 	"Workspace view.": "工作区视图。",
 	"Optional capability domain filter for operation=capabilities. Empty and all return every domain.": "operation=capabilities 使用的可选能力领域筛选；留空或 all 返回全部领域。",
 	"GUI view.": "GUI 查询视图。",

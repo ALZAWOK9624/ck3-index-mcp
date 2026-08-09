@@ -182,7 +182,9 @@ func buildCanonicalTools() []ToolDefinition {
 			Name:         "ck3_health",
 			Title:        "Check CK3 Index Health",
 			Description:  "Check whether the database, schema, indexes, and MCP registration are trustworthy, and confirm which configuration is live. Reports bounded SQLite read/cache settings plus active heavy/raster tasks and estimated task memory. The active config and source roots are identifiable while the database path stays redacted.",
-			InputSchema:  objectSchema(map[string]any{}),
+			InputSchema: objectSchema(map[string]any{
+				"mode": stringProperty("quick answers from recorded scan totals; deep re-counts every table and re-verifies the GIS sidecar.", "quick", "deep"),
+			}),
 			OutputSchema: output, Annotations: annotations, Handler: handleHealth,
 		},
 		{

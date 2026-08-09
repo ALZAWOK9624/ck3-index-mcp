@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -30,6 +31,7 @@ type BenchQuery struct {
 
 type HealthReport struct {
 	Status                string            `json:"status"`
+	Depth                 string            `json:"depth,omitempty"`
 	Database              string            `json:"-"`
 	DatabaseMB            float64           `json:"database_mb"`
 	DatabaseVersion       string            `json:"database_version,omitempty"`
@@ -110,7 +112,7 @@ type HealthFile struct {
 
 func (db *DB) Bench(ctx context.Context) (BenchReport, error) {
 	start := time.Now()
-	tables, err := db.tableCounts(ctx)
+	tables, err := db.tableCounts(ctx, HealthDeep)
 	if err != nil {
 		return BenchReport{}, err
 	}
@@ -188,18 +190,44 @@ func timeQuery(name, sample string, fn func() (int, error)) BenchQuery {
 	return q
 }
 
+// HealthDepth selects how much of the database a health report is allowed to
+// re-derive. quick answers from what the scanner already recorded; deep
+// re-counts every table and re-verifies the sidecar. Both reach the same
+// status: the deep counts are informational, and no verdict depends on them.
+type HealthDepth string
+
+const (
+	HealthQuick HealthDepth = "quick"
+	HealthDeep  HealthDepth = "deep"
+)
+
+func normalizedHealthDepth(depth HealthDepth) HealthDepth {
+	if depth == HealthDeep {
+		return HealthDeep
+	}
+	return HealthQuick
+}
+
 func (db *DB) Health(ctx context.Context) (HealthReport, error) {
-	return db.health(ctx, "")
+	return db.health(ctx, "", HealthDeep)
 }
 
 // HealthConfigured adds the authority decision made from the same parsed
 // configuration used to open the CLI or MCP database.
 func (db *DB) HealthConfigured(ctx context.Context, cfg Config) (HealthReport, error) {
+	return db.HealthConfiguredDepth(ctx, cfg, HealthDeep)
+}
+
+// HealthConfiguredDepth is the form callers should reach for. The CLI keeps
+// asking for deep because a person running `ck3-index health` is inspecting the
+// database; MCP asks for quick because an agent calls it to decide whether the
+// server is usable, which no table total answers.
+func (db *DB) HealthConfiguredDepth(ctx context.Context, cfg Config, depth HealthDepth) (HealthReport, error) {
 	configuredPath, err := ConfiguredDatabasePath(cfg)
 	if err != nil {
 		return HealthReport{}, err
 	}
-	report, err := db.health(ctx, configuredPath)
+	report, err := db.health(ctx, configuredPath, depth)
 	if err != nil {
 		return HealthReport{}, err
 	}
@@ -302,13 +330,14 @@ func SourceIdentities(cfg Config) []SourceIdentity {
 	return identities
 }
 
-func (db *DB) health(ctx context.Context, configuredPath string) (HealthReport, error) {
+func (db *DB) health(ctx context.Context, configuredPath string, depth HealthDepth) (HealthReport, error) {
+	depth = normalizedHealthDepth(depth)
 	dbPath := db.path
 	mapStatus, err := db.MapDatabaseStatus(ctx)
 	if err != nil {
 		return HealthReport{}, err
 	}
-	tables, err := db.tableCounts(ctx)
+	tables, err := db.tableCounts(ctx, depth)
 	if err != nil {
 		return HealthReport{}, err
 	}
@@ -329,6 +358,7 @@ func (db *DB) health(ctx context.Context, configuredPath string) (HealthReport, 
 	}
 	report := HealthReport{
 		Status:                "ok",
+		Depth:                 string(depth),
 		Database:              dbPath,
 		DatabaseMB:            fileSizeMB(dbPath),
 		DatabaseVersion:       version,
@@ -416,9 +446,39 @@ func walHealthDegraded(databaseMB, walMB float64) bool {
 	return walMB > 256 || (databaseMB > 0 && walMB > databaseMB*0.20)
 }
 
-func (db *DB) tableCounts(ctx context.Context) (map[string]int, error) {
+// countedHealthTables are small enough that COUNT(*) is a cheap index walk at
+// any database size. The large ones are deliberately absent: objects, refs,
+// localization and friends are served from the totals the scanner already
+// wrote to meta, and the two FTS virtual tables are counted only on demand
+// because counting one means walking the whole shadow table.
+var countedHealthTables = []string{"source_layers", "files", "engine_datatypes", "engine_scope_rules"}
+
+var deepOnlyHealthTables = []string{"search_fts", "script_text_fts"}
+
+// tableCounts is reporting only: no health verdict is derived from it. That is
+// what makes the quick form honest -- the same status is reached either way,
+// and only the informational totals change source.
+func (db *DB) tableCounts(ctx context.Context, depth HealthDepth) (map[string]int, error) {
 	out := map[string]int{}
-	for _, table := range []string{"source_layers", "files", "objects", "refs", "localization", "resources", "schema_fields", "object_fields", "diagnostics", "engine_datatypes", "engine_scope_rules", "search_fts", "script_text_fts"} {
+	tables := append([]string(nil), countedHealthTables...)
+	if depth == HealthDeep {
+		tables = append(tables, deepOnlyHealthTables...)
+		for _, count := range scanStatsCountFields(&ScanStats{}) {
+			tables = append(tables, count.table)
+		}
+	} else {
+		stored, err := db.storedScanTableCounts(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for table, n := range stored {
+			out[table] = n
+		}
+	}
+	for _, table := range tables {
+		if _, served := out[table]; served {
+			continue
+		}
 		if !db.tableExists(ctx, table) {
 			out[table] = 0
 			continue
@@ -428,6 +488,28 @@ func (db *DB) tableCounts(ctx context.Context) (map[string]int, error) {
 			return nil, err
 		}
 		out[table] = n
+	}
+	return out, nil
+}
+
+// storedScanTableCounts reads the per-table totals the scanner persisted in
+// meta. A database written before those keys existed simply reports nothing,
+// and the caller falls back to counting.
+func (db *DB) storedScanTableCounts(ctx context.Context) (map[string]int, error) {
+	if !db.tableExists(ctx, "meta") {
+		return nil, nil
+	}
+	out := map[string]int{}
+	for _, count := range scanStatsCountFields(&ScanStats{}) {
+		raw, err := db.metaValue(ctx, count.key)
+		if err != nil {
+			return nil, err
+		}
+		value, convErr := strconv.Atoi(strings.TrimSpace(raw))
+		if raw == "" || convErr != nil || value < 0 {
+			continue
+		}
+		out[count.table] = value
 	}
 	return out, nil
 }

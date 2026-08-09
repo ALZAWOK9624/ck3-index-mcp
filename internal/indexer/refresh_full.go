@@ -404,6 +404,15 @@ func publishStagedFullScan(ctx context.Context, cfg Config, stagePath string, ba
 		}
 		publicationColumns[table] = columns
 	}
+	// Clearing and refilling files would drive the script-text triggers once per
+	// deleted row and once per inserted row, maintaining an FTS table that
+	// rebuildScriptTextFTS replaces wholesale a few statements later. Drop them
+	// for the copy and recreate them after the rebuild. Both the DDL and the
+	// copy are inside this transaction, so a rollback restores the triggers
+	// along with everything else.
+	if err := dropScriptTextTriggers(ctx, conn); err != nil {
+		return err
+	}
 	for _, table := range publishedIndexTables {
 		if _, err := conn.ExecContext(ctx, `DELETE FROM `+qualifiedSQLiteIdentifier("main", table)); err != nil {
 			return fmt.Errorf("clear published table %s: %w", table, err)
@@ -416,6 +425,9 @@ func publishStagedFullScan(ctx context.Context, cfg Config, stagePath string, ba
 		}
 	}
 	if err := rebuildScriptTextFTS(ctx, conn); err != nil {
+		return err
+	}
+	if err := createScriptTextTriggers(ctx, conn); err != nil {
 		return err
 	}
 

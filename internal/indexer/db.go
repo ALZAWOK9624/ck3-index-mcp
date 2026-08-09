@@ -207,10 +207,12 @@ func (db *DB) reset(ctx context.Context) error {
 			return err
 		}
 	}
-	if err := db.ensureSchemaNoIndexes(ctx); err != nil {
-		return err
-	}
-	return db.ensureScriptTextTriggers(ctx)
+	// Deliberately no script-text triggers here. DROP TABLE files took the old
+	// ones with it, and the clean bulk load that follows would only pay per-row
+	// FTS maintenance for work the finalizer's single rebuildScriptTextFTS
+	// discards. The finalizer reinstates them; an aborted scan leaves a
+	// non-ready generation that ensureSchema re-triggers on the next open.
+	return db.ensureSchemaNoIndexes(ctx)
 }
 
 // ensureSchema creates tables and indexes if they do not exist. Idempotent.
@@ -741,7 +743,18 @@ func (db *DB) ensureSchemaNoIndexes(ctx context.Context) error {
 	return nil
 }
 
-func (db *DB) ensureScriptTextTriggers(ctx context.Context) error {
+// scriptTextTriggerNames keeps script_text_fts in step with individual files.
+// They are exactly right for an incremental scan and exactly wrong for a bulk
+// load: maintaining the FTS row by row is pure cost when the very next step
+// drops the table and rebuilds it from files in one statement. Both bulk paths
+// therefore run without them and reinstate them once the rebuild is done.
+var scriptTextTriggerNames = []string{
+	"files_script_text_ai",
+	"files_script_text_ad",
+	"files_script_text_au",
+}
+
+func createScriptTextTriggers(ctx context.Context, execer contextExecer) error {
 	statements := []string{
 		`CREATE TRIGGER IF NOT EXISTS files_script_text_ai AFTER INSERT ON files WHEN new.kind='script' BEGIN
 			INSERT INTO script_text_fts(rowid,search_text) VALUES(new.id,new.search_text);
@@ -755,11 +768,24 @@ func (db *DB) ensureScriptTextTriggers(ctx context.Context) error {
 		END`,
 	}
 	for _, statement := range statements {
-		if _, err := db.sql.ExecContext(ctx, statement); err != nil {
+		if _, err := execer.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("create script text maintenance trigger: %w", err)
 		}
 	}
 	return nil
+}
+
+func dropScriptTextTriggers(ctx context.Context, execer contextExecer) error {
+	for _, name := range scriptTextTriggerNames {
+		if _, err := execer.ExecContext(ctx, `DROP TRIGGER IF EXISTS `+name); err != nil {
+			return fmt.Errorf("drop script text maintenance trigger: %w", err)
+		}
+	}
+	return nil
+}
+
+func (db *DB) ensureScriptTextTriggers(ctx context.Context) error {
+	return createScriptTextTriggers(ctx, db.sql)
 }
 
 func (db *DB) metaValue(ctx context.Context, key string) (string, error) {

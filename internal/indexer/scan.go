@@ -807,6 +807,14 @@ parsedFilesComplete:
 		}
 		stats.TimingsMillis["semantic_fts_scoped"] = time.Since(ftsStart).Milliseconds()
 	}
+	// Reinstate the per-file maintenance triggers now that the bulk phase is
+	// over. reset() deliberately leaves them off so a clean load does not
+	// maintain script_text_fts row by row for a table the rebuild above just
+	// replaced. CREATE TRIGGER IF NOT EXISTS makes this a no-op on the
+	// incremental path, where the triggers were never removed.
+	if err := createScriptTextTriggers(ctx, tx); err != nil {
+		return ScanStats{}, err
+	}
 	if err := storeSearchFTSRowCount(ctx, tx); err != nil {
 		return ScanStats{}, err
 	}

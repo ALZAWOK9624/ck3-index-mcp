@@ -404,12 +404,22 @@ func publishStagedFullScan(ctx context.Context, cfg Config, stagePath string, ba
 		}
 		publicationColumns[table] = columns
 	}
-	// Clearing and refilling files would drive the script-text triggers once per
-	// deleted row and once per inserted row, maintaining an FTS table that
-	// rebuildScriptTextFTS replaces wholesale a few statements later. Drop them
-	// for the copy and recreate them after the rebuild. Both the DDL and the
-	// copy are inside this transaction, so a rollback restores the triggers
-	// along with everything else.
+	// Publication refills every published table from scratch, which is the same
+	// shape as the clean bulk load reset() performs -- and reset() already
+	// established the rule that a bulk load runs without secondary indexes and
+	// builds them afterwards. Publication was the one place that kept
+	// maintaining all sixty-odd live B-trees a row at a time while copying a
+	// whole database through them.
+	//
+	// Clearing and refilling files would likewise drive the script-text
+	// triggers once per deleted and once per inserted row, maintaining an FTS
+	// table that rebuildScriptTextFTS replaces wholesale a few statements
+	// later. All of this DDL sits inside the publication transaction, so a
+	// rollback restores the indexes and triggers along with everything else.
+	restoreIndexes, err := dropSecondaryIndexes(ctx, conn)
+	if err != nil {
+		return err
+	}
 	if err := dropScriptTextTriggers(ctx, conn); err != nil {
 		return err
 	}
@@ -428,6 +438,9 @@ func publishStagedFullScan(ctx context.Context, cfg Config, stagePath string, ba
 		return err
 	}
 	if err := createScriptTextTriggers(ctx, conn); err != nil {
+		return err
+	}
+	if err := restoreIndexes(ctx); err != nil {
 		return err
 	}
 

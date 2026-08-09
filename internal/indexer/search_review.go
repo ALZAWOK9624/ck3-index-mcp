@@ -252,8 +252,37 @@ func (db *DB) LLMSearch(ctx context.Context, opts SearchOptions) (LLMResult, err
 		result.Counts["contains"] = len(contains)
 		result.Evidence = appendUniqueEvidence(result.Evidence, contains, fetchLimit)
 	}
+	// The near-miss pass runs only after every ordinary searcher, the FTS pass,
+	// the script-text pass, and the case-sensitive contains fallback have all
+	// come back empty, so it costs one extra scan on the queries that were going
+	// to be retried by hand anyway.
+	nearMissSpelling := ""
+	if len(result.Evidence) == 0 && opts.Kind != "script_text" {
+		nearMissLimit := fetchLimit
+		if opts.publicMode() {
+			nearMissLimit = expandedSearchCandidateLimit(nearMissLimit)
+		}
+		nearMiss, spelling, err := db.searchNearMiss(ctx, query, opts, nearMissLimit)
+		if err != nil {
+			return LLMResult{}, err
+		}
+		nearMiss = filterSearchEvidenceBeforeCapacity(nearMiss, opts.LLMOptions)
+		if len(nearMiss) > 0 {
+			nearMissSpelling = spelling
+			result.Counts["near_miss"] = len(nearMiss)
+			result.Evidence = appendUniqueEvidence(result.Evidence, nearMiss, fetchLimit)
+		}
+	}
 	result = result.withPublicFilter(opts.LLMOptions)
 	result = paginateLLMResult(result, page, limit)
+	if nearMissSpelling != "" && len(result.Evidence) > 0 {
+		result.Guidance = append([]string{
+			fmt.Sprintf("%q matched nothing; these results are for the normalized spelling %q. Use that spelling for follow-up queries.", query, nearMissSpelling),
+		}, result.Guidance...)
+	}
+	if len(result.Evidence) == 0 && page == 1 {
+		result.Guidance = append(noMatchGuidance(query, opts), result.Guidance...)
+	}
 	if scriptTextVerificationLimited {
 		result.Truncated = true
 		result.Guidance = append(result.Guidance, "Script-text verification stopped at 32 source files; narrow source/path or use a more specific token before paging further.")
@@ -263,6 +292,12 @@ func (db *DB) LLMSearch(ctx context.Context, opts SearchOptions) (LLMResult, err
 		result.Guidance = append(result.Guidance, "Script-text pagination is bounded to the first 32 verified source candidates; narrow source/path or query text for later matches.")
 	}
 	result.Summary = fmt.Sprintf("Semantic search for %q returned %d evidence item(s) on page %d.", query, len(result.Evidence), page)
+	// Public results carry no follow-up hint by policy (withPublicFilter drops
+	// NextQueries so no aggregate or hint can become a private-source oracle).
+	// The session audit shows that costs the common case its follow-up -- 82% of
+	// real searches ran public -- but the caller-facing guidance below is
+	// delivered under both visibilities, so recovery advice does not depend on
+	// relaxing this boundary.
 	if len(result.Evidence) > 0 && !opts.publicMode() {
 		best := result.Evidence[0]
 		id := best.Name

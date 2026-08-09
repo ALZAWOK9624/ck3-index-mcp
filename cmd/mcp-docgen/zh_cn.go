@@ -294,6 +294,7 @@ var chineseFieldDescriptions = map[string]string{
 	"Traversal depth. event_chain defaults to 3 and caps at 6; neighborhood defaults to 1 and caps at 2.": "遍历深度；event_chain 默认为 3、最多 6，neighborhood 默认为 1、最多 2。",
 	"Traversal radius.": "遍历半径。",
 	"public limits evidence to non-private sources.": "public 仅返回非私有来源的证据。",
+	"private only; the map cache records no per-source provenance.": "仅支持 private；地图缓存不记录来源级出处。",
 	"Workspace view.": "工作区视图。",
 	"Optional capability domain filter for operation=capabilities. Empty and all return every domain.": "operation=capabilities 使用的可选能力领域筛选；留空或 all 返回全部领域。",
 	"GUI view.": "GUI 查询视图。",

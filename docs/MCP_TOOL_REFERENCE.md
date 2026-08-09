@@ -286,7 +286,7 @@ ck3-index 公开 35 个规范工具。细分能力由各工具的受限 operatio
 | `retain_seed` | 否 | 整数 | 最大值=15 | 可选的零基种子索引；对应分区必须保留原省份 ID、颜色、历史与头衔。省略时优先采用已索引地产定位点所在分区，最后才回退到面积最大的分区。 |
 | `seeds` | 是 | 数组 | 最少项数=2; 最多项数=16 | 生长起点，每个结果省份一个。面积最大的那块保留原省份 ID 与颜色。 |
 | `terrain_weight` | 否 | 数值 | 最小值=0; 最大值=8; 默认值=3 | 地形对边界的偏转强度。0 表示只按距离生长，边界会是几何直线；数值越大，边界越贴向陡坡。需要已索引的高程栅格才会生效。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 
 属性：生成受限临时产物、非破坏、封闭世界。输出：结构化对象与 JSON 文本；成功时返回可供附件发送层解析的 artifact 标识和相对路径。
 
@@ -301,7 +301,7 @@ ck3-index 公开 35 个规范工具。细分能力由各工具的受限 operatio
 | `plan_hash` | 是 | 字符串 |  | map_split_province 返回的精确不可变方案哈希。 |
 | `plan_id` | 是 | 字符串 |  | map_split_province 返回的不可变方案 ID。 |
 | `request_key` | 否 | 字符串 | 最长长度=128 | 可选幂等键；用同一键重试同一发布会返回已提交产物，把该键用于不同输入则会被拒绝。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 
 属性：生成受限临时产物、非破坏、封闭世界。输出：结构化对象与 JSON 文本；成功时返回可供附件发送层解析的 artifact 标识和相对路径。
 
@@ -322,7 +322,7 @@ ck3-index 公开 35 个规范工具。细分能力由各工具的受限 operatio
 | `region` | 否 | 对象 |  | 生成器可读写的像素窗口。侵蚀与汇流计算的耗时都与覆盖面积成正比，因此应把范围限制在关心的地面上。默认为整幅地图。 |
 | `request_key` | 否 | 字符串 | 最长长度=128 | 可选幂等键；用同一键重试同一发布会返回已提交产物，把该键用于不同输入则会被拒绝。 |
 | `small_rivers` | 否 | 对象 |  | operation=small_rivers 的设置；仅替换所选窗口，窗口外调色板索引逐字节继承。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 
 属性：预览阶段只读，确认后生成受控不可变产物；非破坏、封闭世界。输出：结构化对象与 PNG 预览；确认后另返回 artifact 标识、相对文件与哈希。
 
@@ -335,7 +335,7 @@ ck3-index 公开 35 个规范工具。细分能力由各工具的受限 operatio
 | `artifact_id` | 否 | 字符串 |  | 受控地图产物 ID；status 或 inspect 操作必须提供。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
 | `operation` | 是 | 字符串 | 可选值=[list status inspect] | 产物恢复操作。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
 
@@ -347,7 +347,7 @@ ck3-index 公开 35 个规范工具。细分能力由各工具的受限 operatio
 |---|---:|---|---|---|
 | `id` | 是 | 字符串 |  | 地图地点：数字省份 ID、b_/c_/d_/k_/e_ 头衔 ID，或可唯一解析的准确英文或中文本地化名称。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 | `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
@@ -364,7 +364,7 @@ ck3-index 公开 35 个规范工具。细分能力由各工具的受限 operatio
 | `target` | 否 | 字符串 |  | 一个数字省份 ID、领地头衔 ID、region:<id>、配合 target_type=region 使用的准确地区 ID，或 all。 |
 | `target_type` | 否 | 字符串 | 可选值=[province title region targets all] | 目标选择类型。 |
 | `targets` | 否 | 数组 | 最少项数=1; 最多项数=16 | 最多 16 个省份、头衔或 region:<id> 目标。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
 
@@ -377,7 +377,7 @@ ck3-index 公开 35 个规范工具。细分能力由各工具的受限 operatio
 | `id` | 是 | 字符串 |  | 地图地点：数字省份 ID、b_/c_/d_/k_/e_ 头衔 ID，或可唯一解析的准确英文或中文本地化名称。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
 | `radius` | 否 | 整数 | 最小值=1; 最大值=3; 默认值=1 | 遍历半径。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 | `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
@@ -391,7 +391,7 @@ ck3-index 公开 35 个规范工具。细分能力由各工具的受限 operatio
 | `from` | 是 | 字符串 |  | 来源地图地点：数字省份 ID、b_/c_/d_/k_/e_ 头衔 ID，或可唯一解析的准确英文或中文本地化名称。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
 | `to` | 是 | 字符串 |  | 目标地图地点，接受与 from 相同的形式。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 | `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
@@ -405,7 +405,7 @@ ck3-index 公开 35 个规范工具。细分能力由各工具的受限 operatio
 | `kind` | 否 | 字符串 | 可选值=[strait sea_route river_crossing mountain_pass land_passage underground_internal underground_gateway offmap_gateway explicit_passage] | 可选的通道类别。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
 | `target` | 否 | 字符串 |  | 省份标识符、领地头衔标识符、逗号分隔的多个目标或 all。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
 
@@ -417,7 +417,7 @@ ck3-index 公开 35 个规范工具。细分能力由各工具的受限 operatio
 |---|---:|---|---|---|
 | `id` | 是 | 字符串 |  | 领地头衔标识符。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 | `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
@@ -431,7 +431,7 @@ ck3-index 公开 35 个规范工具。细分能力由各工具的受限 operatio
 | `assignment_mode` | 否 | 字符串 | 可选值=[religion characters both] | 分配类别。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
 | `target` | 是 | 字符串 |  | 省份或领地头衔目标。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 | `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
@@ -444,7 +444,7 @@ ck3-index 公开 35 个规范工具。细分能力由各工具的受限 operatio
 |---|---:|---|---|---|
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
 | `target` | 是 | 字符串 |  | 省份或领地头衔目标。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 | `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
@@ -479,7 +479,7 @@ ck3-index 公开 35 个规范工具。细分能力由各工具的受限 operatio
 | `target` | 否 | 字符串 |  | 省份或头衔标识符、逗号分隔的多个标识符或 all。 |
 | `transform` | 否 | 对象 |  | — |
 | `values` | 否 | 数组 | 最多项数=200000 | — |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 | `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
@@ -500,7 +500,7 @@ ck3-index 公开 35 个规范工具。细分能力由各工具的受限 operatio
 | `objective` | 否 | 字符串 | 可选值=[shortest scenic]; 默认值=shortest | 路线目标。 |
 | `to` | 是 | 字符串 |  | 终点：数字省份 ID、b_/c_/d_/k_/e_ 头衔 ID，或可唯一解析的准确英文或中文本地化名称。 |
 | `verbose` | 否 | 布尔值 | 默认值=false | 包含受限的图加载与节点展开证据。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 | `waypoints` | 否 | 数组 | 最多项数=16 | 路线必须按顺序经过的可选准确地图地点。 |
 | `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
 
@@ -540,7 +540,7 @@ ck3-index 公开 35 个规范工具。细分能力由各工具的受限 operatio
 | `theme` | 否 | 字符串 | 可选值=[political culture faith development terrain custom] | — |
 | `title` | 否 | 字符串 |  | — |
 | `verbose` | 否 | 布尔值 |  | 包含完整指标值和配方目标；路线渲染默认返回紧凑元数据。 |
-| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
+| `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 | `width` | 否 | 整数 | 最小值=1; 最大值=8192 | 可选的明确输出宽度；同时省略 width 与 height 时自动确定尺寸。 |
 | `year` | 否 | 整数 | 最小值=1 | 地图册显示年份。 |
 

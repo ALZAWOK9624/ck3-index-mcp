@@ -220,6 +220,7 @@ func buildCanonicalTools() []ToolDefinition {
 	definitions = append(definitions, buildMigrationTools(output)...)
 	definitions = append(definitions, buildCanonicalMapTools(annotations, output)...)
 	definitions = addResponseBudgetProperty(definitions)
+	definitions = declarePrivateOnlyVisibility(definitions)
 	return standardizeCanonicalToolDescriptions(definitions)
 }
 

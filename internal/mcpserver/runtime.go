@@ -52,6 +52,8 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 		return nil, unknownToolError(call.Name)
 	}
 	call.Arguments = adaptRetainedCanonicalArguments(call.Name, call.Arguments)
+	repairedArguments, argumentNotices := repairToolArguments(definition.InputSchema, call.Arguments)
+	call.Arguments = repairedArguments
 
 	if err := validateArguments(call.Arguments, definition.InputSchema, definition.CompatibilityProperties); err != nil {
 		return encodeToolError(err, runtime), nil
@@ -132,6 +134,7 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 	if err != nil {
 		return encodeToolError(err, runtime), nil
 	}
+	result = attachArgumentNotices(result, argumentNotices)
 	if beforeErr == nil && afterErr == nil && after.Ready() {
 		result["indexState"] = map[string]any{
 			"scan_generation":   after.Generation,

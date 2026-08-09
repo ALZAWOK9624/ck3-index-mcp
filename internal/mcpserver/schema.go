@@ -116,7 +116,7 @@ func validateArguments(raw json.RawMessage, schema map[string]any, compatibility
 	if additional, ok := schema["additionalProperties"].(bool); ok && !additional {
 		for name := range fields {
 			if _, known := properties[name]; !known && !allowedCompatibility[name] {
-				return invalidArgument(name, fmt.Sprintf("unknown argument field %q; remove it or use the documented input schema", name))
+				return invalidArgument(name, describeUnknownArgument(name, properties, compatibilityProperties))
 			}
 		}
 	}

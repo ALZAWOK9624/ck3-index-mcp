@@ -1321,6 +1321,13 @@ type resourceLookup struct {
 	basenames map[string]bool
 	stems     map[string]bool
 	sorted    []string
+	// tails holds every slash-delimited suffix of every resource path, sorted
+	// and deduplicated. Both fallbacks below used to answer their question by
+	// walking every resource path, so a project with many suffix-style or
+	// extensionless references approached refs x resources. Every question they
+	// ask is really "does some path continue with this text immediately after a
+	// slash", which one sorted list answers by binary search.
+	tails []string
 }
 
 type referenceResolutionEvidence struct {
@@ -1346,6 +1353,7 @@ func newResourceLookup(paths map[string]bool) resourceLookup {
 		stems:     map[string]bool{},
 		sorted:    make([]string, 0, len(paths)),
 	}
+	tails := map[string]bool{}
 	for path := range paths {
 		normalized := normalizeResourceLookupPath(path)
 		if normalized == "" {
@@ -1358,9 +1366,35 @@ func newResourceLookup(paths map[string]bool) resourceLookup {
 		if ext := filepath.Ext(base); ext != "" {
 			lookup.stems[strings.TrimSuffix(base, ext)] = true
 		}
+		// One entry per path segment boundary. A CK3 resource path has a
+		// handful of segments, so this stays a small multiple of the resource
+		// count rather than anything quadratic.
+		for at := 0; at < len(normalized); at++ {
+			if normalized[at] == '/' {
+				tails[normalized[at+1:]] = true
+			}
+		}
 	}
 	sort.Strings(lookup.sorted)
+	lookup.tails = make([]string, 0, len(tails))
+	for tail := range tails {
+		lookup.tails = append(lookup.tails, tail)
+	}
+	sort.Strings(lookup.tails)
 	return lookup
+}
+
+// hasTail reports whether some resource path ends with "/"+text.
+func (lookup resourceLookup) hasTail(text string) bool {
+	index := sort.SearchStrings(lookup.tails, text)
+	return index < len(lookup.tails) && lookup.tails[index] == text
+}
+
+// hasTailPrefix reports whether some resource path continues with text
+// immediately after a slash, which is what the extensionless fallback asks.
+func (lookup resourceLookup) hasTailPrefix(text string) bool {
+	index := sort.SearchStrings(lookup.tails, text)
+	return index < len(lookup.tails) && strings.HasPrefix(lookup.tails[index], text)
 }
 
 func normalizeResourceLookupPath(name string) string {
@@ -1392,13 +1426,8 @@ func (lookup resourceLookup) resolved(name string) bool {
 		if !strings.Contains(normalized, "/") && lookup.basenames[normalized] {
 			return true
 		}
-		suffix := "/" + normalized
-		for _, path := range lookup.sorted {
-			if strings.HasSuffix(path, suffix) {
-				return true
-			}
-		}
-		return false
+		// Was: HasSuffix(path, "/"+normalized) over every resource path.
+		return lookup.hasTail(normalized)
 	}
 	if !strings.Contains(normalized, "/") && lookup.stems[normalized] {
 		return true
@@ -1407,13 +1436,12 @@ func (lookup resourceLookup) resolved(name string) bool {
 	if index < len(lookup.sorted) && strings.HasPrefix(lookup.sorted[index], normalized) {
 		return true
 	}
-	suffixPrefix := "/" + normalized
-	for _, path := range lookup.sorted {
-		if at := strings.LastIndex(path, suffixPrefix); at >= 0 && strings.HasPrefix(path[at+1:], normalized) {
-			return true
-		}
-	}
-	return false
+	// Was: LastIndex(path, "/"+normalized) >= 0 over every resource path. The
+	// HasPrefix that followed it was always true -- LastIndex having found
+	// "/"+normalized at `at` means path[at+1:] starts with normalized by
+	// construction -- so the test reduces to "does some path contain
+	// /normalized", which is the same tail-prefix question.
+	return lookup.hasTailPrefix(normalized)
 }
 
 // refreshRefsResolvedGo resolves refs in Go using the objects map rather than

@@ -721,14 +721,16 @@ func scanProvinceImage(path string, defs map[uint32]int, blocked map[int]mapBloc
 	}
 	b := img.Bounds()
 	w, h := b.Dx(), b.Dy()
-	labels := make([]int, w*h)
+	labels := make([]provinceLabel, w*h)
+	readRow := newPackedRowReader(img)
+	row := make([]uint32, w)
 	provinces := map[int]*mapProvinceBuild{}
 	for y := 0; y < h; y++ {
+		readRow(y, row)
 		for x := 0; x < w; x++ {
-			r16, g16, b16, _ := img.At(b.Min.X+x, b.Min.Y+y).RGBA()
-			key := uint32(uint8(r16>>8))<<16 | uint32(uint8(g16>>8))<<8 | uint32(uint8(b16>>8))
+			key := row[x]
 			id := defs[key]
-			labels[y*w+x] = id
+			labels[y*w+x] = provinceLabel(id)
 			if id <= 0 {
 				continue
 			}
@@ -770,7 +772,7 @@ func scanProvinceImage(path string, defs map[uint32]int, blocked map[int]mapBloc
 	}
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
-			id := labels[y*w+x]
+			id := int(labels[y*w+x])
 			if id <= 0 {
 				continue
 			}
@@ -781,7 +783,7 @@ func scanProvinceImage(path string, defs map[uint32]int, blocked map[int]mapBloc
 				provinces[id].Perimeter++
 			}
 			if x+1 < w {
-				other := labels[y*w+x+1]
+				other := int(labels[y*w+x+1])
 				add(id, other)
 				if other != id {
 					provinces[id].Perimeter++
@@ -793,7 +795,7 @@ func scanProvinceImage(path string, defs map[uint32]int, blocked map[int]mapBloc
 				provinces[id].Perimeter++
 			}
 			if y+1 < h {
-				other := labels[(y+1)*w+x]
+				other := int(labels[(y+1)*w+x])
 				add(id, other)
 				if other != id {
 					provinces[id].Perimeter++
@@ -806,8 +808,7 @@ func scanProvinceImage(path string, defs map[uint32]int, blocked map[int]mapBloc
 			}
 		}
 	}
-	fills := encodeProvinceRuns(labels, w, h, false)
-	boundaries := encodeProvinceRuns(labels, w, h, true)
+	fills, boundaries := encodeProvinceRuns(labels, w, h)
 	for id, p := range provinces {
 		p.FillRLE = fills[id]
 		p.BoundaryRLE = boundaries[id]
@@ -836,9 +837,14 @@ func appendMapRun(buffers map[int]*bytes.Buffer, id, y, x0, x1 int) {
 	}
 }
 
-func encodeProvinceRuns(labels []int, width, height int, boundaryOnly bool) map[int][]byte {
-	buffers := map[int]*bytes.Buffer{}
-	isBoundary := func(x, y, id int) bool {
+// encodeProvinceRuns produces the fill and boundary run maps in one walk. They
+// used to be two separate full-image traversals over the same label matrix,
+// which at 8K meant 67 million extra label reads to answer a question the
+// first walk was already positioned to answer.
+func encodeProvinceRuns(labels []provinceLabel, width, height int) (map[int][]byte, map[int][]byte) {
+	fillBuffers := map[int]*bytes.Buffer{}
+	boundaryBuffers := map[int]*bytes.Buffer{}
+	isBoundary := func(x, y int, id provinceLabel) bool {
 		if x == 0 || y == 0 || x+1 == width || y+1 == height {
 			return true
 		}
@@ -846,32 +852,53 @@ func encodeProvinceRuns(labels []int, width, height int, boundaryOnly bool) map[
 			labels[(y-1)*width+x] != id || labels[(y+1)*width+x] != id
 	}
 	for y := 0; y < height; y++ {
-		runID, runStart := 0, -1
-		flush := func(x int) {
-			if runID > 0 {
-				appendMapRun(buffers, runID, y, runStart, x-1)
+		fillID, fillStart := 0, -1
+		boundaryID, boundaryStart := 0, -1
+		flushFill := func(x int) {
+			if fillID > 0 {
+				appendMapRun(fillBuffers, fillID, y, fillStart, x-1)
 			}
-			runID, runStart = 0, -1
+			fillID, fillStart = 0, -1
+		}
+		flushBoundary := func(x int) {
+			if boundaryID > 0 {
+				appendMapRun(boundaryBuffers, boundaryID, y, boundaryStart, x-1)
+			}
+			boundaryID, boundaryStart = 0, -1
 		}
 		for x := 0; x < width; x++ {
-			id := labels[y*width+x]
-			include := id > 0 && (!boundaryOnly || isBoundary(x, y, id))
-			if !include {
-				flush(x)
+			label := labels[y*width+x]
+			id := int(label)
+			if id <= 0 {
+				flushFill(x)
+				flushBoundary(x)
 				continue
 			}
-			if runID != id {
-				flush(x)
-				runID, runStart = id, x
+			if fillID != id {
+				flushFill(x)
+				fillID, fillStart = id, x
 			}
+			if isBoundary(x, y, label) {
+				if boundaryID != id {
+					flushBoundary(x)
+					boundaryID, boundaryStart = id, x
+				}
+				continue
+			}
+			flushBoundary(x)
 		}
-		flush(width)
+		flushFill(width)
+		flushBoundary(width)
 	}
-	out := map[int][]byte{}
-	for id, buffer := range buffers {
-		out[id] = buffer.Bytes()
+	fills := map[int][]byte{}
+	for id, buffer := range fillBuffers {
+		fills[id] = buffer.Bytes()
 	}
-	return out
+	boundaries := map[int][]byte{}
+	for id, buffer := range boundaryBuffers {
+		boundaries[id] = buffer.Bytes()
+	}
+	return fills, boundaries
 }
 
 // DecodeMapRuns decodes map_province_geometry RLE blobs.

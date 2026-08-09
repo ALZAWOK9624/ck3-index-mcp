@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	xdraw "golang.org/x/image/draw"
@@ -266,6 +267,60 @@ type mapTextRenderer struct {
 	faces  map[int]font.Face
 }
 
+// A CJK font is tens of megabytes, and every render re-read and re-parsed it.
+// Only the parsed font is cached, never the renderer: font.Face carries mutable
+// per-render state and a Close, whereas an sfnt font is documented as safe for
+// concurrent use as long as each face owns its buffer -- which opentype.NewFace
+// arranges. The key is the file's identity, so replacing the font on disk is
+// picked up without a restart.
+var mapFontCache struct {
+	sync.Mutex
+	identity string
+	parsed   *opentype.Font
+}
+
+func mapFontIdentity(path string) (string, bool) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", false
+	}
+	return fmt.Sprintf("%s\x00%d\x00%d", path, info.Size(), info.ModTime().UnixNano()), true
+}
+
+func parseMapFont(path string) (*opentype.Font, []string) {
+	identity, addressable := mapFontIdentity(path)
+	if addressable {
+		mapFontCache.Lock()
+		if mapFontCache.parsed != nil && mapFontCache.identity == identity {
+			cached := mapFontCache.parsed
+			mapFontCache.Unlock()
+			return cached, nil
+		}
+		mapFontCache.Unlock()
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, []string{"could not read configured map font; localized map labels will be hidden"}
+	}
+	parsed, err := opentype.Parse(data)
+	if err != nil {
+		collection, collectionErr := opentype.ParseCollection(data)
+		if collectionErr != nil || collection.NumFonts() == 0 {
+			return nil, []string{"could not parse configured map font; localized map labels will be hidden"}
+		}
+		parsed, err = collection.Font(0)
+	}
+	if err != nil {
+		return nil, []string{"could not select configured map font; localized map labels will be hidden"}
+	}
+	if addressable {
+		mapFontCache.Lock()
+		mapFontCache.identity, mapFontCache.parsed = identity, parsed
+		mapFontCache.Unlock()
+	}
+	return parsed, nil
+}
+
 func loadMapTextRenderer(path string) (*mapTextRenderer, []string) {
 	if path == "" {
 		path = strings.TrimSpace(os.Getenv("CK3_INDEX_MAP_FONT"))
@@ -273,20 +328,9 @@ func loadMapTextRenderer(path string) (*mapTextRenderer, []string) {
 	if path == "" {
 		return &mapTextRenderer{}, []string{"no CJK font configured; localized map labels will be hidden"}
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return &mapTextRenderer{}, []string{"could not read configured map font; localized map labels will be hidden"}
-	}
-	parsed, err := opentype.Parse(data)
-	if err != nil {
-		collection, collectionErr := opentype.ParseCollection(data)
-		if collectionErr != nil || collection.NumFonts() == 0 {
-			return &mapTextRenderer{}, []string{"could not parse configured map font; localized map labels will be hidden"}
-		}
-		parsed, err = collection.Font(0)
-	}
-	if err != nil {
-		return &mapTextRenderer{}, []string{"could not select configured map font; localized map labels will be hidden"}
+	parsed, warnings := parseMapFont(path)
+	if parsed == nil {
+		return &mapTextRenderer{}, warnings
 	}
 	face, err := opentype.NewFace(parsed, &opentype.FaceOptions{Size: 13, DPI: 96, Hinting: font.HintingFull})
 	if err != nil {

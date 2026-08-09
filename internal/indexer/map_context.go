@@ -31,7 +31,10 @@ type activeMapFile struct {
 // it covers only the direct inputs and cache semantics of rebuildMapCache.
 // Bump it when that pipeline starts consuming a new input or changes output
 // semantics that cannot be inferred from the input bytes alone.
-const mapInputFingerprintVersion = "map_input_v3_bookmark_contracts"
+// v4 folds the observed GIS sidecar state into the hash. Before it, a
+// configured sidecar disabled map-cache reuse entirely rather than being
+// described, so every cache built under v3 was going to be discarded anyway.
+const mapInputFingerprintVersion = "map_input_v4_gis_sidecar_state"
 
 type mapProvinceBuild struct {
 	ID              int
@@ -106,7 +109,10 @@ type mapBlockKind struct {
 	WaterKind string
 }
 
-func rebuildMapCache(ctx context.Context, tx *sql.Tx, cfg Config) error {
+// rebuildMapCache consumes the manifest the caller already built. It must not
+// re-collect or re-hash the active map inputs: that is the same full source
+// walk and the same whole-raster read the caller just paid for.
+func rebuildMapCache(ctx context.Context, tx *sql.Tx, cfg Config, manifest mapInputManifest) error {
 	for _, table := range []string{
 		"map_titles", "map_title_adjacencies", "map_province_history",
 		"map_title_provinces", "map_integrity_issues", "map_title_history", "map_characters", "map_character_history",
@@ -117,15 +123,9 @@ func rebuildMapCache(ctx context.Context, tx *sql.Tx, cfg Config) error {
 		}
 	}
 
-	active, err := collectActiveMapFiles(cfg)
-	if err != nil {
-		return err
-	}
+	active := manifest.Active
+	inputFingerprint := manifest.Fingerprint
 	mapDiagnostics, definedIDs := collectBaseMapContractDiagnostics(ctx, active)
-	inputFingerprint, _, err := mapInputFingerprintForActive(cfg, active)
-	if err != nil {
-		return err
-	}
 	if err := rebuildMapPhysicalCache(ctx, tx, active); err != nil {
 		return err
 	}
@@ -411,19 +411,33 @@ func collectActiveMapFiles(cfg Config) (map[string]activeMapFile, error) {
 // A configured, trusted GIS sidecar is treated as an independently mutable
 // runtime dependency. Its availability/version is established by the map
 // rebuild itself, so map-cache reuse stays conservative in that configuration.
-func mapInputFingerprint(cfg Config) (string, bool, map[string]activeMapFile, error) {
-	active, err := collectActiveMapFiles(cfg)
-	if err != nil {
-		return "", false, nil, err
-	}
-	fingerprint, reusable, err := mapInputFingerprintForActive(cfg, active)
-	if err != nil {
-		return "", false, nil, err
-	}
-	return fingerprint, reusable, active, nil
+// mapInputManifest is one walk-and-hash of the active map inputs, carried
+// through the rest of the scan. Collecting the active set means walking every
+// source, and fingerprinting it means reading and hashing every map input --
+// which for a real project is not a handful of PNGs but landed titles,
+// province terrain, religion and holy sites, map object data, province, title
+// and character history, materials settings, and large TGA/PNG rasters.
+// rebuildMapCache used to redo both from cfg, so a scan that rebuilt the map
+// cache paid for the whole set twice.
+type mapInputManifest struct {
+	Active      map[string]activeMapFile
+	Fingerprint string
+	Reusable    bool
 }
 
-func mapInputFingerprintForActive(cfg Config, active map[string]activeMapFile) (string, bool, error) {
+func collectMapInputManifest(ctx context.Context, cfg Config) (mapInputManifest, error) {
+	active, err := collectActiveMapFiles(cfg)
+	if err != nil {
+		return mapInputManifest{}, err
+	}
+	fingerprint, reusable, err := mapInputFingerprintForActive(ctx, cfg, active)
+	if err != nil {
+		return mapInputManifest{}, err
+	}
+	return mapInputManifest{Active: active, Fingerprint: fingerprint, Reusable: reusable}, nil
+}
+
+func mapInputFingerprintForActive(ctx context.Context, cfg Config, active map[string]activeMapFile) (string, bool, error) {
 	h := sha256.New()
 	_, _ = io.WriteString(h, mapInputFingerprintVersion+"\x00")
 	_, _ = io.WriteString(h, fmt.Sprintf("gis=%t\x00analysis=%s\x00sidecar=%s\x00cache_root=%s\x00cache_limit=%d\x00timeout=%d\x00",
@@ -463,11 +477,29 @@ func mapInputFingerprintForActive(cfg Config, active map[string]activeMapFile) (
 		_, _ = io.WriteString(h, "\x00")
 	}
 
-	// InspectGISSidecar hashes and executes the external binary. If a trusted
-	// sidecar is configured, preserve the old conservative behavior: rebuild
-	// map-derived GIS data every full scan so runtime availability changes are
-	// never silently retained.
-	reusable := !cfg.GISEnabled || strings.TrimSpace(cfg.GISSidecarSHA256) == ""
+	// The sidecar is an independently mutable runtime dependency, so map-derived
+	// GIS data must not survive a change in whether it runs or at what version.
+	// This used to be handled by refusing reuse outright whenever a trusted
+	// sidecar was configured -- which is the production configuration, so the
+	// entire map cache was rebuilt on every single full scan and the cache
+	// never once paid for itself.
+	//
+	// Describing the dependency is strictly stronger than refusing to trust it:
+	// a removed, replaced, downgraded, or newly failing sidecar all change the
+	// fingerprint and force the rebuild that actually matters, while an
+	// unchanged one now lets the cache be reused. InspectGISSidecar is memoized
+	// against the file's identity, so asking costs one verification per process
+	// rather than one per scan.
+	reusable := true
+	if cfg.GISEnabled && strings.TrimSpace(cfg.GISSidecarSHA256) != "" {
+		sidecar := InspectGISSidecar(ctx, cfg)
+		_, _ = io.WriteString(h, fmt.Sprintf("sidecar_available=%t\x00sidecar_version=%s\x00sidecar_measured_sha=%s\x00sidecar_analysis_status=%s\x00",
+			sidecar.Available,
+			strings.TrimSpace(sidecar.Version),
+			strings.TrimSpace(sidecar.SHA256),
+			strings.TrimSpace(sidecar.AnalysisStatus),
+		))
+	}
 	return fmt.Sprintf("%x", h.Sum(nil)), reusable, nil
 }
 

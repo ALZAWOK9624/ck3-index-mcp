@@ -588,11 +588,11 @@ parsedFilesComplete:
 	// otherwise an apparently no-op scan could leave a derived cache stale.
 	if !fileChanges && !engineDataDirty && publishedState.Ready() && cachedRuleVersion == indexRuleVersion && ftsCurrent {
 		stageStart := time.Now()
-		mapFingerprint, mapReusable, activeMapFiles, err := mapInputFingerprint(cfg)
+		manifest, err := collectMapInputManifest(ctx, cfg)
 		if err != nil {
 			return ScanStats{}, err
 		}
-		mapCurrent, err := mapCacheMatchesInput(ctx, tx, mapFingerprint, mapReusable, activeMapFiles)
+		mapCurrent, err := mapCacheMatchesInput(ctx, tx, manifest.Fingerprint, manifest.Reusable, manifest.Active)
 		if err != nil {
 			return ScanStats{}, err
 		}
@@ -761,11 +761,11 @@ parsedFilesComplete:
 
 	fmt.Fprintln(os.Stderr, "[scan] checking map context cache inputs")
 	stageStart = time.Now()
-	mapFingerprint, mapReusable, activeMapFiles, err := mapInputFingerprint(cfg)
+	mapManifest, err := collectMapInputManifest(ctx, cfg)
 	if err != nil {
 		return ScanStats{}, err
 	}
-	mapCurrent, err := mapCacheMatchesInput(ctx, tx, mapFingerprint, mapReusable, activeMapFiles)
+	mapCurrent, err := mapCacheMatchesInput(ctx, tx, mapManifest.Fingerprint, mapManifest.Reusable, mapManifest.Active)
 	if err != nil {
 		return ScanStats{}, err
 	}
@@ -774,7 +774,7 @@ parsedFilesComplete:
 		stats.TimingsMillis["map_context_reused"] = time.Since(stageStart).Milliseconds()
 	} else {
 		fmt.Fprintln(os.Stderr, "[scan] rebuilding map context cache")
-		if err := rebuildMapCache(ctx, tx, cfg); err != nil {
+		if err := rebuildMapCache(ctx, tx, cfg, mapManifest); err != nil {
 			return ScanStats{}, err
 		}
 		stats.TimingsMillis["map_context_rebuild"] = time.Since(stageStart).Milliseconds()

@@ -404,7 +404,11 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 		return ScanStats{}, err
 	}
 	if mapRefresh {
-		if err := rebuildMapCache(ctx, tx, cfg); err != nil {
+		mapManifest, err := collectMapInputManifest(ctx, cfg)
+		if err != nil {
+			return ScanStats{}, err
+		}
+		if err := rebuildMapCache(ctx, tx, cfg, mapManifest); err != nil {
 			return ScanStats{}, err
 		}
 	}

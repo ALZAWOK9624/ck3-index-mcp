@@ -7,7 +7,15 @@ description: CK3 mod coding workflow. Use when editing, reviewing, generating, o
 
 Use this skill for CK3 mod scripting work. Treat `ck3-index` as the first source of truth for definitions, references, localization, resources, and diagnostics. Treat compiled scope/shape rules as hints that must be checked against indexed examples before risky edits.
 
-For CK3 semantic questions, do not begin with `rg`. Call `ck3_search`, `ck3_inspect`, `ck3_prepare_edit`, or the relevant map tool first; use `rg` only to inspect the exact text behind indexed evidence. If the MCP tools are not attached to the current session, use the equivalent `ck3-index` CLI command instead of silently falling back to broad text search.
+For CK3 semantic questions, do not begin with `rg`. Call `ck3_search`, `ck3_inspect`, `ck3_prepare_edit`, or the relevant map tool first; use `rg` only to inspect the exact text behind indexed evidence.
+
+## The MCP tools, not the CLI
+
+Anything an MCP tool covers goes through the MCP tool. Do not decide from the outside that the tools are unavailable: call `ck3_health` and let it answer. Only a failure of that call itself licenses the `ck3-index` CLI, and an answer built on CLI output has to say so.
+
+The two are not equivalent, so a CLI result is never evidence about the service. The CLI runs without the launcher that exports the GIS sidecar path and hash, and without visibility redaction. Reading "GIS unavailable" or a missing database from a shell invocation describes that invocation's environment, not what the server does for a caller.
+
+A handful of operations genuinely have no MCP tool -- `bench`, `accuracy`, `scan`, `validate`, `diag_stats`, `package-dir`. Use the CLI for exactly those, and return to the tools for everything else in the same task. Needing the shell for one step is not a reason to run the rest of the task there.
 
 Do not launch expensive MCP calls in parallel. Await each workspace-wide query, review, preflight, impact analysis, refresh, package, GUI analysis, map analysis, map authoring, or raster operation before starting another expensive call. Cheap exact searches and inspections may use ordinary concurrency, but the server queue is an overload boundary rather than a batching API.
 

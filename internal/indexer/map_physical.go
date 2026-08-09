@@ -191,51 +191,8 @@ func heightSample(img image.Image, x, y int) float64 {
 	return (0.2126*float64(r) + 0.7152*float64(g) + 0.0722*float64(b16)) / 65535
 }
 
-func buildMultiDirectionalHillshade(heightmap image.Image) *image.Gray {
-	hillshade, _, _ := buildMultiScaleRelief(heightmap)
-	return hillshade
-}
-
-func buildMultiScaleRelief(heightmap image.Image) (*image.Gray, *image.Gray, *image.Gray) {
-	b := heightmap.Bounds()
-	hillshade := image.NewGray(image.Rect(0, 0, b.Dx(), b.Dy()))
-	detail := image.NewGray(image.Rect(0, 0, b.Dx(), b.Dy()))
-	elevation := image.NewGray(image.Rect(0, 0, b.Dx(), b.Dy()))
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		for x := b.Min.X; x < b.Max.X; x++ {
-			h0 := heightSample(heightmap, x, y)
-			dxFine := (heightSample(heightmap, x+1, y) - heightSample(heightmap, x-1, y)) * 9.0
-			dyFine := (heightSample(heightmap, x, y+1) - heightSample(heightmap, x, y-1)) * 9.0
-			dxBroad := (heightSample(heightmap, x+4, y) - heightSample(heightmap, x-4, y)) * 2.25
-			dyBroad := (heightSample(heightmap, x, y+4) - heightSample(heightmap, x, y-4)) * 2.25
-			dx := 0.62*dxFine + 0.38*dxBroad
-			dy := 0.62*dyFine + 0.38*dyBroad
-			nx, ny, nz := -dx, -dy, 1.0
-			length := math.Sqrt(nx*nx + ny*ny + nz*nz)
-			nx, ny, nz = nx/length, ny/length, nz/length
-			light := func(azimuth float64) float64 {
-				altitude := 45 * math.Pi / 180
-				azimuth *= math.Pi / 180
-				lx := math.Cos(altitude) * math.Sin(azimuth)
-				ly := -math.Cos(altitude) * math.Cos(azimuth)
-				lz := math.Sin(altitude)
-				return math.Max(0, nx*lx+ny*ly+nz*lz)
-			}
-			shade := 0.72*light(315) + 0.28*light(45)
-			broadMean := (heightSample(heightmap, x-5, y) + heightSample(heightmap, x+5, y) + heightSample(heightmap, x, y-5) + heightSample(heightmap, x, y+5)) / 4
-			fineMean := (heightSample(heightmap, x-2, y) + heightSample(heightmap, x+2, y) + heightSample(heightmap, x, y-2) + heightSample(heightmap, x, y+2)) / 4
-			curvature := (h0-fineMean)*42 + (h0-broadMean)*18
-			shade = math.Max(0, math.Min(1, shade+math.Max(-0.10, math.Min(0.10, curvature*0.12))))
-			value := uint8(math.Round(math.Max(0, math.Min(1, 0.12+shade*0.88)) * 255))
-			detailValue := uint8(math.Round(math.Max(0, math.Min(1, 0.5+curvature)) * 255))
-			elevationValue := uint8(math.Round(math.Max(0, math.Min(1, h0)) * 255))
-			hillshade.SetGray(x-b.Min.X, y-b.Min.Y, color.Gray{Y: value})
-			detail.SetGray(x-b.Min.X, y-b.Min.Y, color.Gray{Y: detailValue})
-			elevation.SetGray(x-b.Min.X, y-b.Min.Y, color.Gray{Y: elevationValue})
-		}
-	}
-	return hillshade, detail, elevation
-}
+// buildMultiScaleRelief and buildMultiDirectionalHillshade live in map_relief.go,
+// where the per-pixel work is done against a flattened height field.
 
 type terrainAnchor struct {
 	X, Z     float64

@@ -85,19 +85,26 @@ func newNearMissDB(t *testing.T) *DB {
 	return db
 }
 
-// instr() is case-sensitive, which is why the existing searchContains fallback
-// could not reach a lower_snake_case identifier from a prose spelling.
-func TestSearchInsensitiveContainsFoldsCase(t *testing.T) {
+// Recovery has to come from the indexed prefix range, not a substring scan: on
+// the production index a substring pass costs about 1.5 s per column.
+func TestSearchIndexedSpellingUsesThePrefixRange(t *testing.T) {
 	db := newNearMissDB(t)
 	ctx := context.Background()
-	for _, query := range []string{"PALE_KNIGHT", "Pale_Knight", "KNIGHT"} {
-		evidence, err := db.searchInsensitiveContains(ctx, query, SearchOptions{}, 8)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(evidence) == 0 {
-			t.Fatalf("case-folded contains found nothing for %q", query)
-		}
+	evidence, err := db.searchIndexedSpelling(ctx, "pale_knight", SearchOptions{}, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evidence) == 0 {
+		t.Fatal("indexed spelling lookup found nothing for pale_knight")
+	}
+	// A mid-name substring is deliberately not recovered: serving it would mean
+	// reintroducing the unindexed scan this function exists to avoid.
+	interior, err := db.searchIndexedSpelling(ctx, "knight", SearchOptions{}, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(interior) != 0 {
+		t.Fatalf("interior substring was served from the prefix path: %v", interior)
 	}
 }
 

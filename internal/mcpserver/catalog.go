@@ -147,8 +147,8 @@ func buildCanonicalTools() []ToolDefinition {
 			CompatibilityProperties: legacyPrivacyProperties,
 		},
 		{
-			Name:  "ck3_save",
-			Title: "Read CK3 Save Metadata",
+			Name:        "ck3_save",
+			Title:       "Read CK3 Save Metadata",
 			Description: "Read one CK3 save file's metadata section. card reports the save's identity: version, in-game date, player character, primary title, house, government, and player count. compatibility reports the mods, DLCs, and game rules the save declares, so a caller can compare them against its own configuration.",
 			InputSchema: objectSchema(map[string]any{
 				"path":      stringProperty("Save file inside a configured save root, named relative to that root."),
@@ -179,13 +179,20 @@ func buildCanonicalTools() []ToolDefinition {
 			CompatibilityProperties: legacyPrivacyProperties,
 		},
 		{
-			Name:         "ck3_health",
-			Title:        "Check CK3 Index Health",
-			Description:  "Check whether the database, schema, indexes, and MCP registration are trustworthy, and confirm which configuration is live. Reports bounded SQLite read/cache settings plus active heavy/raster tasks and estimated task memory. The active config and source roots are identifiable while the database path stays redacted.",
+			Name:        "ck3_health",
+			Title:       "Check CK3 Index Health",
+			Description: "Check whether the database, schema, indexes, and MCP registration are trustworthy, and confirm which configuration is live. Reports bounded SQLite read/cache settings, active and queued task classes, concurrency limits, queue/execution timeouts, reserved ordinary-query connections, and estimated task memory. The active config and source roots are identifiable while the database path stays redacted.",
 			InputSchema: objectSchema(map[string]any{
 				"mode": stringProperty("quick answers from recorded scan totals; deep re-counts every table and re-verifies the GIS sidecar.", "quick", "deep"),
 			}),
 			OutputSchema: output, Annotations: annotations, Handler: handleHealth,
+		},
+		{
+			Name:         "ck3_database",
+			Title:        "Select CK3 Index Database",
+			Description:  "List the administrator-configured SQLite indexes, report the active database, or hot-switch subsequent MCP calls to one exact configured name without restarting the server. In-flight calls retain their original database lease; callers never provide filesystem paths.",
+			InputSchema:  databaseInputSchema(),
+			OutputSchema: output, Annotations: artifactAnnotations(), Handler: handleDatabase,
 		},
 		{
 			Name:         "ck3_package",
@@ -245,6 +252,16 @@ func refreshInputSchema() map[string]any {
 			"items":       map[string]any{"type": "string", "minLength": 1, "maxLength": 1024},
 		},
 	})
+}
+
+func databaseInputSchema() map[string]any {
+	operation := stringProperty("Database control operation. list is the default and discovers allowed names; status reports the active lease identity; switch selects one configured name for subsequent calls.", "list", "status", "switch")
+	operation["default"] = "list"
+	name := stringProperty("Exact configured database name, required for operation=switch.")
+	name["minLength"] = 1
+	name["maxLength"] = 64
+	name["pattern"] = `^[A-Za-z0-9][A-Za-z0-9_-]*$`
+	return objectSchema(map[string]any{"operation": operation, "name": name})
 }
 
 type catalogToolBoundary struct {
@@ -319,6 +336,11 @@ func standardizeCanonicalToolDescriptions(definitions []ToolDefinition) []ToolDe
 			When:     "checking whether the MCP registration and index database are trustworthy, or confirming which configuration and source trees are live",
 			DoNotUse: "the task is to diagnose CK3 source logic; use ck3_diagnostics or ck3_review instead",
 			Unlike:   "ck3_refresh, it observes health and does not update the index",
+		},
+		"ck3_database": {
+			When:     "the running MCP service has multiple configured SQLite indexes and the task needs a different evidence base",
+			DoNotUse: "only source content inside the already active index needs discovery or inspection",
+			Unlike:   "ck3_workspace, it changes which configured index supplies subsequent calls rather than inspecting content",
 		},
 		"ck3_package": {
 			When:     "a validated set of Mod files must be packaged into a portable installation artifact",

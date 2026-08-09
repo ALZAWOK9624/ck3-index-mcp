@@ -328,21 +328,25 @@ func encodeToolError(err error, runtime *Runtime) map[string]any {
 		"recovery":  typed.Recovery,
 	}
 	data, _ := json.Marshal(payload)
-	return map[string]any{
+	result := map[string]any{
 		"content":           []map[string]any{{"type": "text", "text": message}},
 		"structuredContent": structuredObject(data),
 		"isError":           true,
 	}
+	if runtime != nil {
+		result["database"] = runtime.databaseIdentity()
+	}
+	return result
 }
 
-func encodeInternalToolError(code, message string) map[string]any {
+func encodeInternalToolError(runtime *Runtime, code, message string) map[string]any {
 	category := "index_state"
 	retryable := true
 	if code == ErrorInternal {
 		category = "internal"
 		retryable = false
 	}
-	return encodeToolError(newToolError(code, category, message, retryable, nil, nil), nil)
+	return encodeToolError(newToolError(code, category, message, retryable, nil, nil), runtime)
 }
 
 func structuredObject(data []byte) map[string]any {
@@ -416,10 +420,22 @@ func mcpHealthReport(h indexer.HealthReport) map[string]any {
 		"sqlite_cache_budget_mb":         h.SQLiteCacheBudgetMB,
 		"sqlite_mmap_limit_mb":           h.SQLiteMMapLimitMB,
 		"active_tasks":                   h.ActiveTasks,
+		"active_expensive_tasks":         h.ActiveExpensiveTasks,
 		"active_heavy_tasks":             h.ActiveHeavyTasks,
 		"active_raster_tasks":            h.ActiveRasterTasks,
-		"estimated_task_memory_mb":       h.EstimatedTaskMemoryMB,
-		"guidance":                       h.Guidance,
+		"queued_tasks":                   h.QueuedTasks,
+		"queued_expensive_tasks":         h.QueuedExpensiveTasks,
+		"queued_heavy_tasks":             h.QueuedHeavyTasks,
+		"queued_raster_tasks":            h.QueuedRasterTasks,
+		"mcp_max_tasks":                  h.MCPMaxTasks,
+		"mcp_max_heavy_tasks":            h.MCPMaxHeavyTasks,
+		"mcp_max_raster_tasks":           h.MCPMaxRasterTasks,
+		"mcp_max_queued_tasks":           h.MCPMaxQueuedTasks,
+		"mcp_queue_timeout_seconds":      h.MCPQueueTimeoutSecs,
+		"mcp_execution_timeout_seconds":  h.MCPExecutionTimeoutSecs,
+		"sqlite_connections_reserved_for_ordinary_tasks": h.SQLiteOrdinaryReserve,
+		"estimated_task_memory_mb":                       h.EstimatedTaskMemoryMB,
+		"guidance":                                       h.Guidance,
 	}
 	// Health is served only under private visibility (see handleHealth), so the
 	// resolved config path and source roots stay out of any public response.

@@ -51,6 +51,44 @@ private = false
 resource_only = true
 ```
 
+### MCP 并发、排队与超时
+
+重型、栅格与其他高成本调用由每个 MCP 服务实例的共享限额约束；栅格任务同时占用重型共享限额。超出活动限额的请求进入有界队列，被重型限额阻塞的请求不会堵住可运行的普通查询。客户端取消会传递到正在执行的任务和 SQLite 查询；排队超时返回 `OPERATION_QUEUE_TIMEOUT`，执行超时返回 `OPERATION_TIMEOUT`，两者的 `details.phase` 不同。
+
+```toml
+sqlite_read_connections = 8
+mcp_max_tasks = 12
+mcp_max_heavy_tasks = 2       # 共享高成本任务限额，必须小于总任务数和 SQLite 连接数
+mcp_max_raster_tasks = 1      # 同时受 mcp_max_heavy_tasks 约束
+mcp_max_queued_tasks = 32
+mcp_queue_timeout_seconds = 15
+mcp_execution_timeout_seconds = 900
+```
+
+`ck3_health` 会报告活动/排队任务、各类上限、两段超时以及为普通查询保留的 SQLite 连接数。调用方仍应串行提交重型任务；服务端队列是故障边界，不是批处理接口。
+
+### MCP 运行时数据库热切换
+
+一个 MCP 进程可以由管理员预先登记多个具名 SQLite 索引。AI 先调用 `ck3_database` 的 `list` 操作读取名称与说明，再用 `switch` 选择所需证据库；工具不接受任意文件路径。`config` 适合来源模型不同的另一套工作区配置，`database` 只适合同一工作区配置的另一份索引快照。
+
+```toml
+database = "cache/project.sqlite"
+mcp_database_name = "project"
+mcp_database_description = "当前 Mod、上游和游戏本体的合并索引"
+
+[[mcp_database]]
+name = "vanilla"
+description = "只含 CK3 原版与引擎资料"
+config = "base-vanilla.toml"
+
+[[mcp_database]]
+name = "previous"
+description = "当前工作区的上一份索引快照"
+database = "cache/project-previous.sqlite"
+```
+
+切换无需重启 MCP，只影响切换完成后开始的调用。已经运行的查询继续持有原数据库租约，最后一个旧租约释放后旧连接池才会关闭；如果期间切回旧库，会安全复用仍存活的连接池。所有工具结果都带有 `database.name` 与 `database.epoch`，`ck3_health` 还报告当前库和已配置库数量，避免把两个索引的证据混在一起。
+
 `role` 表示来源身份，`rank` 只表示覆盖优先级；配置必须恰好有一个 `project` 来源。`private = true` 的来源不会进入公开可见性结果。`resource_only = true` 只遍历 `gfx/`、`map_data/` 和 `sound/`，适合把 CK3 安装目录中的 `game`、`clausewitz`、`jomini` 资源补入解析，而不重复索引其脚本定义；它不能用于 `project` 来源。
 
 ### 多工程共用上游索引
@@ -127,7 +165,7 @@ base 必须用一份**工程来源指向空目录**、其余来源与本配置�
 MCP 只公开一套规范工具；精细能力通过各工具的受限 `operation` 参数提供。详细参数见 [MCP 工具参考](docs/MCP_TOOL_REFERENCE.md)。
 
 <!-- BEGIN GENERATED MCP TOOLS -->
-## MCP 工具（35 个规范工具）
+## MCP 工具（36 个规范工具）
 
 ck3-index 仅公开一套规范 MCP 工具；细分能力通过受限 operation 提供，不再保留旧版专用工具别名。
 
@@ -148,6 +186,7 @@ ck3-index 仅公开一套规范 MCP 工具；细分能力通过受限 operation 
 | `ck3_refresh` | 在 Mod 源文件变动后刷新已配置工程层的索引。status 只报告就绪状态；files 只增量更新显式给出的相对路径；full 通过旁路扫描和事务发布完整重建，不会悄悄降级。 |
 | `ck3_script_reference` | 查询一项本地引擎或脚本规则事实。通过 kind 选择作用域、数据类型、值形状、define、on_action、迭代器、示例或修正值。 |
 | `ck3_health` | 检查数据库、结构、索引与 MCP 注册是否可信，并报告 SQLite 读取连接、缓存预算、当前重型/栅格任务和估算任务内存。配置与来源根可辨识，数据库绝对路径保持隐藏。 |
+| `ck3_database` | 列出管理员配置的 SQLite 索引、报告当前数据库，或在不重启 MCP 的情况下按名称热切换后续调用。运行中的调用继续持有原数据库租约，调用方不能提交文件路径。 |
 | `ck3_package` | 严格验证模型生成的 CK3 文本与二进制文件，统一生成双描述文件，并在受限临时区创建可直接手动安装的 ZIP；不会安装或修改真实 Mod 目录。 |
 | `ck3_gui` | 通过现有索引检查生效中的 CK3 GUI 文件，解析跨文件继承、模板和区块覆盖，并输出有界 PNG 或自包含 HTML。检查器支持控件树、裁剪滚动视口、网格布局、英中本地化切换、已索引动态纹理样例与受控行为模拟；model_samples 可从唯一 item 模板实例化有界调用方列表行，绝不执行任意 Jomini 代码。 |
 

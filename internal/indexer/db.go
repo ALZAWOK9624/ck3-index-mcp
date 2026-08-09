@@ -31,6 +31,9 @@ const (
 	DefaultMCPMaxTasks                = 12
 	DefaultMCPMaxHeavyTasks           = 2
 	DefaultMCPMaxRasterTasks          = 1
+	DefaultMCPMaxQueuedTasks          = 32
+	DefaultMCPQueueTimeoutSeconds     = 15
+	DefaultMCPExecutionTimeoutSeconds = 900
 )
 
 type SQLiteReadOptions struct {

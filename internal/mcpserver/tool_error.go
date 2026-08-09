@@ -38,7 +38,11 @@ const (
 	ErrorSaveNotFound               = "SAVE_NOT_FOUND"
 	ErrorSaveUnreadable             = "SAVE_UNREADABLE"
 	ErrorSaveTokenMapUnavailable    = "SAVE_TOKEN_MAP_UNAVAILABLE"
+	ErrorDatabaseTargetNotFound     = "DATABASE_TARGET_NOT_FOUND"
+	ErrorDatabaseTargetUnavailable  = "DATABASE_TARGET_UNAVAILABLE"
+	ErrorDatabaseSwitchUnavailable  = "DATABASE_SWITCH_UNAVAILABLE"
 	ErrorServerBusy                 = "SERVER_BUSY"
+	ErrorQueueTimeout               = "OPERATION_QUEUE_TIMEOUT"
 	ErrorOperationCancelled         = "OPERATION_CANCELLED"
 	ErrorOperationTimeout           = "OPERATION_TIMEOUT"
 	ErrorInternal                   = "INTERNAL_ERROR"
@@ -137,7 +141,7 @@ func toolErrorFrom(err error) *ToolError {
 			map[string]any{"guidance": "Retry the same read-only operation when ready."})
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return newToolError(ErrorOperationTimeout, "operation_state", "the operation exceeded its time limit", true, nil,
+		return newToolError(ErrorOperationTimeout, "operation_state", "the operation exceeded its time limit", true, map[string]any{"phase": "execution"},
 			map[string]any{"guidance": "Retry with a narrower request or a longer client timeout."})
 	}
 	return newToolError(ErrorInternal, "internal", err.Error(), false, nil, nil)

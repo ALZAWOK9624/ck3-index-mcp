@@ -12,9 +12,12 @@ import (
 )
 
 type Runtime struct {
-	DB     *indexer.DB
-	Config indexer.Config
-	DBPath string
+	DB                 *indexer.DB
+	Config             indexer.Config
+	DBPath             string
+	DatabaseName       string
+	DatabaseEpoch      uint64
+	DatabaseController mcpDatabaseController
 }
 
 type toolOutput struct {
@@ -35,6 +38,11 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 	runtime := &Runtime{DB: db, Config: cfg}
 	if path, err := indexer.ConfiguredDatabasePath(cfg); err == nil {
 		runtime.DBPath = path
+	}
+	if databaseContext, ok := mcpDatabaseContextFrom(ctx); ok {
+		runtime.DatabaseController = databaseContext.Controller
+		runtime.DatabaseName = databaseContext.Identity.Name
+		runtime.DatabaseEpoch = databaseContext.Identity.Epoch
 	}
 	var call callToolParams
 	if err := json.Unmarshal(raw, &call); err != nil {
@@ -67,7 +75,7 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 	}
 	before, beforeErr := db.IndexState(ctx)
 	if beforeErr == nil && indexStatePublishing(before) && !indexStateIndependentRequest(definition.Name, handlerArguments) {
-		return encodeInternalToolError(ErrorIndexFinalizing, "ck3-index is rebuilding or finalizing a new scan generation; retry this query after the index reports ready."), nil
+		return encodeInternalToolError(runtime, ErrorIndexFinalizing, "ck3-index is rebuilding or finalizing a new scan generation; retry this query after the index reports ready."), nil
 	}
 	// A deliberately invalidated index is worse than an unavailable one: its
 	// rows still look complete, but they describe a project tree that has since
@@ -100,12 +108,12 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 		// its first transactional result directly.
 		if definition.Name != "ck3_refresh" {
 			if indexStatePublishing(after) && !indexStateIndependentRequest(definition.Name, handlerArguments) {
-				return encodeInternalToolError(ErrorIndexFinalizing, "ck3-index began publishing a new scan generation while this query was running; retry after the index reports ready."), nil
+				return encodeInternalToolError(runtime, ErrorIndexFinalizing, "ck3-index began publishing a new scan generation while this query was running; retry after the index reports ready."), nil
 			}
 			if !definition.Annotations.ReadOnlyHint {
 				// Artifact tools can be non-idempotent (migration artifacts use a
 				// random id), so never execute them twice behind the caller's back.
-				return encodeInternalToolError(ErrorConflictingGeneration, "The ck3-index scan generation changed while the artifact tool was running; retry the tool call."), nil
+				return encodeInternalToolError(runtime, ErrorConflictingGeneration, "The ck3-index scan generation changed while the artifact tool was running; retry the tool call."), nil
 			}
 			// Index reads are generation-bound; artifact-only tools never mutate the
 			// database. Retry read-only tools once when a scan committed during the
@@ -120,13 +128,13 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 			}
 			after, afterErr = db.IndexState(resultContext)
 			if afterErr != nil {
-				return encodeInternalToolError(ErrorIndexStale, "ck3-index could not verify the scan generation after retrying the query."), nil
+				return encodeInternalToolError(runtime, ErrorIndexStale, "ck3-index could not verify the scan generation after retrying the query."), nil
 			}
 			if indexStatePublishing(after) && !indexStateIndependentRequest(definition.Name, handlerArguments) {
-				return encodeInternalToolError(ErrorIndexFinalizing, "ck3-index is still finalizing the refreshed generation; retry this query shortly."), nil
+				return encodeInternalToolError(runtime, ErrorIndexFinalizing, "ck3-index is still finalizing the refreshed generation; retry this query shortly."), nil
 			}
 			if indexStateChanged(retryStart, after) {
-				return encodeInternalToolError(ErrorConflictingGeneration, "The ck3-index scan generation changed twice during one query; retry the tool call."), nil
+				return encodeInternalToolError(runtime, ErrorConflictingGeneration, "The ck3-index scan generation changed twice during one query; retry the tool call."), nil
 			}
 		}
 	}
@@ -135,7 +143,16 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 		return encodeToolError(err, runtime), nil
 	}
 	result = attachArgumentNotices(result, argumentNotices)
-	if beforeErr == nil && afterErr == nil && after.Ready() {
+	identity := runtime.databaseIdentity()
+	if definition.Name == "ck3_database" && runtime.DatabaseController != nil {
+		identity = runtime.DatabaseController.Current()
+	}
+	result["database"] = identity
+	if definition.Name == "ck3_database" {
+		// A switch is executed through a lease on the previous database. Its
+		// handler already returns the new target's health/generation, so attaching
+		// the old lease's index state here would make one response contradict itself.
+	} else if beforeErr == nil && afterErr == nil && after.Ready() {
 		result["indexState"] = map[string]any{
 			"scan_generation":   after.Generation,
 			"scan_revision":     after.Revision,
@@ -176,10 +193,31 @@ func indexStateIndependentTool(name string) bool {
 	switch name {
 	// ck3_save reads an external file and never consults the index, so a
 	// stale or missing index is no reason to refuse it.
-	case "ck3_script_reference", "ck3_health", "ck3_refresh", "ck3_save":
+	case "ck3_script_reference", "ck3_health", "ck3_refresh", "ck3_save", "ck3_database":
 		return true
 	default:
 		return false
+	}
+}
+
+func (runtime *Runtime) databaseIdentity() mcpDatabaseIdentity {
+	if runtime == nil {
+		return mcpDatabaseIdentity{}
+	}
+	name := strings.ToLower(strings.TrimSpace(runtime.DatabaseName))
+	if name == "" {
+		name = strings.ToLower(strings.TrimSpace(runtime.Config.MCPDatabaseName))
+	}
+	if name == "" {
+		name = "default"
+	}
+	epoch := runtime.DatabaseEpoch
+	if epoch == 0 {
+		epoch = 1
+	}
+	return mcpDatabaseIdentity{
+		Name: name, Epoch: epoch, DatabaseIdentity: redactedMCPPath(runtime.DBPath),
+		ConfigIdentity: indexer.DisplayConfigPath(runtime.Config),
 	}
 }
 

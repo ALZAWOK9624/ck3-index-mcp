@@ -58,8 +58,12 @@ resource_only = true
 		t.Fatalf("GIS cache root = %q, want %q", cfg.GISCacheRoot, wantGISCache)
 	}
 	if cfg.SQLiteReadConnections != DefaultSQLiteReadConnections || cfg.SQLiteCacheMBPerConnection != DefaultSQLiteCacheMBPerConnection || cfg.SQLiteMMapLimitMB != DefaultSQLiteMMapLimitMB ||
-		cfg.MCPMaxTasks != DefaultMCPMaxTasks || cfg.MCPMaxHeavyTasks != DefaultMCPMaxHeavyTasks || cfg.MCPMaxRasterTasks != DefaultMCPMaxRasterTasks {
+		cfg.MCPMaxTasks != DefaultMCPMaxTasks || cfg.MCPMaxHeavyTasks != DefaultMCPMaxHeavyTasks || cfg.MCPMaxRasterTasks != DefaultMCPMaxRasterTasks ||
+		cfg.MCPMaxQueuedTasks != DefaultMCPMaxQueuedTasks || cfg.MCPQueueTimeoutSeconds != DefaultMCPQueueTimeoutSeconds || cfg.MCPExecutionTimeoutSeconds != DefaultMCPExecutionTimeoutSeconds {
 		t.Fatalf("resource defaults changed: %+v", cfg)
+	}
+	if cfg.MCPDatabaseName != "default" || cfg.MCPDatabaseDescription != "" || len(cfg.MCPDatabases) != 0 {
+		t.Fatalf("MCP database catalog defaults changed: name=%q description=%q targets=%+v", cfg.MCPDatabaseName, cfg.MCPDatabaseDescription, cfg.MCPDatabases)
 	}
 
 	wantRelative := filepath.Clean(filepath.Join(filepath.Dir(cfgPath), "../project"))
@@ -81,16 +85,22 @@ resource_only = true
 	}
 }
 
-func TestLoadConfigAcceptsLowMemoryResourceLimits(t *testing.T) {
+func TestLoadConfigResolvesNamedMCPDatabaseCatalog(t *testing.T) {
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "ck3-index.toml")
-	text := `database = "cache/test.sqlite"
-sqlite_read_connections = 2
-sqlite_cache_mb_per_connection = 16
-sqlite_mmap_limit_mb = 256
-mcp_max_tasks = 4
-mcp_max_heavy_tasks = 1
-mcp_max_raster_tasks = 1
+	cfgPath := filepath.Join(dir, "config", "ck3-index.toml")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	text := `database = "cache/project.sqlite"
+mcp_database_name = "Project"
+mcp_database_description = "Current project and overlays"
+[[mcp_database]]
+name = "Vanilla"
+description = "Vanilla-only workspace"
+config = "base-vanilla.toml"
+[[mcp_database]]
+name = "previous_snapshot"
+database = "cache/previous.sqlite"
 [[source]]
 name = "project"
 path = "project"
@@ -104,21 +114,73 @@ role = "project"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.SQLiteReadConnections != 2 || cfg.SQLiteCacheMBPerConnection != 16 || cfg.SQLiteMMapLimitMB != 256 || cfg.MCPMaxTasks != 4 || cfg.MCPMaxHeavyTasks != 1 || cfg.MCPMaxRasterTasks != 1 {
-		t.Fatalf("resource limits=%+v", cfg)
+	if cfg.MCPDatabaseName != "project" || cfg.MCPDatabaseDescription != "Current project and overlays" || len(cfg.MCPDatabases) != 2 {
+		t.Fatalf("catalog = name=%q description=%q targets=%+v", cfg.MCPDatabaseName, cfg.MCPDatabaseDescription, cfg.MCPDatabases)
 	}
-	options := cfg.SQLiteReadOptions()
-	if options.Connections != 2 || options.CacheMBPerConnection != 16 || options.MMapLimitMB != 256 {
-		t.Fatalf("SQLite options=%+v", options)
+	if target := cfg.MCPDatabases[0]; target.Name != "vanilla" || target.ConfigPath != filepath.Join(filepath.Dir(cfgPath), "base-vanilla.toml") || target.Database != "" {
+		t.Fatalf("config target = %+v", target)
+	}
+	if target := cfg.MCPDatabases[1]; target.Name != "previous_snapshot" || target.Database != filepath.Join(filepath.Dir(cfgPath), "cache", "previous.sqlite") || target.ConfigPath != "" {
+		t.Fatalf("snapshot target = %+v", target)
 	}
 }
 
-func TestLoadConfigRejectsInconsistentResourceLimits(t *testing.T) {
+func TestLoadConfigRejectsInvalidMCPDatabaseCatalog(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"duplicate primary name", `mcp_database_name = "project"
+[[mcp_database]]
+name = "PROJECT"
+database = "other.sqlite"
+`, `duplicate MCP database name "project"`},
+		{"path and config together", `[[mcp_database]]
+name = "other"
+database = "other.sqlite"
+config = "other.toml"
+`, `must configure exactly one of database or config`},
+		{"missing target location", `[[mcp_database]]
+name = "other"
+`, `must configure exactly one of database or config`},
+		{"invalid name", `[[mcp_database]]
+name = "../other"
+database = "other.sqlite"
+`, `must use lowercase letters, digits, underscores, or hyphens`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfgPath := filepath.Join(t.TempDir(), "ck3-index.toml")
+			text := "database = \"cache/test.sqlite\"\n" + tt.body + `[[source]]
+name = "project"
+path = "project"
+rank = 1
+role = "project"
+`
+			if err := os.WriteFile(cfgPath, []byte(text), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadConfig(cfgPath); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("LoadConfig error=%v, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadConfigAcceptsLowMemoryResourceLimits(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "ck3-index.toml")
 	text := `database = "cache/test.sqlite"
-mcp_max_tasks = 1
-mcp_max_heavy_tasks = 2
+sqlite_read_connections = 2
+sqlite_cache_mb_per_connection = 16
+sqlite_mmap_limit_mb = 256
+mcp_max_tasks = 4
+mcp_max_heavy_tasks = 1
+mcp_max_raster_tasks = 1
+mcp_max_queued_tasks = 8
+mcp_queue_timeout_seconds = 3
+mcp_execution_timeout_seconds = 60
 [[source]]
 name = "project"
 path = "project"
@@ -128,8 +190,62 @@ role = "project"
 	if err := os.WriteFile(cfgPath, []byte(text), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadConfig(cfgPath); err == nil || !strings.Contains(err.Error(), "mcp_max_heavy_tasks") {
-		t.Fatalf("expected inconsistent MCP limits error, got %v", err)
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SQLiteReadConnections != 2 || cfg.SQLiteCacheMBPerConnection != 16 || cfg.SQLiteMMapLimitMB != 256 || cfg.MCPMaxTasks != 4 || cfg.MCPMaxHeavyTasks != 1 || cfg.MCPMaxRasterTasks != 1 || cfg.MCPMaxQueuedTasks != 8 || cfg.MCPQueueTimeoutSeconds != 3 || cfg.MCPExecutionTimeoutSeconds != 60 {
+		t.Fatalf("resource limits=%+v", cfg)
+	}
+	options := cfg.SQLiteReadOptions()
+	if options.Connections != 2 || options.CacheMBPerConnection != 16 || options.MMapLimitMB != 256 {
+		t.Fatalf("SQLite options=%+v", options)
+	}
+}
+
+func TestLoadConfigRejectsInconsistentResourceLimits(t *testing.T) {
+	tests := []struct {
+		name   string
+		limits string
+		want   string
+	}{
+		{
+			name:   "ordinary task slot is reserved",
+			limits: "mcp_max_tasks = 2\nmcp_max_heavy_tasks = 2\n",
+			want:   "ordinary requests retain one execution slot",
+		},
+		{
+			name:   "raster shares expensive budget",
+			limits: "mcp_max_tasks = 4\nmcp_max_heavy_tasks = 1\nmcp_max_raster_tasks = 2\n",
+			want:   "shared mcp_max_heavy_tasks budget",
+		},
+		{
+			name:   "ordinary database connection is reserved",
+			limits: "sqlite_read_connections = 2\nmcp_max_tasks = 4\nmcp_max_heavy_tasks = 2\n",
+			want:   "ordinary requests retain one database connection",
+		},
+		{
+			name:   "queue timeout is positive",
+			limits: "mcp_queue_timeout_seconds = -1\n",
+			want:   "mcp_queue_timeout_seconds must be a positive integer",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfgPath := filepath.Join(t.TempDir(), "ck3-index.toml")
+			text := "database = \"cache/test.sqlite\"\n" + tt.limits + `[[source]]
+name = "project"
+path = "project"
+rank = 1
+role = "project"
+`
+			if err := os.WriteFile(cfgPath, []byte(text), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadConfig(cfgPath); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("LoadConfig error=%v, want substring %q", err, tt.want)
+			}
+		})
 	}
 }
 

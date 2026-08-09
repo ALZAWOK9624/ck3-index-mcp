@@ -3,9 +3,12 @@ package indexer
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 // The read path spent a long time on SQLite's defaults because the DSN builder
@@ -68,6 +71,109 @@ func TestReadConnectionPragmasApplyToEveryPooledConnection(t *testing.T) {
 			t.Fatalf("pooled connection %d has temp_store=%d, want 2: pragmas are not reaching every connection", index, tempStore)
 		}
 	}
+}
+
+func TestReadConnectionAcquisitionHonorsContextDeadline(t *testing.T) {
+	db := openSingleConnectionProbeDatabase(t)
+	held, err := db.sql.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancelWait()
+	started := time.Now()
+	blocked, err := db.sql.Conn(waitCtx)
+	if blocked != nil {
+		blocked.Close()
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		held.Close()
+		t.Fatalf("blocked connection acquisition error=%v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		held.Close()
+		t.Fatalf("blocked connection acquisition ignored its deadline for %s", elapsed)
+	}
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	retryCtx, cancelRetry := context.WithTimeout(context.Background(), time.Second)
+	defer cancelRetry()
+	retry, err := db.sql.Conn(retryCtx)
+	if err != nil {
+		t.Fatalf("connection was not reusable after the timed-out waiter: %v", err)
+	}
+	if err := retry.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCancelledSQLiteQueryIsInterruptedAndReleasesConnection(t *testing.T) {
+	db := openSingleConnectionProbeDatabase(t)
+	queryCtx, cancelQuery := context.WithCancel(context.Background())
+	queryDone := make(chan error, 1)
+	go func() {
+		var sum int64
+		queryDone <- db.sql.QueryRowContext(queryCtx, `
+WITH RECURSIVE count_to_a_billion(value) AS (
+    VALUES(1)
+    UNION ALL
+    SELECT value + 1 FROM count_to_a_billion WHERE value < 1000000000
+)
+SELECT sum(value) FROM count_to_a_billion`).Scan(&sum)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for db.sql.Stats().InUse != 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if db.sql.Stats().InUse != 1 {
+		cancelQuery()
+		t.Fatal("long-running SQLite query never acquired the read connection")
+	}
+	cancelQuery()
+	select {
+	case err := <-queryDone:
+		if err == nil || (!errors.Is(err, context.Canceled) && !strings.Contains(strings.ToLower(err.Error()), "interrupt")) {
+			t.Fatalf("cancelled SQLite query error=%v, want cancellation or interrupt", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SQLite query kept running after its context was cancelled")
+	}
+	if stats := db.sql.Stats(); stats.InUse != 0 {
+		t.Fatalf("cancelled SQLite query retained %d pooled connection(s)", stats.InUse)
+	}
+
+	checkCtx, cancelCheck := context.WithTimeout(context.Background(), time.Second)
+	defer cancelCheck()
+	var one int
+	if err := db.sql.QueryRowContext(checkCtx, "SELECT 1").Scan(&one); err != nil || one != 1 {
+		t.Fatalf("connection was not reusable after SQLite interrupt: value=%d error=%v", one, err)
+	}
+}
+
+func openSingleConnectionProbeDatabase(t *testing.T) *DB {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "cancel.sqlite")
+	writer, err := OpenWithOptions(path, SQLiteReadOptions{Connections: 1, CacheMBPerConnection: 8, MMapLimitMB: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.EnsureSchema(context.Background()); err != nil {
+		writer.Close()
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := OpenReadOnlyWithOptions(path, SQLiteReadOptions{Connections: 1, CacheMBPerConnection: 8, MMapLimitMB: 64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reader.Close() })
+	return reader
 }
 
 func openPragmaProbeDatabase(t *testing.T) *DB {

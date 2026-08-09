@@ -54,8 +54,25 @@ type Config struct {
 	MCPMaxTasks                int
 	MCPMaxHeavyTasks           int
 	MCPMaxRasterTasks          int
-	Sources                    []Source
-	ForceClean                 bool
+	MCPMaxQueuedTasks          int
+	MCPQueueTimeoutSeconds     int
+	MCPExecutionTimeoutSeconds int
+	// MCPDatabaseName identifies the primary database in MCP responses.
+	// MCPDatabases is a closed, administrator-configured catalog of additional
+	// databases the running MCP process may select by name. Tool callers never
+	// submit filesystem paths.
+	MCPDatabaseName        string
+	MCPDatabaseDescription string
+	MCPDatabases           []MCPDatabaseTarget
+	Sources                []Source
+	ForceClean             bool
+}
+
+type MCPDatabaseTarget struct {
+	Name        string
+	Description string
+	Database    string
+	ConfigPath  string
 }
 
 // SourceRole identifies why a configured source exists. Rank remains solely
@@ -90,12 +107,77 @@ func NormalizeConfig(cfg Config) (Config, error) {
 	if err := normalizeResourceLimits(&cfg); err != nil {
 		return Config{}, err
 	}
+	if err := normalizeMCPDatabaseCatalog(&cfg); err != nil {
+		return Config{}, err
+	}
 	sources, err := normalizeSources(cfg.Sources)
 	if err != nil {
 		return Config{}, err
 	}
 	cfg.Sources = sources
 	return cfg, nil
+}
+
+const maxMCPDatabaseTargets = 16
+
+func normalizeMCPDatabaseCatalog(cfg *Config) error {
+	name, err := normalizeMCPDatabaseName(cfg.MCPDatabaseName)
+	if err != nil {
+		return fmt.Errorf("mcp_database_name: %w", err)
+	}
+	if name == "" {
+		name = "default"
+	}
+	cfg.MCPDatabaseName = name
+	cfg.MCPDatabaseDescription = strings.TrimSpace(cfg.MCPDatabaseDescription)
+	if len(cfg.MCPDatabaseDescription) > 512 {
+		return fmt.Errorf("mcp_database_description must not exceed 512 bytes")
+	}
+	if len(cfg.MCPDatabases) > maxMCPDatabaseTargets {
+		return fmt.Errorf("mcp_database may contain at most %d targets", maxMCPDatabaseTargets)
+	}
+	names := map[string]struct{}{name: {}}
+	for index := range cfg.MCPDatabases {
+		target := &cfg.MCPDatabases[index]
+		target.Name, err = normalizeMCPDatabaseName(target.Name)
+		if err != nil {
+			return fmt.Errorf("mcp_database %d name: %w", index+1, err)
+		}
+		if target.Name == "" {
+			return fmt.Errorf("mcp_database %d has no name", index+1)
+		}
+		if _, duplicate := names[target.Name]; duplicate {
+			return fmt.Errorf("duplicate MCP database name %q", target.Name)
+		}
+		names[target.Name] = struct{}{}
+		target.Description = strings.TrimSpace(target.Description)
+		if len(target.Description) > 512 {
+			return fmt.Errorf("mcp_database %q description must not exceed 512 bytes", target.Name)
+		}
+		target.Database = strings.TrimSpace(target.Database)
+		target.ConfigPath = strings.TrimSpace(target.ConfigPath)
+		if (target.Database == "") == (target.ConfigPath == "") {
+			return fmt.Errorf("mcp_database %q must configure exactly one of database or config", target.Name)
+		}
+	}
+	return nil
+}
+
+func normalizeMCPDatabaseName(value string) (string, error) {
+	name := strings.ToLower(strings.TrimSpace(value))
+	if name == "" {
+		return "", nil
+	}
+	if len(name) > 64 {
+		return "", fmt.Errorf("must not exceed 64 bytes")
+	}
+	for index, r := range name {
+		allowed := r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '-'
+		if !allowed || index == 0 && (r == '_' || r == '-') {
+			return "", fmt.Errorf("must use lowercase letters, digits, underscores, or hyphens and start with a letter or digit")
+		}
+	}
+	return name, nil
 }
 
 func normalizeResourceLimits(cfg *Config) error {
@@ -110,6 +192,9 @@ func normalizeResourceLimits(cfg *Config) error {
 		{"mcp_max_tasks", &cfg.MCPMaxTasks, DefaultMCPMaxTasks},
 		{"mcp_max_heavy_tasks", &cfg.MCPMaxHeavyTasks, DefaultMCPMaxHeavyTasks},
 		{"mcp_max_raster_tasks", &cfg.MCPMaxRasterTasks, DefaultMCPMaxRasterTasks},
+		{"mcp_max_queued_tasks", &cfg.MCPMaxQueuedTasks, DefaultMCPMaxQueuedTasks},
+		{"mcp_queue_timeout_seconds", &cfg.MCPQueueTimeoutSeconds, DefaultMCPQueueTimeoutSeconds},
+		{"mcp_execution_timeout_seconds", &cfg.MCPExecutionTimeoutSeconds, DefaultMCPExecutionTimeoutSeconds},
 	}
 	for _, limit := range limits {
 		if *limit.value < 0 {
@@ -119,11 +204,14 @@ func normalizeResourceLimits(cfg *Config) error {
 			*limit.value = limit.defaultValue
 		}
 	}
-	if cfg.MCPMaxHeavyTasks > cfg.MCPMaxTasks {
-		return fmt.Errorf("mcp_max_heavy_tasks must not exceed mcp_max_tasks")
+	if cfg.MCPMaxHeavyTasks >= cfg.MCPMaxTasks {
+		return fmt.Errorf("mcp_max_heavy_tasks must be lower than mcp_max_tasks so ordinary requests retain one execution slot")
 	}
-	if cfg.MCPMaxRasterTasks > cfg.MCPMaxTasks {
-		return fmt.Errorf("mcp_max_raster_tasks must not exceed mcp_max_tasks")
+	if cfg.MCPMaxRasterTasks > cfg.MCPMaxHeavyTasks {
+		return fmt.Errorf("mcp_max_raster_tasks must not exceed the shared mcp_max_heavy_tasks budget")
+	}
+	if cfg.MCPMaxHeavyTasks >= cfg.SQLiteReadConnections {
+		return fmt.Errorf("sqlite_read_connections must exceed mcp_max_heavy_tasks so ordinary requests retain one database connection")
 	}
 	return nil
 }
@@ -400,29 +488,42 @@ func WriteDefaultConfig(path string) error {
 }
 
 type configTOML struct {
-	Database                   string       `toml:"database"`
-	BaseDatabase               string       `toml:"base_database"`
-	EngineLogs                 string       `toml:"engine_logs"`
-	ArtifactRoot               string       `toml:"artifact_root"`
-	MigrationSnapshotRoot      string       `toml:"migration_snapshot_root"`
-	ArtifactRetentionHours     *int         `toml:"artifact_retention_hours"`
-	GISEnabled                 *bool        `toml:"gis_enabled"`
-	GISAnalysis                string       `toml:"gis_analysis"`
-	GISCacheRoot               string       `toml:"gis_cache_root"`
-	GISCacheMaxGiB             *int         `toml:"gis_cache_max_gib"`
-	GISTimeoutSeconds          *int         `toml:"gis_timeout_seconds"`
-	GISSidecarPath             string       `toml:"gis_sidecar_path"`
-	GISSidecarSHA256           string       `toml:"gis_sidecar_sha256"`
-	SaveRoots                  []string     `toml:"save_roots"`
-	SaveTokenMapRoot           string       `toml:"save_token_map_root"`
-	SaveMaxBytes               *int64       `toml:"save_max_bytes"`
-	SQLiteReadConnections      *int         `toml:"sqlite_read_connections"`
-	SQLiteCacheMBPerConnection *int         `toml:"sqlite_cache_mb_per_connection"`
-	SQLiteMMapLimitMB          *int         `toml:"sqlite_mmap_limit_mb"`
-	MCPMaxTasks                *int         `toml:"mcp_max_tasks"`
-	MCPMaxHeavyTasks           *int         `toml:"mcp_max_heavy_tasks"`
-	MCPMaxRasterTasks          *int         `toml:"mcp_max_raster_tasks"`
-	Sources                    []sourceTOML `toml:"source"`
+	Database                   string            `toml:"database"`
+	BaseDatabase               string            `toml:"base_database"`
+	EngineLogs                 string            `toml:"engine_logs"`
+	ArtifactRoot               string            `toml:"artifact_root"`
+	MigrationSnapshotRoot      string            `toml:"migration_snapshot_root"`
+	ArtifactRetentionHours     *int              `toml:"artifact_retention_hours"`
+	GISEnabled                 *bool             `toml:"gis_enabled"`
+	GISAnalysis                string            `toml:"gis_analysis"`
+	GISCacheRoot               string            `toml:"gis_cache_root"`
+	GISCacheMaxGiB             *int              `toml:"gis_cache_max_gib"`
+	GISTimeoutSeconds          *int              `toml:"gis_timeout_seconds"`
+	GISSidecarPath             string            `toml:"gis_sidecar_path"`
+	GISSidecarSHA256           string            `toml:"gis_sidecar_sha256"`
+	SaveRoots                  []string          `toml:"save_roots"`
+	SaveTokenMapRoot           string            `toml:"save_token_map_root"`
+	SaveMaxBytes               *int64            `toml:"save_max_bytes"`
+	SQLiteReadConnections      *int              `toml:"sqlite_read_connections"`
+	SQLiteCacheMBPerConnection *int              `toml:"sqlite_cache_mb_per_connection"`
+	SQLiteMMapLimitMB          *int              `toml:"sqlite_mmap_limit_mb"`
+	MCPMaxTasks                *int              `toml:"mcp_max_tasks"`
+	MCPMaxHeavyTasks           *int              `toml:"mcp_max_heavy_tasks"`
+	MCPMaxRasterTasks          *int              `toml:"mcp_max_raster_tasks"`
+	MCPMaxQueuedTasks          *int              `toml:"mcp_max_queued_tasks"`
+	MCPQueueTimeoutSeconds     *int              `toml:"mcp_queue_timeout_seconds"`
+	MCPExecutionTimeoutSeconds *int              `toml:"mcp_execution_timeout_seconds"`
+	MCPDatabaseName            string            `toml:"mcp_database_name"`
+	MCPDatabaseDescription     string            `toml:"mcp_database_description"`
+	MCPDatabases               []mcpDatabaseTOML `toml:"mcp_database"`
+	Sources                    []sourceTOML      `toml:"source"`
+}
+
+type mcpDatabaseTOML struct {
+	Name        string `toml:"name"`
+	Description string `toml:"description"`
+	Database    string `toml:"database"`
+	Config      string `toml:"config"`
 }
 
 type sourceTOML struct {
@@ -479,6 +580,16 @@ func LoadConfig(path string) (Config, error) {
 		GISTimeoutSeconds:      900,
 		GISSidecarPath:         resolveOptionalConfigPath(baseDir, decoded.GISSidecarPath),
 		GISSidecarSHA256:       strings.ToLower(strings.TrimSpace(decoded.GISSidecarSHA256)),
+		MCPDatabaseName:        decoded.MCPDatabaseName,
+		MCPDatabaseDescription: decoded.MCPDatabaseDescription,
+	}
+	for _, input := range decoded.MCPDatabases {
+		cfg.MCPDatabases = append(cfg.MCPDatabases, MCPDatabaseTarget{
+			Name:        input.Name,
+			Description: input.Description,
+			Database:    resolveOptionalConfigPath(baseDir, input.Database),
+			ConfigPath:  resolveOptionalConfigPath(baseDir, input.Config),
+		})
 	}
 	if cfg.GISAnalysis == "" {
 		cfg.GISAnalysis = "terrain"
@@ -523,6 +634,9 @@ func LoadConfig(path string) (Config, error) {
 		{"mcp_max_tasks", decoded.MCPMaxTasks, &cfg.MCPMaxTasks},
 		{"mcp_max_heavy_tasks", decoded.MCPMaxHeavyTasks, &cfg.MCPMaxHeavyTasks},
 		{"mcp_max_raster_tasks", decoded.MCPMaxRasterTasks, &cfg.MCPMaxRasterTasks},
+		{"mcp_max_queued_tasks", decoded.MCPMaxQueuedTasks, &cfg.MCPMaxQueuedTasks},
+		{"mcp_queue_timeout_seconds", decoded.MCPQueueTimeoutSeconds, &cfg.MCPQueueTimeoutSeconds},
+		{"mcp_execution_timeout_seconds", decoded.MCPExecutionTimeoutSeconds, &cfg.MCPExecutionTimeoutSeconds},
 	}
 	for _, limit := range resourceLimits {
 		if limit.input == nil {

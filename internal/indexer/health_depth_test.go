@@ -57,6 +57,12 @@ func TestQuickAndDeepHealthAgreeOnStatus(t *testing.T) {
 	if quick.Depth != "quick" || deep.Depth != "deep" {
 		t.Fatalf("reports do not name their depth: quick=%q deep=%q", quick.Depth, deep.Depth)
 	}
+	if quick.MCPMaxTasks != DefaultMCPMaxTasks || quick.MCPMaxHeavyTasks != DefaultMCPMaxHeavyTasks ||
+		quick.MCPMaxRasterTasks != DefaultMCPMaxRasterTasks || quick.MCPMaxQueuedTasks != DefaultMCPMaxQueuedTasks ||
+		quick.MCPQueueTimeoutSecs != DefaultMCPQueueTimeoutSeconds || quick.MCPExecutionTimeoutSecs != DefaultMCPExecutionTimeoutSeconds ||
+		quick.SQLiteOrdinaryReserve != DefaultSQLiteReadConnections-DefaultMCPMaxHeavyTasks {
+		t.Fatalf("configured health omitted normalized MCP resource limits: %+v", quick)
+	}
 	for _, field := range []struct {
 		name        string
 		quick, deep any

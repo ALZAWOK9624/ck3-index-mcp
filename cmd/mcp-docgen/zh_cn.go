@@ -65,6 +65,10 @@ var chineseToolTexts = map[string]chineseToolText{
 		Title:       "检查 CK3 索引健康状态",
 		Description: "检查数据库、结构、索引与 MCP 注册是否可信，并报告 SQLite 读取连接、缓存预算、当前重型/栅格任务和估算任务内存。配置与来源根可辨识，数据库绝对路径保持隐藏。",
 	},
+	"ck3_database": {
+		Title:       "选择 CK3 索引数据库",
+		Description: "列出管理员配置的 SQLite 索引、报告当前数据库，或在不重启 MCP 的情况下按名称热切换后续调用。运行中的调用继续持有原数据库租约，调用方不能提交文件路径。",
+	},
 	"ck3_package": {
 		Title:       "打包 CK3 Mod",
 		Description: "严格验证模型生成的 CK3 文本与二进制文件，统一生成双描述文件，并在受限临时区创建可直接手动安装的 ZIP；不会安装或修改真实 Mod 目录。",
@@ -156,6 +160,8 @@ var chineseToolTexts = map[string]chineseToolText{
 }
 
 var chineseFieldDescriptions = map[string]string{
+	"Database control operation. list is the default and discovers allowed names; status reports the active lease identity; switch selects one configured name for subsequent calls.": "数据库控制操作。list 是默认值并发现允许的名称；status 报告当前租约身份；switch 为后续调用选择一个已配置名称。",
+	"Exact configured database name, required for operation=switch.":        "已配置数据库的准确名称；operation=switch 时必填。",
 	"Save file inside a configured save root, named relative to that root.": "位于已配置存档根目录内的存档文件，按相对该根目录的路径给出。",
 	"Save view. card is the default and identifies the save; compatibility lists the content the save declares; audit checks every id the save carries against the indexed sources; character profiles one character from the gamestate.": "存档视图。card 为默认值，用于识别存档；compatibility 列出存档声明的内容；audit 把存档携带的每个 ID 与已索引来源核对；character 从 gamestate 中提取单个角色的档案。",
 	"Save id of the character to profile, required by operation=character.": "要提取档案的角色存档 ID，operation=character 时必填。",
@@ -293,8 +299,8 @@ var chineseFieldDescriptions = map[string]string{
 	"Traversal depth.": "遍历深度。",
 	"Traversal depth. event_chain defaults to 3 and caps at 6; neighborhood defaults to 1 and caps at 2.": "遍历深度；event_chain 默认为 3、最多 6，neighborhood 默认为 1、最多 2。",
 	"Traversal radius.": "遍历半径。",
-	"public limits evidence to non-private sources.": "public 仅返回非私有来源的证据。",
-	"private only; the map cache records no per-source provenance.": "仅支持 private；地图缓存不记录来源级出处。",
+	"public limits evidence to non-private sources.":                                                       "public 仅返回非私有来源的证据。",
+	"private only; the map cache records no per-source provenance.":                                        "仅支持 private；地图缓存不记录来源级出处。",
 	"quick answers from recorded scan totals; deep re-counts every table and re-verifies the GIS sidecar.": "quick 直接读取扫描时记录的统计值；deep 重新逐表计数并重新校验 GIS sidecar。",
 	"Workspace view.": "工作区视图。",
 	"Optional capability domain filter for operation=capabilities. Empty and all return every domain.": "operation=capabilities 使用的可选能力领域筛选；留空或 all 返回全部领域。",

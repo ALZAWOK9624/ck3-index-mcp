@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -77,8 +76,8 @@ func TestServeMCPProtocolContract(t *testing.T) {
 		t.Fatalf("ping did not return an empty object: %+v", ping)
 	}
 	listed := responseByID(t, responses, "3")["result"].(map[string]any)["tools"].([]any)
-	if len(listed) != 35 {
-		t.Fatalf("standard tools/list count = %d, want 35", len(listed))
+	if len(listed) != 36 {
+		t.Fatalf("standard tools/list count = %d, want 36", len(listed))
 	}
 	first := listed[0].(map[string]any)
 	for _, field := range []string{"title", "description", "inputSchema", "annotations"} {
@@ -107,14 +106,26 @@ func TestServeMCPProtocolContract(t *testing.T) {
 
 func TestHealthReportIncludesBinaryVersion(t *testing.T) {
 	report := mcpHealthReport(indexer.HealthReport{
-		SQLiteReadConnections: 8,
-		SQLiteCachePerConnMB:  64,
-		SQLiteCacheBudgetMB:   512,
-		SQLiteMMapLimitMB:     1024,
-		ActiveTasks:           3,
-		ActiveHeavyTasks:      1,
-		ActiveRasterTasks:     1,
-		EstimatedTaskMemoryMB: 968,
+		SQLiteReadConnections:   8,
+		SQLiteCachePerConnMB:    64,
+		SQLiteCacheBudgetMB:     512,
+		SQLiteMMapLimitMB:       1024,
+		ActiveTasks:             3,
+		ActiveExpensiveTasks:    2,
+		ActiveHeavyTasks:        1,
+		ActiveRasterTasks:       1,
+		QueuedTasks:             4,
+		QueuedExpensiveTasks:    3,
+		QueuedHeavyTasks:        2,
+		QueuedRasterTasks:       1,
+		MCPMaxTasks:             12,
+		MCPMaxHeavyTasks:        2,
+		MCPMaxRasterTasks:       1,
+		MCPMaxQueuedTasks:       32,
+		MCPQueueTimeoutSecs:     15,
+		MCPExecutionTimeoutSecs: 900,
+		SQLiteOrdinaryReserve:   6,
+		EstimatedTaskMemoryMB:   968,
 	})
 	if report["binary_version"] != buildinfo.Version {
 		t.Fatalf("health binary_version = %v, want %q", report["binary_version"], buildinfo.Version)
@@ -122,8 +133,12 @@ func TestHealthReportIncludesBinaryVersion(t *testing.T) {
 	for key, want := range map[string]int{
 		"sqlite_read_connections": 8, "sqlite_cache_per_connection_mb": 64,
 		"sqlite_cache_budget_mb": 512, "sqlite_mmap_limit_mb": 1024,
-		"active_tasks": 3, "active_heavy_tasks": 1, "active_raster_tasks": 1,
-		"estimated_task_memory_mb": 968,
+		"active_tasks": 3, "active_expensive_tasks": 2, "active_heavy_tasks": 1, "active_raster_tasks": 1,
+		"queued_tasks": 4, "queued_expensive_tasks": 3, "queued_heavy_tasks": 2, "queued_raster_tasks": 1,
+		"mcp_max_tasks": 12, "mcp_max_heavy_tasks": 2, "mcp_max_raster_tasks": 1, "mcp_max_queued_tasks": 32,
+		"mcp_queue_timeout_seconds": 15, "mcp_execution_timeout_seconds": 900,
+		"sqlite_connections_reserved_for_ordinary_tasks": 6,
+		"estimated_task_memory_mb":                       968,
 	} {
 		if got := report[key]; got != want {
 			t.Fatalf("health %s = %v, want %d", key, got, want)
@@ -356,16 +371,42 @@ func TestMapRasterToolsUseTheSingleRasterTaskClass(t *testing.T) {
 	}
 }
 
+func TestPotentiallyExpensiveOperationsUseTheSharedHeavyClass(t *testing.T) {
+	tests := []struct {
+		name      string
+		operation string
+		want      mcpTaskClass
+	}{
+		{name: "ck3_review", want: mcpTaskHeavy},
+		{name: "ck3_preflight", want: mcpTaskHeavy},
+		{name: "map_route", want: mcpTaskHeavy},
+		{name: "ck3_workspace", operation: "overview", want: mcpTaskHeavy},
+		{name: "ck3_workspace", operation: "capabilities", want: mcpTaskRead},
+		{name: "ck3_dependencies", operation: "event_chain", want: mcpTaskHeavy},
+		{name: "ck3_dependencies", operation: "neighborhood", want: mcpTaskRead},
+	}
+	for _, tt := range tests {
+		raw := json.RawMessage(fmt.Sprintf(`{"name":%q,"arguments":{"operation":%q}}`, tt.name, tt.operation))
+		if got := classifyMCPTask(raw); got != tt.want {
+			t.Fatalf("%s operation=%q class=%q, want %q", tt.name, tt.operation, got, tt.want)
+		}
+	}
+}
+
 func TestConfiguredTaskLimiterUsesLowMemoryLimits(t *testing.T) {
 	limiter := newMCPTaskLimiter(indexer.Config{MCPMaxTasks: 4, MCPMaxHeavyTasks: 1, MCPMaxRasterTasks: 1})
 	defer limiter.close()
 	if !limiter.acquire(mcpTaskHeavy) || limiter.acquire(mcpTaskHeavy) {
 		t.Fatal("configured heavy task limit was not enforced")
 	}
+	if limiter.acquire(mcpTaskRaster) {
+		t.Fatal("raster task escaped the shared expensive-task limit")
+	}
+	limiter.release(mcpTaskHeavy)
 	if !limiter.acquire(mcpTaskRaster) || limiter.acquire(mcpTaskRaster) {
 		t.Fatal("configured raster task limit was not enforced")
 	}
-	if !limiter.acquire(mcpTaskRead) || !limiter.acquire(mcpTaskRead) || limiter.acquire(mcpTaskRead) {
+	if !limiter.acquire(mcpTaskRead) || !limiter.acquire(mcpTaskRead) || !limiter.acquire(mcpTaskRead) || limiter.acquire(mcpTaskRead) {
 		t.Fatal("configured global task limit was not enforced")
 	}
 }
@@ -376,8 +417,12 @@ func TestTrackedTaskLimiterReportsAndReleasesMemoryEstimate(t *testing.T) {
 	if !limiter.acquire(mcpTaskHeavy) || !limiter.acquire(mcpTaskRaster) || !limiter.acquire(mcpTaskRead) {
 		t.Fatal("tracked limiter rejected an in-budget task mix")
 	}
+	if !limiter.enqueue(mcpTaskHeavy) || !limiter.enqueue(mcpTaskRaster) {
+		t.Fatal("tracked limiter rejected an in-budget queued task mix")
+	}
 	during := currentMCPTaskUsage()
-	if during.Active-before.Active != 3 || during.Heavy-before.Heavy != 1 || during.Raster-before.Raster != 1 {
+	if during.Active-before.Active != 3 || during.Heavy-before.Heavy != 1 || during.Raster-before.Raster != 1 ||
+		during.Queued-before.Queued != 2 || during.QueuedHeavy-before.QueuedHeavy != 1 || during.QueuedRaster-before.QueuedRaster != 1 {
 		t.Fatalf("tracked task usage delta = %+v before=%+v", during, before)
 	}
 	wantMemoryDelta := estimatedReadTaskMemoryMB + estimatedHeavyTaskMemoryMB + estimatedRasterTaskMemoryMB
@@ -406,6 +451,21 @@ func (buffer *synchronizedBuffer) String() string {
 	buffer.mu.Lock()
 	defer buffer.mu.Unlock()
 	return buffer.buf.String()
+}
+
+func waitForMCPOutput(t *testing.T, buffer *synchronizedBuffer, condition func(string) bool, failure string) string {
+	t.Helper()
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		current := buffer.String()
+		if condition(current) {
+			return current
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	current := buffer.String()
+	t.Fatalf("%s: %s", failure, current)
+	return ""
 }
 
 func TestFastResponsesAreNotBlockedByEarlierSlowTool(t *testing.T) {
@@ -503,97 +563,304 @@ func TestFastResponsesAreNotBlockedByEarlierSlowTool(t *testing.T) {
 	}
 }
 
-func TestToolConcurrencyIsBounded(t *testing.T) {
-	tests := []struct {
-		name       string
-		tool       string
-		requests   int
-		wantActive int32
-		wantBusy   int
-	}{
-		{name: "global", tool: "ck3_search", requests: maxMCPTasks + 3, wantActive: maxMCPTasks, wantBusy: 3},
-		{name: "heavy", tool: "map_build_metric", requests: maxMCPHeavyTasks + 2, wantActive: maxMCPHeavyTasks, wantBusy: 2},
-		{name: "raster", tool: "map_render", requests: maxMCPRasterTasks + 2, wantActive: maxMCPRasterTasks, wantBusy: 2},
+func TestHeavyQueueLetsOrdinaryTaskBypassBlockedHeavyTask(t *testing.T) {
+	dbPath := createProtocolTestDB(t)
+	cfg := emptyMCPConfig(dbPath)
+	cfg.MCPMaxTasks = 2
+	cfg.MCPMaxHeavyTasks = 1
+	cfg.MCPMaxRasterTasks = 1
+	cfg.MCPMaxQueuedTasks = 4
+	cfg.MCPQueueTimeoutSeconds = 3
+	cfg.MCPExecutionTimeoutSeconds = 10
+
+	heavyOneStarted := make(chan struct{})
+	ordinaryOneStarted := make(chan struct{})
+	heavyTwoStarted := make(chan struct{})
+	ordinaryTwoStarted := make(chan struct{})
+	releaseHeavyOne := make(chan struct{})
+	releaseOrdinaryOne := make(chan struct{})
+	releaseHeavyTwo := make(chan struct{})
+	caller := func(_ context.Context, _ *indexer.DB, _ indexer.Config, raw json.RawMessage) (any, error) {
+		var call callToolParams
+		if err := json.Unmarshal(raw, &call); err != nil {
+			return nil, err
+		}
+		var args struct {
+			Tag string `json:"tag"`
+		}
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		switch args.Tag {
+		case "heavy-one":
+			close(heavyOneStarted)
+			<-releaseHeavyOne
+		case "ordinary-one":
+			close(ordinaryOneStarted)
+			<-releaseOrdinaryOne
+		case "heavy-two":
+			close(heavyTwoStarted)
+			<-releaseHeavyTwo
+		case "ordinary-two":
+			close(ordinaryTwoStarted)
+		}
+		return map[string]any{"tag": args.Tag}, nil
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dbPath := createProtocolTestDB(t)
-			lines := []string{
-				`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"limit-test","version":"1"}}}`,
-				`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`,
-			}
-			for index := 0; index < tt.requests; index++ {
-				lines = append(lines, fmt.Sprintf(
-					`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":%q,"arguments":{}}}`,
-					index+2,
-					tt.tool,
-				))
-			}
-			input := strings.Join(lines, "\n") + "\n"
-			release := make(chan struct{})
-			var active atomic.Int32
-			var maximum atomic.Int32
-			caller := func(_ context.Context, _ *indexer.DB, _ indexer.Config, _ json.RawMessage) (any, error) {
-				current := active.Add(1)
-				for {
-					seen := maximum.Load()
-					if current <= seen || maximum.CompareAndSwap(seen, current) {
-						break
-					}
-				}
-				<-release
-				active.Add(-1)
-				return map[string]any{"ok": true}, nil
-			}
-			var out synchronizedBuffer
-			done := make(chan error, 1)
-			go func() {
-				done <- serveWithToolCaller(context.Background(), emptyMCPConfig(dbPath), dbPath, strings.NewReader(input), &out, caller)
-			}()
-			deadline := time.Now().Add(2 * time.Second)
-			for maximum.Load() < tt.wantActive && time.Now().Before(deadline) {
-				time.Sleep(5 * time.Millisecond)
-			}
-			if got := maximum.Load(); got != tt.wantActive {
-				close(release)
-				<-done
-				t.Fatalf("maximum active tools = %d, want %d", got, tt.wantActive)
-			}
-			// Keep admitted calls blocked until the reader has submitted every
-			// request and the limiter has emitted all deterministic rejections.
-			// Under -race, releasing as soon as maximum reaches the cap can let
-			// one worker finish before the final buffered request is consumed.
-			busyDeadline := time.Now().Add(2 * time.Second)
-			for strings.Count(out.String(), `"code":"SERVER_BUSY"`) < tt.wantBusy && time.Now().Before(busyDeadline) {
-				time.Sleep(5 * time.Millisecond)
-			}
-			if got := strings.Count(out.String(), `"code":"SERVER_BUSY"`); got != tt.wantBusy {
-				close(release)
-				<-done
-				t.Fatalf("SERVER_BUSY responses before release = %d, want %d: %s", got, tt.wantBusy, out.String())
-			}
-			close(release)
-			select {
-			case err := <-done:
-				if err != nil {
-					t.Fatal(err)
-				}
-			case <-time.After(2 * time.Second):
-				t.Fatal("server did not finish bounded tasks")
-			}
-			responses := decodeResponseLines(t, out.String())
-			busy := 0
-			for _, response := range responses {
-				result, _ := response["result"].(map[string]any)
-				structured, _ := result["structuredContent"].(map[string]any)
-				if structured["code"] == ErrorServerBusy {
-					busy++
-				}
-			}
-			if busy != tt.wantBusy {
-				t.Fatalf("SERVER_BUSY responses = %d, want %d: %s", busy, tt.wantBusy, out.String())
-			}
-		})
+
+	reader, writer := io.Pipe()
+	var out synchronizedBuffer
+	done := make(chan error, 1)
+	go func() { done <- serveWithToolCaller(context.Background(), cfg, dbPath, reader, &out, caller) }()
+	requests := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"queue-test","version":"1"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`,
+		`{"jsonrpc":"2.0","id":"heavy-one","method":"tools/call","params":{"name":"map_build_metric","arguments":{"tag":"heavy-one"}}}`,
+		`{"jsonrpc":"2.0","id":"ordinary-one","method":"tools/call","params":{"name":"ck3_search","arguments":{"tag":"ordinary-one"}}}`,
+		`{"jsonrpc":"2.0","id":"heavy-two","method":"tools/call","params":{"name":"map_build_metric","arguments":{"tag":"heavy-two"}}}`,
+		`{"jsonrpc":"2.0","id":"ordinary-two","method":"tools/call","params":{"name":"ck3_search","arguments":{"tag":"ordinary-two"}}}`,
+	}, "\n") + "\n"
+	if _, err := io.WriteString(writer, requests); err != nil {
+		t.Fatal(err)
+	}
+	for name, started := range map[string]<-chan struct{}{"first heavy": heavyOneStarted, "first ordinary": ordinaryOneStarted} {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s task did not start", name)
+		}
+	}
+	close(releaseOrdinaryOne)
+	select {
+	case <-ordinaryTwoStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ordinary task stayed behind a heavy task blocked on the expensive-task limit")
+	}
+	select {
+	case <-heavyTwoStarted:
+		t.Fatal("second heavy task started before the first heavy task released its slot")
+	default:
+	}
+	close(releaseHeavyOne)
+	select {
+	case <-heavyTwoStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued heavy task did not start after the expensive-task slot was released")
+	}
+	close(releaseHeavyTwo)
+	waitForMCPOutput(t, &out, func(output string) bool { return strings.Count(output, "\n") >= 5 }, "queued tasks did not all complete")
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	for _, response := range decodeResponseLines(t, out.String()) {
+		if result, ok := response["result"].(map[string]any); ok && result["isError"] == true {
+			t.Fatalf("in-budget queued request failed: %+v", response)
+		}
+	}
+}
+
+func TestQueuedHeavyTaskTimesOutWithQueueDiagnostics(t *testing.T) {
+	dbPath := createProtocolTestDB(t)
+	cfg := emptyMCPConfig(dbPath)
+	cfg.MCPMaxTasks = 2
+	cfg.MCPMaxHeavyTasks = 1
+	cfg.MCPMaxRasterTasks = 1
+	cfg.MCPMaxQueuedTasks = 2
+	cfg.MCPQueueTimeoutSeconds = 1
+	cfg.MCPExecutionTimeoutSeconds = 10
+
+	firstStarted := make(chan struct{})
+	secondStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	caller := func(_ context.Context, _ *indexer.DB, _ indexer.Config, raw json.RawMessage) (any, error) {
+		if bytes.Contains(raw, []byte(`"tag":"first"`)) {
+			close(firstStarted)
+			<-releaseFirst
+		} else {
+			close(secondStarted)
+		}
+		return map[string]any{"ok": true}, nil
+	}
+	reader, writer := io.Pipe()
+	var out synchronizedBuffer
+	done := make(chan error, 1)
+	go func() { done <- serveWithToolCaller(context.Background(), cfg, dbPath, reader, &out, caller) }()
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"queue-timeout-test","version":"1"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`,
+		`{"jsonrpc":"2.0","id":"first","method":"tools/call","params":{"name":"map_build_metric","arguments":{"tag":"first"}}}`,
+		`{"jsonrpc":"2.0","id":"second","method":"tools/call","params":{"name":"map_build_metric","arguments":{"tag":"second"}}}`,
+	}, "\n") + "\n"
+	if _, err := io.WriteString(writer, input); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-firstStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first heavy task did not start")
+	}
+	waitForMCPOutput(t, &out, func(output string) bool { return strings.Contains(output, ErrorQueueTimeout) }, "queue timeout response was not emitted")
+	select {
+	case <-secondStarted:
+		t.Fatal("timed-out queued task was executed")
+	default:
+	}
+	responses := decodeResponseLines(t, out.String())
+	structured := responseByID(t, responses, "second")["result"].(map[string]any)["structuredContent"].(map[string]any)
+	details := structured["details"].(map[string]any)
+	if structured["code"] != ErrorQueueTimeout || details["phase"] != string(mcpTaskQueued) || details["task_class"] != string(mcpTaskHeavy) || details["queue_timeout_ms"].(float64) != 1000 {
+		t.Fatalf("queue timeout diagnostics are incomplete: %+v", structured)
+	}
+	close(releaseFirst)
+	waitForMCPOutput(t, &out, func(output string) bool { return strings.Contains(output, `"id":"first"`) }, "first heavy response was not emitted")
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExecutionTimeoutCancelsTaskAndReleasesHeavySlot(t *testing.T) {
+	dbPath := createProtocolTestDB(t)
+	cfg := emptyMCPConfig(dbPath)
+	cfg.MCPMaxTasks = 2
+	cfg.MCPMaxHeavyTasks = 1
+	cfg.MCPMaxRasterTasks = 1
+	cfg.MCPMaxQueuedTasks = 2
+	cfg.MCPQueueTimeoutSeconds = 3
+	cfg.MCPExecutionTimeoutSeconds = 1
+
+	deadlineObserved := make(chan error, 1)
+	secondStarted := make(chan struct{})
+	caller := func(ctx context.Context, _ *indexer.DB, _ indexer.Config, raw json.RawMessage) (any, error) {
+		if bytes.Contains(raw, []byte(`"tag":"first"`)) {
+			<-ctx.Done()
+			deadlineObserved <- ctx.Err()
+			return nil, ctx.Err()
+		}
+		close(secondStarted)
+		return map[string]any{"ok": true}, nil
+	}
+	reader, writer := io.Pipe()
+	var out synchronizedBuffer
+	done := make(chan error, 1)
+	go func() { done <- serveWithToolCaller(context.Background(), cfg, dbPath, reader, &out, caller) }()
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"execution-timeout-test","version":"1"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`,
+		`{"jsonrpc":"2.0","id":"first","method":"tools/call","params":{"name":"map_build_metric","arguments":{"tag":"first"}}}`,
+		`{"jsonrpc":"2.0","id":"second","method":"tools/call","params":{"name":"map_build_metric","arguments":{"tag":"second"}}}`,
+	}, "\n") + "\n"
+	if _, err := io.WriteString(writer, input); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-deadlineObserved:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("execution context ended with %v, want deadline exceeded", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("execution deadline did not cancel the active task")
+	}
+	select {
+	case <-secondStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("execution timeout did not release the heavy-task slot")
+	}
+	waitForMCPOutput(t, &out, func(output string) bool {
+		return strings.Contains(output, ErrorOperationTimeout) && strings.Contains(output, `"id":"second"`)
+	}, "execution timeout responses were not emitted")
+	responses := decodeResponseLines(t, out.String())
+	structured := responseByID(t, responses, "first")["result"].(map[string]any)["structuredContent"].(map[string]any)
+	details := structured["details"].(map[string]any)
+	if structured["code"] != ErrorOperationTimeout || details["phase"] != string(mcpTaskRunning) || details["task_class"] != string(mcpTaskHeavy) || details["execution_timeout_ms"].(float64) != 1000 {
+		t.Fatalf("execution timeout diagnostics are incomplete: %+v", structured)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCancellationReleasesHeavySlotAndQueueCapacityIsBounded(t *testing.T) {
+	dbPath := createProtocolTestDB(t)
+	cfg := emptyMCPConfig(dbPath)
+	cfg.MCPMaxTasks = 2
+	cfg.MCPMaxHeavyTasks = 1
+	cfg.MCPMaxRasterTasks = 1
+	cfg.MCPMaxQueuedTasks = 1
+	cfg.MCPQueueTimeoutSeconds = 5
+	cfg.MCPExecutionTimeoutSeconds = 10
+
+	firstStarted := make(chan struct{})
+	firstCancelled := make(chan struct{})
+	secondStarted := make(chan struct{})
+	caller := func(ctx context.Context, _ *indexer.DB, _ indexer.Config, raw json.RawMessage) (any, error) {
+		switch {
+		case bytes.Contains(raw, []byte(`"tag":"first"`)):
+			close(firstStarted)
+			<-ctx.Done()
+			close(firstCancelled)
+			return nil, ctx.Err()
+		case bytes.Contains(raw, []byte(`"tag":"second"`)):
+			close(secondStarted)
+			return map[string]any{"ok": true}, nil
+		default:
+			return map[string]any{"unexpected": true}, nil
+		}
+	}
+	reader, writer := io.Pipe()
+	var out synchronizedBuffer
+	done := make(chan error, 1)
+	go func() { done <- serveWithToolCaller(context.Background(), cfg, dbPath, reader, &out, caller) }()
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"cancel-limit-test","version":"1"}}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`,
+		`{"jsonrpc":"2.0","id":"first","method":"tools/call","params":{"name":"map_build_metric","arguments":{"tag":"first"}}}`,
+		`{"jsonrpc":"2.0","id":"second","method":"tools/call","params":{"name":"map_build_metric","arguments":{"tag":"second"}}}`,
+		`{"jsonrpc":"2.0","id":"third","method":"tools/call","params":{"name":"map_build_metric","arguments":{"tag":"third"}}}`,
+	}, "\n") + "\n"
+	if _, err := io.WriteString(writer, input); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-firstStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first heavy task did not start")
+	}
+	waitForMCPOutput(t, &out, func(output string) bool { return strings.Contains(output, ErrorServerBusy) }, "bounded queue did not reject excess work")
+	if _, err := io.WriteString(writer, `{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"first"}}`+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-firstCancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("client cancellation did not reach the active heavy task")
+	}
+	select {
+	case <-secondStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelled heavy task did not release its slot for queued work")
+	}
+	waitForMCPOutput(t, &out, func(output string) bool { return strings.Contains(output, `"id":"second"`) }, "queued task did not complete after cancellation")
+	if strings.Contains(out.String(), `"id":"first"`) {
+		t.Fatalf("cancelled uncommitted task emitted a response: %s", out.String())
+	}
+	responses := decodeResponseLines(t, out.String())
+	structured := responseByID(t, responses, "third")["result"].(map[string]any)["structuredContent"].(map[string]any)
+	if structured["code"] != ErrorServerBusy || structured["details"].(map[string]any)["max_queued_tasks"].(float64) != 1 {
+		t.Fatalf("queue-capacity diagnostics are incomplete: %+v", structured)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 

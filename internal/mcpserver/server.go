@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"ck3-index/internal/buildinfo"
 	"ck3-index/internal/indexer"
@@ -35,6 +36,12 @@ type mcpToolTask struct {
 	cancelled bool
 	class     mcpTaskClass
 	cancel    context.CancelFunc
+	phase     mcpTaskPhase
+	params    json.RawMessage
+	requestID json.RawMessage
+	idKey     string
+	queuedAt  time.Time
+	startedAt time.Time
 }
 
 type mcpToolTaskResult struct {
@@ -67,36 +74,52 @@ func (s mcpSession) readyForTools() bool {
 
 type mcpTaskClass string
 
+type mcpTaskPhase string
+
 const (
 	mcpTaskRead   mcpTaskClass = "read"
 	mcpTaskHeavy  mcpTaskClass = "heavy"
 	mcpTaskRaster mcpTaskClass = "raster"
 
+	mcpTaskQueued  mcpTaskPhase = "queue"
+	mcpTaskRunning mcpTaskPhase = "execution"
+
 	maxMCPTasks       = indexer.DefaultMCPMaxTasks
 	maxMCPHeavyTasks  = indexer.DefaultMCPMaxHeavyTasks
 	maxMCPRasterTasks = indexer.DefaultMCPMaxRasterTasks
+	maxMCPQueuedTasks = indexer.DefaultMCPMaxQueuedTasks
 )
 
 type mcpTaskLimiter struct {
 	active       int
 	heavy        int
 	raster       int
+	queued       int
+	queuedHeavy  int
+	queuedRaster int
 	maxActive    int
 	maxHeavy     int
 	maxRaster    int
+	maxQueued    int
 	trackProcess bool
 }
 
 var processMCPTaskUsage struct {
-	active atomic.Int64
-	heavy  atomic.Int64
-	raster atomic.Int64
+	active       atomic.Int64
+	heavy        atomic.Int64
+	raster       atomic.Int64
+	queued       atomic.Int64
+	queuedHeavy  atomic.Int64
+	queuedRaster atomic.Int64
 }
 
 type mcpTaskUsageSnapshot struct {
 	Active            int
 	Heavy             int
 	Raster            int
+	Queued            int
+	QueuedHeavy       int
+	QueuedRaster      int
 	EstimatedMemoryMB int
 }
 
@@ -110,14 +133,22 @@ func currentMCPTaskUsage() mcpTaskUsageSnapshot {
 	active := int(processMCPTaskUsage.active.Load())
 	heavy := int(processMCPTaskUsage.heavy.Load())
 	raster := int(processMCPTaskUsage.raster.Load())
+	queued := int(processMCPTaskUsage.queued.Load())
+	queuedHeavy := int(processMCPTaskUsage.queuedHeavy.Load())
+	queuedRaster := int(processMCPTaskUsage.queuedRaster.Load())
 	reads := active - heavy - raster
 	if reads < 0 {
 		reads = 0
 	}
 	return mcpTaskUsageSnapshot{
 		Active: active, Heavy: heavy, Raster: raster,
+		Queued: queued, QueuedHeavy: queuedHeavy, QueuedRaster: queuedRaster,
 		EstimatedMemoryMB: reads*estimatedReadTaskMemoryMB + heavy*estimatedHeavyTaskMemoryMB + raster*estimatedRasterTaskMemoryMB,
 	}
+}
+
+func isExpensiveMCPTask(class mcpTaskClass) bool {
+	return class == mcpTaskHeavy || class == mcpTaskRaster
 }
 
 func (limiter *mcpTaskLimiter) acquire(class mcpTaskClass) bool {
@@ -125,7 +156,7 @@ func (limiter *mcpTaskLimiter) acquire(class mcpTaskClass) bool {
 	if limiter.active >= maxActive {
 		return false
 	}
-	if class == mcpTaskHeavy && limiter.heavy >= maxHeavy {
+	if isExpensiveMCPTask(class) && limiter.heavy+limiter.raster >= maxHeavy {
 		return false
 	}
 	if class == mcpTaskRaster && limiter.raster >= maxRaster {
@@ -164,8 +195,31 @@ func (limiter *mcpTaskLimiter) limits() (int, int, int) {
 	return active, heavy, raster
 }
 
+func (limiter *mcpTaskLimiter) queueLimit() int {
+	if limiter.maxQueued > 0 {
+		return limiter.maxQueued
+	}
+	return maxMCPQueuedTasks
+}
+
+func (limiter *mcpTaskLimiter) diagnostics() map[string]any {
+	maxActive, maxHeavy, maxRaster := limiter.limits()
+	return map[string]any{
+		"active_tasks":        limiter.active,
+		"active_heavy_tasks":  limiter.heavy,
+		"active_raster_tasks": limiter.raster,
+		"queued_tasks":        limiter.queued,
+		"queued_heavy_tasks":  limiter.queuedHeavy,
+		"queued_raster_tasks": limiter.queuedRaster,
+		"max_tasks":           maxActive,
+		"max_expensive_tasks": maxHeavy,
+		"max_raster_tasks":    maxRaster,
+		"max_queued_tasks":    limiter.queueLimit(),
+	}
+}
+
 func newMCPTaskLimiter(cfg indexer.Config) mcpTaskLimiter {
-	active, heavy, raster := cfg.MCPMaxTasks, cfg.MCPMaxHeavyTasks, cfg.MCPMaxRasterTasks
+	active, heavy, raster, queued := cfg.MCPMaxTasks, cfg.MCPMaxHeavyTasks, cfg.MCPMaxRasterTasks, cfg.MCPMaxQueuedTasks
 	if active <= 0 {
 		active = maxMCPTasks
 	}
@@ -175,7 +229,55 @@ func newMCPTaskLimiter(cfg indexer.Config) mcpTaskLimiter {
 	if raster <= 0 {
 		raster = maxMCPRasterTasks
 	}
-	return mcpTaskLimiter{maxActive: active, maxHeavy: heavy, maxRaster: raster, trackProcess: true}
+	if queued <= 0 {
+		queued = maxMCPQueuedTasks
+	}
+	return mcpTaskLimiter{maxActive: active, maxHeavy: heavy, maxRaster: raster, maxQueued: queued, trackProcess: true}
+}
+
+func (limiter *mcpTaskLimiter) enqueue(class mcpTaskClass) bool {
+	if limiter.queued >= limiter.queueLimit() {
+		return false
+	}
+	limiter.queued++
+	if class == mcpTaskHeavy {
+		limiter.queuedHeavy++
+	}
+	if class == mcpTaskRaster {
+		limiter.queuedRaster++
+	}
+	if limiter.trackProcess {
+		processMCPTaskUsage.queued.Add(1)
+		if class == mcpTaskHeavy {
+			processMCPTaskUsage.queuedHeavy.Add(1)
+		}
+		if class == mcpTaskRaster {
+			processMCPTaskUsage.queuedRaster.Add(1)
+		}
+	}
+	return true
+}
+
+func (limiter *mcpTaskLimiter) dequeue(class mcpTaskClass) {
+	if limiter.queued <= 0 {
+		return
+	}
+	limiter.queued--
+	if class == mcpTaskHeavy && limiter.queuedHeavy > 0 {
+		limiter.queuedHeavy--
+	}
+	if class == mcpTaskRaster && limiter.queuedRaster > 0 {
+		limiter.queuedRaster--
+	}
+	if limiter.trackProcess {
+		processMCPTaskUsage.queued.Add(-1)
+		if class == mcpTaskHeavy {
+			processMCPTaskUsage.queuedHeavy.Add(-1)
+		}
+		if class == mcpTaskRaster {
+			processMCPTaskUsage.queuedRaster.Add(-1)
+		}
+	}
 }
 
 func (limiter *mcpTaskLimiter) release(class mcpTaskClass) {
@@ -207,9 +309,15 @@ func (limiter *mcpTaskLimiter) close() {
 	processMCPTaskUsage.active.Add(-int64(limiter.active))
 	processMCPTaskUsage.heavy.Add(-int64(limiter.heavy))
 	processMCPTaskUsage.raster.Add(-int64(limiter.raster))
+	processMCPTaskUsage.queued.Add(-int64(limiter.queued))
+	processMCPTaskUsage.queuedHeavy.Add(-int64(limiter.queuedHeavy))
+	processMCPTaskUsage.queuedRaster.Add(-int64(limiter.queuedRaster))
 	limiter.active = 0
 	limiter.heavy = 0
 	limiter.raster = 0
+	limiter.queued = 0
+	limiter.queuedHeavy = 0
+	limiter.queuedRaster = 0
 }
 
 func classifyMCPTask(raw json.RawMessage) mcpTaskClass {
@@ -224,13 +332,59 @@ func classifyMCPTask(raw json.RawMessage) mcpTaskClass {
 		// card and compatibility read only the header and metadata; audit
 		// and character stream the whole gamestate.
 		return saveTaskClass(call.Arguments)
-	case "ck3_refresh", "ck3_package", "ck3_gui",
-		"map_build_metric", "map_physical_context",
-		"map_migration_snapshot", "map_province_migration":
+	case "ck3_review", "ck3_preflight", "ck3_impact", "ck3_refresh", "ck3_package", "ck3_gui",
+		"map_asset_audit", "map_province_mapping", "map_build_metric", "map_physical_context", "map_route",
+		"map_migration_snapshot", "map_province_migration", "map_assignment_plan", "map_building_candidates":
 		return mcpTaskHeavy
+	case "ck3_workspace":
+		return workspaceTaskClass(call.Arguments)
+	case "ck3_dependencies":
+		return dependencyTaskClass(call.Arguments)
 	default:
 		return mcpTaskRead
 	}
+}
+
+func workspaceTaskClass(arguments json.RawMessage) mcpTaskClass {
+	var args struct {
+		Operation string `json:"operation"`
+	}
+	if err := json.Unmarshal(arguments, &args); err != nil {
+		return mcpTaskHeavy
+	}
+	if strings.EqualFold(strings.TrimSpace(args.Operation), "capabilities") {
+		return mcpTaskRead
+	}
+	return mcpTaskHeavy
+}
+
+func dependencyTaskClass(arguments json.RawMessage) mcpTaskClass {
+	var args struct {
+		Operation string `json:"operation"`
+	}
+	if err := json.Unmarshal(arguments, &args); err != nil {
+		return mcpTaskHeavy
+	}
+	if strings.EqualFold(strings.TrimSpace(args.Operation), "event_chain") {
+		return mcpTaskHeavy
+	}
+	return mcpTaskRead
+}
+
+func mcpQueueTimeout(cfg indexer.Config) time.Duration {
+	seconds := cfg.MCPQueueTimeoutSeconds
+	if seconds <= 0 {
+		seconds = indexer.DefaultMCPQueueTimeoutSeconds
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func mcpExecutionTimeout(cfg indexer.Config) time.Duration {
+	seconds := cfg.MCPExecutionTimeoutSeconds
+	if seconds <= 0 {
+		seconds = indexer.DefaultMCPExecutionTimeoutSeconds
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 func serveWithToolCaller(ctx context.Context, cfg indexer.Config, dbPath string, in io.Reader, out io.Writer, caller mcpToolCaller) error {
@@ -238,10 +392,16 @@ func serveWithToolCaller(ctx context.Context, cfg indexer.Config, dbPath string,
 	if err != nil {
 		return err
 	}
-	defer db.Close()
 	if err := indexer.RestorePublishedEngineRules(ctx, db, cfg.EngineLogs); err != nil {
+		_ = db.Close()
 		return err
 	}
+	databaseManager, err := newMCPDatabaseManager(cfg, dbPath, db)
+	if err != nil {
+		_ = db.Close()
+		return err
+	}
+	defer databaseManager.Close()
 
 	sessionCtx, cancelSession := context.WithCancel(ctx)
 	defer cancelSession()
@@ -252,27 +412,194 @@ func serveWithToolCaller(ctx context.Context, cfg indexer.Config, dbPath string,
 	}
 	taskResults := make(chan mcpToolTaskResult, configuredTasks)
 	tasks := map[string]mcpToolTask{}
+	queuedTaskIDs := make([]string, 0, configuredTasks)
 	inputClosed := false
 	session := mcpSession{seenRequestIDs: map[string]struct{}{}}
 	limiter := newMCPTaskLimiter(cfg)
 	defer limiter.close()
+	queueTimeout := mcpQueueTimeout(cfg)
+	executionTimeout := mcpExecutionTimeout(cfg)
+	var queueTimer *time.Timer
+	var queueTimerC <-chan time.Time
+	defer func() {
+		if queueTimer != nil {
+			queueTimer.Stop()
+		}
+	}()
 
 	writeResponse := func(response rpcResponse) error {
 		return writeMCPMessage(out, response)
 	}
+	startTask := func(task mcpToolTask) {
+		task.phase = mcpTaskRunning
+		task.startedAt = time.Now()
+		taskCtx, taskCancel := context.WithTimeout(sessionCtx, executionTimeout)
+		task.cancel = taskCancel
+		tasks[task.idKey] = task
+		lease, leaseErr := databaseManager.Acquire()
+		if leaseErr != nil {
+			taskResults <- mcpToolTaskResult{
+				idKey: task.idKey,
+				response: rpcResponse{JSONRPC: "2.0", ID: task.requestID, Result: encodeToolError(newToolError(
+					ErrorDatabaseSwitchUnavailable, "database", "the MCP database manager is not available", true, nil, nil,
+				), nil)},
+			}
+			return
+		}
+		taskCtx = withMCPDatabaseContext(taskCtx, databaseManager, lease.Identity)
+		go runMCPToolTask(taskCtx, sessionCtx, caller, lease.DB, lease.Config, task.params, task.requestID, task.idKey, task.class, task.queuedAt, task.startedAt, executionTimeout, lease.Release, taskResults)
+	}
+	compactQueue := func() {
+		kept := queuedTaskIDs[:0]
+		for _, id := range queuedTaskIDs {
+			task, ok := tasks[id]
+			if ok && task.phase == mcpTaskQueued {
+				kept = append(kept, id)
+			}
+		}
+		queuedTaskIDs = kept
+	}
+	dispatchQueued := func() {
+		for {
+			compactQueue()
+			selected := -1
+			var task mcpToolTask
+			for index, id := range queuedTaskIDs {
+				candidate := tasks[id]
+				if limiter.acquire(candidate.class) {
+					selected = index
+					task = candidate
+					break
+				}
+			}
+			if selected < 0 {
+				return
+			}
+			queuedTaskIDs = append(queuedTaskIDs[:selected], queuedTaskIDs[selected+1:]...)
+			limiter.dequeue(task.class)
+			startTask(task)
+		}
+	}
+	queueTimeoutResponse := func(task mcpToolTask, now time.Time) rpcResponse {
+		details := limiter.diagnostics()
+		details["phase"] = string(mcpTaskQueued)
+		details["task_class"] = string(task.class)
+		details["queue_ms"] = now.Sub(task.queuedAt).Milliseconds()
+		details["queue_timeout_ms"] = queueTimeout.Milliseconds()
+		return rpcResponse{JSONRPC: "2.0", ID: task.requestID, Result: encodeToolError(newToolError(
+			ErrorQueueTimeout,
+			"concurrency",
+			"the operation exceeded the MCP queue time limit before execution began",
+			true,
+			details,
+			map[string]any{"guidance": "Retry after active expensive operations finish, or narrow the request."},
+		), nil)}
+	}
+	expireQueued := func(now time.Time) error {
+		kept := queuedTaskIDs[:0]
+		for _, id := range queuedTaskIDs {
+			task, ok := tasks[id]
+			if !ok || task.phase != mcpTaskQueued {
+				continue
+			}
+			if now.Before(task.queuedAt.Add(queueTimeout)) {
+				kept = append(kept, id)
+				continue
+			}
+			delete(tasks, id)
+			limiter.dequeue(task.class)
+			if !task.cancelled {
+				if err := writeResponse(queueTimeoutResponse(task, now)); err != nil {
+					queuedTaskIDs = kept
+					return err
+				}
+			}
+		}
+		queuedTaskIDs = kept
+		return nil
+	}
+	resetQueueTimer := func() {
+		var earliest time.Time
+		for _, id := range queuedTaskIDs {
+			task, ok := tasks[id]
+			if !ok || task.phase != mcpTaskQueued {
+				continue
+			}
+			deadline := task.queuedAt.Add(queueTimeout)
+			if earliest.IsZero() || deadline.Before(earliest) {
+				earliest = deadline
+			}
+		}
+		if earliest.IsZero() {
+			if queueTimer != nil && !queueTimer.Stop() {
+				select {
+				case <-queueTimer.C:
+				default:
+				}
+			}
+			queueTimerC = nil
+			return
+		}
+		wait := time.Until(earliest)
+		if wait < 0 {
+			wait = 0
+		}
+		if queueTimer == nil {
+			queueTimer = time.NewTimer(wait)
+		} else {
+			if !queueTimer.Stop() {
+				select {
+				case <-queueTimer.C:
+				default:
+				}
+			}
+			queueTimer.Reset(wait)
+		}
+		queueTimerC = queueTimer.C
+	}
+	cancelTask := func(id string) {
+		task, active := tasks[id]
+		if !active {
+			return
+		}
+		task.cancelled = true
+		if task.phase == mcpTaskQueued {
+			delete(tasks, id)
+			limiter.dequeue(task.class)
+			return
+		}
+		if task.cancel != nil {
+			task.cancel()
+		}
+		tasks[id] = task
+	}
 	cancelTasks := func() {
 		for id, task := range tasks {
 			task.cancelled = true
-			task.cancel()
+			if task.phase == mcpTaskQueued {
+				limiter.dequeue(task.class)
+				delete(tasks, id)
+				continue
+			}
+			if task.cancel != nil {
+				task.cancel()
+			}
 			tasks[id] = task
 		}
+		queuedTaskIDs = nil
 	}
 
 	for !inputClosed || len(tasks) > 0 {
+		resetQueueTimer()
 		select {
 		case <-ctx.Done():
 			cancelTasks()
 			return ctx.Err()
+		case <-queueTimerC:
+			if err := expireQueued(time.Now()); err != nil {
+				cancelTasks()
+				return err
+			}
 		case event, ok := <-readEvents:
 			if !ok {
 				inputClosed = true
@@ -305,7 +632,9 @@ func serveWithToolCaller(ctx context.Context, cfg indexer.Config, dbPath string,
 				break
 			}
 			if !req.hasID {
-				handleMCPNotification(req, &session, tasks)
+				if id, cancelled := handleMCPNotification(req, &session); cancelled {
+					cancelTask(id)
+				}
 				break
 			}
 			idKey, _ := normalizedRPCRequestID(req.ID)
@@ -381,14 +710,25 @@ func serveWithToolCaller(ctx context.Context, cfg indexer.Config, dbPath string,
 					break
 				}
 				class := classifyMCPTask(req.Params)
-				if !limiter.acquire(class) {
+				task := mcpToolTask{
+					class: class, phase: mcpTaskQueued, params: append(json.RawMessage(nil), req.Params...),
+					requestID: append(json.RawMessage(nil), req.ID...), idKey: idKey, queuedAt: time.Now(),
+				}
+				if limiter.acquire(class) {
+					startTask(task)
+					break
+				}
+				if !limiter.enqueue(class) {
+					details := limiter.diagnostics()
+					details["phase"] = string(mcpTaskQueued)
+					details["task_class"] = string(class)
 					response.Result = encodeToolError(newToolError(
 						ErrorServerBusy,
 						"concurrency",
-						"ck3-index has reached its bounded concurrent task limit",
+						"ck3-index has reached its bounded MCP queue capacity",
 						true,
-						nil,
-						map[string]any{"guidance": "Retry after active heavy operations finish."},
+						details,
+						map[string]any{"guidance": "Retry after active expensive operations finish."},
 					), nil)
 					if err := writeResponse(response); err != nil {
 						cancelTasks()
@@ -396,9 +736,8 @@ func serveWithToolCaller(ctx context.Context, cfg indexer.Config, dbPath string,
 					}
 					break
 				}
-				taskCtx, taskCancel := context.WithCancel(sessionCtx)
-				tasks[idKey] = mcpToolTask{class: class, cancel: taskCancel}
-				go runMCPToolTask(taskCtx, sessionCtx, caller, db, cfg, req.Params, req.ID, idKey, taskResults)
+				tasks[idKey] = task
+				queuedTaskIDs = append(queuedTaskIDs, idKey)
 			default:
 				response.Error = newProtocolError(rpcMethodNotFound, "method not found")
 				if err := writeResponse(response); err != nil {
@@ -408,6 +747,9 @@ func serveWithToolCaller(ctx context.Context, cfg indexer.Config, dbPath string,
 			}
 		case result := <-taskResults:
 			if task, active := tasks[result.idKey]; active {
+				if task.cancel != nil {
+					task.cancel()
+				}
 				delete(tasks, result.idKey)
 				limiter.release(task.class)
 				if !task.cancelled || result.committed {
@@ -416,6 +758,7 @@ func serveWithToolCaller(ctx context.Context, cfg indexer.Config, dbPath string,
 						return err
 					}
 				}
+				dispatchQueued()
 			}
 		}
 	}
@@ -473,33 +816,31 @@ func initializeResult(protocolVersion string) map[string]any {
 	return map[string]any{
 		"protocolVersion": protocolVersion,
 		"serverInfo":      map[string]any{"name": "ck3-index", "version": buildinfo.Version},
-		"instructions":    "CK3 semantic index. Begin with ck3_workspace operation=capabilities only when capability selection is uncertain; otherwise use ck3_search to discover an unknown id, ck3_inspect for one exact id, then ck3_prepare_edit, ck3_review, and ck3_preflight for an edit flow. Call ck3_refresh status/files after project source changes; full is explicit and is never substituted silently. Use ck3-index before raw text search; use rg only to inspect exact evidence paths returned by the index. MCP exposes one canonical tool surface; use each tool's bounded operations for precise follow-up.",
+		"instructions":    "CK3 semantic index. When more than one database may be configured, call ck3_database operation=list and select only an exact configured name; never invent or submit a filesystem path. Every result identifies the database lease that supplied its evidence, and a switch affects subsequent calls without rebinding work already running. Begin with ck3_workspace operation=capabilities only when capability selection is uncertain; otherwise use ck3_search to discover an unknown id, ck3_inspect for one exact id, then ck3_prepare_edit, ck3_review, and ck3_preflight for an edit flow. Call ck3_refresh status/files after project source changes; full is explicit and is never substituted silently. Use ck3-index before raw text search; use rg only to inspect exact evidence paths returned by the index. Submit expensive workspace-wide, review, preflight, refresh, packaging, GUI, map-analysis, map-authoring, and raster calls one at a time and await each result. MCP exposes one canonical tool surface; use each tool's bounded operations for precise follow-up.",
 		"capabilities": map[string]any{"tools": map[string]any{
 			"listChanged": false,
 		}},
 	}
 }
 
-func handleMCPNotification(req rpcRequest, session *mcpSession, tasks map[string]mcpToolTask) {
+func handleMCPNotification(req rpcRequest, session *mcpSession) (string, bool) {
 	if req.JSONRPC != "2.0" || req.Method == "" {
-		return
+		return "", false
 	}
 	switch req.Method {
 	case "notifications/initialized":
 		if session.initialized {
 			session.clientInitialized = true
 		}
+		return "", false
 	case "notifications/cancelled":
 		idKey, ok := cancelledRequestID(req.Params)
 		if !ok {
-			return
+			return "", false
 		}
-		if task, active := tasks[idKey]; active {
-			task.cancelled = true
-			task.cancel()
-			tasks[idKey] = task
-		}
+		return idKey, true
 	}
+	return "", false
 }
 
 func cancelledRequestID(raw json.RawMessage) (string, bool) {
@@ -520,12 +861,45 @@ func mcpRequestIDKey(raw json.RawMessage) string {
 	return key
 }
 
-func runMCPToolTask(ctx, sessionCtx context.Context, caller mcpToolCaller, db *indexer.DB, cfg indexer.Config, params json.RawMessage, requestID json.RawMessage, idKey string, results chan<- mcpToolTaskResult) {
+func runMCPToolTask(
+	ctx, sessionCtx context.Context,
+	caller mcpToolCaller,
+	db *indexer.DB,
+	cfg indexer.Config,
+	params json.RawMessage,
+	requestID json.RawMessage,
+	idKey string,
+	class mcpTaskClass,
+	queuedAt, startedAt time.Time,
+	executionTimeout time.Duration,
+	releaseDatabase func(),
+	results chan<- mcpToolTaskResult,
+) {
+	if releaseDatabase != nil {
+		defer releaseDatabase()
+	}
 	commitState := &mcpCommitState{}
 	ctx = context.WithValue(ctx, mcpCommitStateKey{}, commitState)
 	response := rpcResponse{JSONRPC: "2.0", ID: requestID}
 	result, err := caller(ctx, db, cfg, params)
-	if err != nil {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) && !commitState.committed {
+		now := time.Now()
+		details := map[string]any{
+			"phase":                string(mcpTaskRunning),
+			"task_class":           string(class),
+			"queue_ms":             startedAt.Sub(queuedAt).Milliseconds(),
+			"execution_ms":         now.Sub(startedAt).Milliseconds(),
+			"execution_timeout_ms": executionTimeout.Milliseconds(),
+		}
+		response.Result = encodeToolError(newToolError(
+			ErrorOperationTimeout,
+			"operation_state",
+			"the operation exceeded the MCP execution time limit",
+			true,
+			details,
+			map[string]any{"guidance": "Retry with a narrower request or increase mcp_execution_timeout_seconds."},
+		), nil)
+	} else if err != nil {
 		var rpcErr *protocolError
 		if errors.As(err, &rpcErr) {
 			response.Error = rpcErr

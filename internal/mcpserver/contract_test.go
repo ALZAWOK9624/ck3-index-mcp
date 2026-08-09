@@ -19,11 +19,11 @@ import (
 
 func TestToolRegistryContract(t *testing.T) {
 	definitions := registry()
-	if len(definitions) != 35 {
-		t.Fatalf("standard registry count = %d, want 35", len(definitions))
+	if len(definitions) != 36 {
+		t.Fatalf("standard registry count = %d, want 36", len(definitions))
 	}
-	if got := len(mcpTools()); got != 35 {
-		t.Fatalf("tools/list count = %d, want 35", got)
+	if got := len(mcpTools()); got != 36 {
+		t.Fatalf("tools/list count = %d, want 36", got)
 	}
 
 	seen := make(map[string]struct{}, len(definitions))
@@ -47,7 +47,7 @@ func TestToolRegistryContract(t *testing.T) {
 		if got := definition.OutputSchema["type"]; got != "object" {
 			t.Fatalf("tool %q output schema type = %v, want object", definition.Name, got)
 		}
-		if definition.Name == "ck3_refresh" || definition.Name == "ck3_package" || definition.Name == "map_migration_snapshot" || definition.Name == "map_province_migration" || definition.Name == "map_split_province" || definition.Name == "map_apply_split" || definition.Name == "map_terrain_edit" {
+		if definition.Name == "ck3_refresh" || definition.Name == "ck3_database" || definition.Name == "ck3_package" || definition.Name == "map_migration_snapshot" || definition.Name == "map_province_migration" || definition.Name == "map_split_province" || definition.Name == "map_apply_split" || definition.Name == "map_terrain_edit" {
 			if definition.Annotations.ReadOnlyHint || definition.Annotations.DestructiveHint || definition.Annotations.OpenWorldHint {
 				t.Fatalf("tool %q annotations must be non-read-only, non-destructive, and closed-world", definition.Name)
 			}
@@ -357,6 +357,7 @@ func TestCanonicalSchemasMatchTypedArguments(t *testing.T) {
 		"ck3_diagnostics":         reflect.TypeOf(ck3DiagnosticsArgs{}),
 		"ck3_script_reference":    reflect.TypeOf(ck3ScriptReferenceArgs{}),
 		"ck3_health":              reflect.TypeOf(ck3HealthArgs{}),
+		"ck3_database":            reflect.TypeOf(ck3DatabaseArgs{}),
 		"ck3_package":             reflect.TypeOf(ck3PackageArgs{}),
 		"ck3_gui":                 reflect.TypeOf(ck3GUIArgs{}),
 		"map_asset_audit":         reflect.TypeOf(mapAssetAuditArgs{}),
@@ -614,6 +615,7 @@ func TestEveryCallableToolHasSuccessAndMalformedArgumentCases(t *testing.T) {
 		"ck3_refresh":          {"operation": "status"},
 		"ck3_script_reference": {"kind": "shape", "id": "has_trait", "limit": 2},
 		"ck3_health":           {},
+		"ck3_database":         {"operation": "list"},
 		"ck3_package": {
 			"metadata": map[string]any{"name": "Contract Mod", "slug": "contract_mod", "version": "1.0", "supported_version": "1.19.*", "tags": []string{"Gameplay"}},
 			"files":    []map[string]any{{"path": "common/scripted_triggers/contract_package.txt", "content": "contract_package_trigger = { always = yes }"}},
@@ -648,8 +650,8 @@ func TestEveryCallableToolHasSuccessAndMalformedArgumentCases(t *testing.T) {
 		"map_render":              {"target": "k_k11", "year": 6253, "width": 400, "layers": []map[string]any{{"type": "borders", "level": "county"}}},
 		"ck3_save":                {"path": "fixture.ck3", "operation": "card"},
 	}
-	if len(successArguments) != 35 {
-		t.Fatalf("success case count = %d, want 35 canonical names", len(successArguments))
+	if len(successArguments) != 36 {
+		t.Fatalf("success case count = %d, want 36 canonical names", len(successArguments))
 	}
 	for name, args := range successArguments {
 		name, args := name, args

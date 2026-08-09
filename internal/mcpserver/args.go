@@ -175,6 +175,11 @@ type ck3HealthArgs struct {
 	Mode string `json:"mode,omitempty"`
 }
 
+type ck3DatabaseArgs struct {
+	Operation string `json:"operation,omitempty"`
+	Name      string `json:"name,omitempty"`
+}
+
 type ck3PackageArgs struct {
 	Metadata packager.Metadata    `json:"metadata"`
 	Files    []packager.FileInput `json:"files"`

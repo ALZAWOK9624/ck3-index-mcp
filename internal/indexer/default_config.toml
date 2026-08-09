@@ -1,4 +1,19 @@
 database = "cache/ck3_index.sqlite"
+
+# Stable MCP-visible identity for the primary database. Additional databases
+# are an administrator-owned allowlist: agents select only by name and never
+# submit a filesystem path. Use config for a different workspace/source model;
+# use database only for another snapshot of this same configured workspace.
+mcp_database_name = "default"
+mcp_database_description = "Primary CK3 workspace index"
+# [[mcp_database]]
+# name = "vanilla"
+# description = "Vanilla-only CK3 index"
+# config = "base-vanilla.toml"
+# [[mcp_database]]
+# name = "previous"
+# description = "Previous snapshot of this same workspace"
+# database = "cache/previous.sqlite"
 # Optional prebuilt index holding only the upstream layers, so several projects
 # that share the same game and Mod trees parse them once instead of once each.
 # Build it from a config whose project source points at an empty directory and
@@ -17,7 +32,11 @@ gis_cache_max_gib = 8
 gis_timeout_seconds = 900
 # Optional resource limits. Omitting them preserves the historical defaults:
 # 8 SQLite read connections, 64 MB cache per connection, 1024 MB mmap, and
-# MCP concurrency limits of 12 ordinary / 2 heavy / 1 raster task.
+# MCP concurrency limits of 12 total / 2 expensive / 1 raster task, a bounded
+# queue of 32 calls, a 15 second queue timeout, and a 900 second execution
+# timeout. Raster work consumes both its own limit and the shared expensive
+# budget. At least one task slot and one SQLite connection are always reserved
+# for ordinary queries.
 # A conservative 4 GB server profile is 2 / 16 / 256 and 4 / 1 / 1.
 # sqlite_read_connections = 2
 # sqlite_cache_mb_per_connection = 16
@@ -25,6 +44,9 @@ gis_timeout_seconds = 900
 # mcp_max_tasks = 4
 # mcp_max_heavy_tasks = 1
 # mcp_max_raster_tasks = 1
+# mcp_max_queued_tasks = 16
+# mcp_queue_timeout_seconds = 15
+# mcp_execution_timeout_seconds = 900
 # Release bundles set these to the bundled, verified WhiteboxTools binary.
 # gis_sidecar_path = "sidecar/whitebox_tools.exe"
 # gis_sidecar_sha256 = "<release-manifest-sha256>"

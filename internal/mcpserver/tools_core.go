@@ -463,14 +463,30 @@ func handleHealth(ctx context.Context, runtime *Runtime, definition *ToolDefinit
 		health.GIS = &gis
 		usage := currentMCPTaskUsage()
 		health.ActiveTasks = usage.Active
+		health.ActiveExpensiveTasks = usage.Heavy + usage.Raster
 		health.ActiveHeavyTasks = usage.Heavy
 		health.ActiveRasterTasks = usage.Raster
+		health.QueuedTasks = usage.Queued
+		health.QueuedExpensiveTasks = usage.QueuedHeavy + usage.QueuedRaster
+		health.QueuedHeavyTasks = usage.QueuedHeavy
+		health.QueuedRasterTasks = usage.QueuedRaster
 		health.EstimatedTaskMemoryMB = usage.EstimatedMemoryMB
 	}
 	if err != nil {
 		return toolOutput{}, err
 	}
-	return toolOutput{Value: mcpHealthReport(health), Visibility: "private"}, nil
+	report := mcpHealthReport(health)
+	if runtime.DatabaseController != nil {
+		active, databases := runtime.DatabaseController.Catalog()
+		report["queried_database"] = runtime.databaseIdentity()
+		report["active_database"] = active
+		report["configured_database_count"] = len(databases)
+	} else {
+		report["queried_database"] = runtime.databaseIdentity()
+		report["active_database"] = runtime.databaseIdentity()
+		report["configured_database_count"] = 1
+	}
+	return toolOutput{Value: report, Visibility: "private"}, nil
 }
 
 func handleGUI(ctx context.Context, runtime *Runtime, definition *ToolDefinition, raw json.RawMessage) (toolOutput, error) {

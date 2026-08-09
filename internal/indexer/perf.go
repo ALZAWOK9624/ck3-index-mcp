@@ -30,35 +30,47 @@ type BenchQuery struct {
 }
 
 type HealthReport struct {
-	Status                string            `json:"status"`
-	Depth                 string            `json:"depth,omitempty"`
-	Database              string            `json:"-"`
-	DatabaseMB            float64           `json:"database_mb"`
-	DatabaseVersion       string            `json:"database_version,omitempty"`
-	DatabaseFingerprint   string            `json:"database_fingerprint,omitempty"`
-	AuthoritativeDatabase bool              `json:"authoritative_database"`
-	SchemaVersion         int               `json:"schema_version"`
-	MapDatabase           MapDatabaseStatus `json:"map_database"`
-	Tables                map[string]int    `json:"tables"`
-	IndexRuleVersion      string            `json:"index_rule_version,omitempty"`
-	ScanGeneration        int64             `json:"scan_generation,omitempty"`
-	ScanRevision          string            `json:"scan_revision,omitempty"`
-	ScanCommittedAt       string            `json:"scan_committed_at,omitempty"`
-	ScanStatus            string            `json:"scan_status,omitempty"`
-	MissingIndexes        []string          `json:"missing_indexes,omitempty"`
-	WALFiles              []HealthFile      `json:"wal_files,omitempty"`
-	MCPConfigured         bool              `json:"mcp_configured"`
-	FTS5Available         bool              `json:"fts5_available"`
-	SQLiteReadConnections int               `json:"sqlite_read_connections"`
-	SQLiteCachePerConnMB  int               `json:"sqlite_cache_per_connection_mb"`
-	SQLiteCacheBudgetMB   int               `json:"sqlite_cache_budget_mb"`
-	SQLiteMMapLimitMB     int               `json:"sqlite_mmap_limit_mb"`
-	ActiveTasks           int               `json:"active_tasks"`
-	ActiveHeavyTasks      int               `json:"active_heavy_tasks"`
-	ActiveRasterTasks     int               `json:"active_raster_tasks"`
-	EstimatedTaskMemoryMB int               `json:"estimated_task_memory_mb"`
-	GIS                   *GISSidecarStatus `json:"gis,omitempty"`
-	Guidance              []string          `json:"guidance,omitempty"`
+	Status                  string            `json:"status"`
+	Depth                   string            `json:"depth,omitempty"`
+	Database                string            `json:"-"`
+	DatabaseMB              float64           `json:"database_mb"`
+	DatabaseVersion         string            `json:"database_version,omitempty"`
+	DatabaseFingerprint     string            `json:"database_fingerprint,omitempty"`
+	AuthoritativeDatabase   bool              `json:"authoritative_database"`
+	SchemaVersion           int               `json:"schema_version"`
+	MapDatabase             MapDatabaseStatus `json:"map_database"`
+	Tables                  map[string]int    `json:"tables"`
+	IndexRuleVersion        string            `json:"index_rule_version,omitempty"`
+	ScanGeneration          int64             `json:"scan_generation,omitempty"`
+	ScanRevision            string            `json:"scan_revision,omitempty"`
+	ScanCommittedAt         string            `json:"scan_committed_at,omitempty"`
+	ScanStatus              string            `json:"scan_status,omitempty"`
+	MissingIndexes          []string          `json:"missing_indexes,omitempty"`
+	WALFiles                []HealthFile      `json:"wal_files,omitempty"`
+	MCPConfigured           bool              `json:"mcp_configured"`
+	FTS5Available           bool              `json:"fts5_available"`
+	SQLiteReadConnections   int               `json:"sqlite_read_connections"`
+	SQLiteCachePerConnMB    int               `json:"sqlite_cache_per_connection_mb"`
+	SQLiteCacheBudgetMB     int               `json:"sqlite_cache_budget_mb"`
+	SQLiteMMapLimitMB       int               `json:"sqlite_mmap_limit_mb"`
+	ActiveTasks             int               `json:"active_tasks"`
+	ActiveExpensiveTasks    int               `json:"active_expensive_tasks"`
+	ActiveHeavyTasks        int               `json:"active_heavy_tasks"`
+	ActiveRasterTasks       int               `json:"active_raster_tasks"`
+	QueuedTasks             int               `json:"queued_tasks"`
+	QueuedExpensiveTasks    int               `json:"queued_expensive_tasks"`
+	QueuedHeavyTasks        int               `json:"queued_heavy_tasks"`
+	QueuedRasterTasks       int               `json:"queued_raster_tasks"`
+	MCPMaxTasks             int               `json:"mcp_max_tasks"`
+	MCPMaxHeavyTasks        int               `json:"mcp_max_heavy_tasks"`
+	MCPMaxRasterTasks       int               `json:"mcp_max_raster_tasks"`
+	MCPMaxQueuedTasks       int               `json:"mcp_max_queued_tasks"`
+	MCPQueueTimeoutSecs     int               `json:"mcp_queue_timeout_seconds"`
+	MCPExecutionTimeoutSecs int               `json:"mcp_execution_timeout_seconds"`
+	SQLiteOrdinaryReserve   int               `json:"sqlite_connections_reserved_for_ordinary_tasks"`
+	EstimatedTaskMemoryMB   int               `json:"estimated_task_memory_mb"`
+	GIS                     *GISSidecarStatus `json:"gis,omitempty"`
+	Guidance                []string          `json:"guidance,omitempty"`
 
 	// ConfigPath and Sources answer "which configuration is live, and which
 	// trees does it actually point at". A workspace can hold several
@@ -227,10 +239,21 @@ func (db *DB) HealthConfiguredDepth(ctx context.Context, cfg Config, depth Healt
 	if err != nil {
 		return HealthReport{}, err
 	}
+	resourceConfig := cfg
+	if err := normalizeResourceLimits(&resourceConfig); err != nil {
+		return HealthReport{}, err
+	}
 	report, err := db.health(ctx, configuredPath, depth)
 	if err != nil {
 		return HealthReport{}, err
 	}
+	report.MCPMaxTasks = resourceConfig.MCPMaxTasks
+	report.MCPMaxHeavyTasks = resourceConfig.MCPMaxHeavyTasks
+	report.MCPMaxRasterTasks = resourceConfig.MCPMaxRasterTasks
+	report.MCPMaxQueuedTasks = resourceConfig.MCPMaxQueuedTasks
+	report.MCPQueueTimeoutSecs = resourceConfig.MCPQueueTimeoutSeconds
+	report.MCPExecutionTimeoutSecs = resourceConfig.MCPExecutionTimeoutSeconds
+	report.SQLiteOrdinaryReserve = resourceConfig.SQLiteReadConnections - resourceConfig.MCPMaxHeavyTasks
 	report.ConfigPath = displayPath(cfg.ConfigPath)
 	report.Sources = SourceIdentities(cfg)
 	return report, nil

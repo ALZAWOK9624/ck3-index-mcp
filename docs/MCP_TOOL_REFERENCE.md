@@ -2,7 +2,7 @@
 
 > 本文档由 `go run ./cmd/mcp-docgen` 根据 `internal/mcpserver` 自动生成，请勿手工修改。
 
-ck3-index 公开 35 个规范工具。细分能力由各工具的受限 operation 参数表达，不再提供旧版专用工具别名。
+ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operation 参数表达，不再提供旧版专用工具别名。
 
 ## `ck3_search` — 搜索 CK3 索引
 
@@ -180,6 +180,17 @@ ck3-index 公开 35 个规范工具。细分能力由各工具的受限 operatio
 | `mode` | 否 | 字符串 | 可选值=[quick deep] | quick 直接读取扫描时记录的统计值；deep 重新逐表计数并重新校验 GIS sidecar。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+
+## `ck3_database` — 选择 CK3 索引数据库
+
+列出管理员配置的 SQLite 索引、报告当前数据库，或在不重启 MCP 的情况下按名称热切换后续调用。运行中的调用继续持有原数据库租约，调用方不能提交文件路径。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `name` | 否 | 字符串 | 最短长度=1; 最长长度=64 | 已配置数据库的准确名称；operation=switch 时必填。 |
+| `operation` | 否 | 字符串 | 可选值=[list status switch]; 默认值=list | 数据库控制操作。list 是默认值并发现允许的名称；status 报告当前租约身份；switch 为后续调用选择一个已配置名称。 |
+
+属性：生成受限临时产物、非破坏、封闭世界。输出：结构化对象与 JSON 文本；成功时返回可供附件发送层解析的 artifact 标识和相对路径。
 
 ## `ck3_package` — 打包 CK3 Mod
 

@@ -17,6 +17,8 @@ type DB struct {
 	sql                 *sql.DB
 	path                string
 	readOptions         SQLiteReadOptions
+	engineRulesMu       sync.RWMutex
+	engineRules         *PublishedEngineRules
 	physicalRasterMu    sync.Mutex
 	physicalRasterCache map[string]cachedMapPhysicalRaster
 	guiResolutionMu     sync.Mutex

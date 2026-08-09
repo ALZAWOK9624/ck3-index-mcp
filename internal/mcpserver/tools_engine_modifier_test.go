@@ -1,12 +1,20 @@
 package mcpserver
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"ck3-index/internal/indexer"
 )
 
 func TestLookupModifierToolKeepsFormatOnlyUseAreasUnknown(t *testing.T) {
-	raw, err := lookupModifierTool("afar_opinion")
+	db, err := indexer.Open(filepath.Join(t.TempDir(), "rules.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	raw, err := lookupModifierTool(db, "afar_opinion")
 	if err != nil {
 		t.Fatal(err)
 	}

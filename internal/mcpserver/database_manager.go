@@ -351,6 +351,14 @@ func (manager *mcpDatabaseManager) Switch(ctx context.Context, rawName string) (
 		}
 		return mcpDatabaseSwitchResult{}, databaseTargetUnavailable(name, "health_check_failed")
 	}
+	if !health.CanServeIndexQueries() {
+		if newlyOpened {
+			_ = candidate.db.Close()
+		} else {
+			manager.release(candidate)
+		}
+		return mcpDatabaseSwitchResult{}, databaseTargetHealthUnavailable(name, health)
+	}
 	if err := ctx.Err(); err != nil {
 		if newlyOpened {
 			_ = candidate.db.Close()
@@ -408,7 +416,7 @@ func openManagedMCPDatabase(ctx context.Context, spec mcpDatabaseSpec) (*managed
 	if err != nil {
 		return nil, databaseTargetUnavailable(spec.name, "open_failed")
 	}
-	if err := indexer.RestorePublishedEngineRules(ctx, db, spec.config.EngineLogs); err != nil {
+	if err := db.RestoreEngineRules(ctx, spec.config.EngineLogs); err != nil {
 		_ = db.Close()
 		return nil, databaseTargetUnavailable(spec.name, "engine_rules_unavailable")
 	}
@@ -423,6 +431,17 @@ func databaseTargetUnavailable(name, reason string) error {
 	return newToolError(ErrorDatabaseTargetUnavailable, "database", "the configured MCP database could not be opened safely", true,
 		map[string]any{"name": name, "reason": reason},
 		map[string]any{"guidance": "Check the administrator-configured database or config file, rebuild that index if needed, then retry by name."})
+}
+
+func databaseTargetHealthUnavailable(name string, health indexer.HealthReport) error {
+	return newToolError(ErrorDatabaseTargetUnavailable, "database", "the configured MCP database is not ready for index queries", true,
+		map[string]any{
+			"name": name, "reason": "health_not_ready", "status": health.Status,
+			"scan_status": health.ScanStatus, "authoritative_database": health.AuthoritativeDatabase,
+			"map_database": health.MapDatabase, "fts5_available": health.FTS5Available,
+			"missing_indexes": health.MissingIndexes, "index_rule_version": health.IndexRuleVersion,
+		},
+		map[string]any{"guidance": "Rebuild or repair the configured target until health --require-ready succeeds, then retry the switch."})
 }
 
 func (manager *mcpDatabaseManager) Close() {

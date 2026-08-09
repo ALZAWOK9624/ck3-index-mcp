@@ -13,7 +13,11 @@ import (
 // describe the files on disk. It is set deliberately — for example just before
 // a migration promotion replaces the whole project directory — so no caller
 // can keep reading a ready generation that silently describes the old tree.
-const IndexStatusStale = "stale"
+const (
+	IndexStatusInitializing = "initializing"
+	IndexStatusReady        = "ready"
+	IndexStatusStale        = "stale"
+)
 
 type IndexState struct {
 	Generation  int64  `json:"scan_generation"`
@@ -59,7 +63,7 @@ func ensureScanRevision(ctx context.Context, q integrityQueryExecer) error {
 // cache already has a generation or revision; an empty freshly reset meta
 // table remains unavailable until its first successful publication.
 func (state IndexState) Ready() bool {
-	return state.Status == "ready"
+	return state.Status == IndexStatusReady
 }
 
 func samePublishedIndexState(left, right IndexState) bool {
@@ -68,7 +72,7 @@ func samePublishedIndexState(left, right IndexState) bool {
 
 func (db *DB) IndexState(ctx context.Context) (IndexState, error) {
 	if !db.tableExists(ctx, "meta") {
-		return IndexState{Status: "initializing"}, nil
+		return IndexState{Status: IndexStatusInitializing}, nil
 	}
 	return readIndexState(ctx, db.sql)
 }

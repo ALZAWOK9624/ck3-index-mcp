@@ -90,21 +90,86 @@ read_rule_version() {
 
 BIN="$REPO/bin/ck3-index"
 BIN_NEW="$BIN.new"
+DEPLOY_STATE="$BIN_NEW.state"
+DEPLOY_PHASE=""
+RESUME_SWAP=0
+
+read_deploy_state() {
+    sed -n "s/^$1=//p" "$DEPLOY_STATE" | head -n 1
+}
+
+write_deploy_state() {
+    DEPLOY_PHASE="$1"
+    state_tmp="$DEPLOY_STATE.tmp.$$"
+    umask 077
+    {
+        printf 'phase=%s\n' "$DEPLOY_PHASE"
+        printf 'revision=%s\n' "$(git rev-parse HEAD)"
+        printf 'config=%s\n' "$CONFIG"
+        printf 'database=%s\n' "$DB"
+        printf 'rebuild=%s\n' "$REBUILD"
+        printf 'rule=%s\n' "$NEW_RULE"
+    } > "$state_tmp"
+    mv "$state_tmp" "$DEPLOY_STATE"
+}
+
+load_deploy_state() {
+    [ -f "$DEPLOY_STATE" ] || return 1
+    DEPLOY_PHASE="$(read_deploy_state phase)"
+    STAGED_REVISION="$(read_deploy_state revision)"
+    STAGED_CONFIG="$(read_deploy_state config)"
+    STAGED_DB="$(read_deploy_state database)"
+    STAGED_REBUILD="$(read_deploy_state rebuild)"
+    STAGED_RULE="$(read_deploy_state rule)"
+    case "$DEPLOY_PHASE" in
+        verified|stopped|binary_swapped|database_swapped|started) ;;
+        *) fail "invalid staged deployment phase in $DEPLOY_STATE" ;;
+    esac
+    [ "$STAGED_REVISION" = "$LOCAL" ] || fail "staged deployment belongs to another revision; inspect or remove $DEPLOY_STATE"
+    [ "$STAGED_CONFIG" = "$CONFIG" ] || fail "staged deployment belongs to another config; inspect or remove $DEPLOY_STATE"
+    [ "$STAGED_DB" = "$DB" ] || fail "staged deployment belongs to another database; inspect or remove $DEPLOY_STATE"
+    case "$STAGED_REBUILD" in 0|1) ;; *) fail "invalid rebuild value in $DEPLOY_STATE" ;; esac
+    case "$DEPLOY_PHASE" in
+        verified|stopped)
+            [ -x "$BIN_NEW" ] || fail "staged binary is missing for phase $DEPLOY_PHASE: $BIN_NEW"
+            if [ "$STAGED_REBUILD" -eq 1 ]; then
+                [ -f "$DB_NEXT" ] || fail "staged database is missing for phase $DEPLOY_PHASE: $DB_NEXT"
+            fi
+            ;;
+        binary_swapped)
+            [ -x "$BIN" ] || fail "new binary is missing after the recorded binary swap: $BIN"
+            if [ "$STAGED_REBUILD" -eq 1 ]; then
+                [ -f "$DB_NEXT" ] || fail "staged database is missing after the recorded binary swap: $DB_NEXT"
+            fi
+            ;;
+        database_swapped|started)
+            [ -x "$BIN" ] || fail "new binary is missing after the recorded deployment swap: $BIN"
+            [ -f "$DB" ] || fail "database is missing after the recorded deployment swap: $DB"
+            ;;
+    esac
+    REBUILD="$STAGED_REBUILD"
+    NEW_RULE="$STAGED_RULE"
+    RESUME_SWAP=1
+    return 0
+}
 
 # ------------------------------------------------------------- update check
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "$REPO is not a git repository"
-if [ -n "$(git status --porcelain)" ]; then
-    fail "working tree has local changes; commit or stash them before updating"
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+LOCAL="$(git rev-parse HEAD)"
+if load_deploy_state; then
+    REMOTE="$LOCAL"
+    log "resuming staged deployment for ${LOCAL:0:7} at phase $DEPLOY_PHASE"
+else
+    if [ -n "$(git status --porcelain)" ]; then
+        fail "working tree has local changes; commit or stash them before updating"
+    fi
+    log "fetching origin/$BRANCH"
+    git fetch --quiet origin "$BRANCH"
+    REMOTE="$(git rev-parse "origin/$BRANCH")"
 fi
 
-BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-log "fetching origin/$BRANCH"
-git fetch --quiet origin "$BRANCH"
-
-LOCAL="$(git rev-parse HEAD)"
-REMOTE="$(git rev-parse "origin/$BRANCH")"
-
-if [ "$LOCAL" = "$REMOTE" ] && [ "$FORCE_REBUILD" -eq 0 ]; then
+if [ "$RESUME_SWAP" -eq 0 ] && [ "$LOCAL" = "$REMOTE" ] && [ "$FORCE_REBUILD" -eq 0 ]; then
     log "already at ${LOCAL:0:7}, nothing to do"
     exit 0
 fi
@@ -113,6 +178,10 @@ OLD_RULE="$(read_rule_version)"
 [ -n "$OLD_RULE" ] || fail "could not read indexRuleVersion from $RULE_FILE"
 
 if [ "$CHECK_ONLY" -eq 1 ]; then
+    if [ "$RESUME_SWAP" -eq 1 ]; then
+        log "verified deployment for ${LOCAL:0:7} is waiting at phase $DEPLOY_PHASE"
+        exit 0
+    fi
     log "update available: ${LOCAL:0:7} -> ${REMOTE:0:7}"
     log "$(git log --oneline "$LOCAL..$REMOTE" | wc -l) commit(s) pending"
     git log --oneline "$LOCAL..$REMOTE" | sed 's/^/[ck3-update]   /'
@@ -126,142 +195,166 @@ if [ "$CHECK_ONLY" -eq 1 ]; then
 fi
 
 # --------------------------------------------------------------------- pull
-log "updating ${LOCAL:0:7} -> ${REMOTE:0:7}"
-git merge --ff-only "origin/$BRANCH" >/dev/null || fail "cannot fast-forward; resolve $BRANCH by hand"
+if [ "$RESUME_SWAP" -eq 0 ]; then
+    log "updating ${LOCAL:0:7} -> ${REMOTE:0:7}"
+    git merge --ff-only "origin/$BRANCH" >/dev/null || fail "cannot fast-forward; resolve $BRANCH by hand"
 
-NEW_RULE="$(read_rule_version)"
-[ -n "$NEW_RULE" ] || fail "could not read indexRuleVersion after pull"
+    NEW_RULE="$(read_rule_version)"
+    [ -n "$NEW_RULE" ] || fail "could not read indexRuleVersion after pull"
 
-REBUILD=0
-if [ "$OLD_RULE" != "$NEW_RULE" ]; then
-    log "index rules changed: $OLD_RULE -> $NEW_RULE"
-    REBUILD=1
-elif [ "$FORCE_REBUILD" -eq 1 ]; then
-    log "index rules unchanged, but --force-rebuild was given"
-    REBUILD=1
-else
-    log "index rules unchanged; skipping rebuild"
-fi
+    REBUILD=0
+    if [ "$OLD_RULE" != "$NEW_RULE" ]; then
+        log "index rules changed: $OLD_RULE -> $NEW_RULE"
+        REBUILD=1
+    elif [ "$FORCE_REBUILD" -eq 1 ]; then
+        log "index rules unchanged, but --force-rebuild was given"
+        REBUILD=1
+    else
+        log "index rules unchanged; skipping rebuild"
+    fi
 
-rollback_git() {
-    log "rolling source back to ${LOCAL:0:7}"
-    git reset --hard "$LOCAL" >/dev/null 2>&1 || true
-}
+    rollback_git() {
+        log "rolling source back to ${LOCAL:0:7}"
+        git reset --hard "$LOCAL" >/dev/null 2>&1 || true
+    }
 
-# -------------------------------------------------------------------- build
-VERSION="$(tr -d '[:space:]' < VERSION)"
-REVISION="$(git rev-parse --short HEAD)"
-log "building $VERSION ($REVISION)"
-mkdir -p "$(dirname "$BIN_NEW")"
-if ! go build -trimpath -buildvcs=false \
-        -ldflags "-s -w -X ck3-index/internal/buildinfo.Version=$VERSION -X ck3-index/internal/buildinfo.Revision=$REVISION" \
-        -o "$BIN_NEW" . ; then
-    rollback_git
-    fail "build failed; source rolled back, nothing was swapped"
-fi
+    # ---------------------------------------------------------------- build
+    VERSION="$(tr -d '[:space:]' < VERSION)"
+    REVISION="$(git rev-parse --short HEAD)"
+    log "building $VERSION ($REVISION)"
+    mkdir -p "$(dirname "$BIN_NEW")"
+    if ! go build -trimpath -buildvcs=false \
+            -ldflags "-s -w -X ck3-index/internal/buildinfo.Version=$VERSION -X ck3-index/internal/buildinfo.Revision=$REVISION" \
+            -o "$BIN_NEW" . ; then
+        rollback_git
+        fail "build failed; source rolled back, nothing was swapped"
+    fi
 
-# A binary that cannot even print its own usage must never reach the swap.
-if ! "$BIN_NEW" >/dev/null 2>&1 && [ ! -x "$BIN_NEW" ]; then
-    rm -f "$BIN_NEW"
-    rollback_git
-    fail "new binary is not executable"
-fi
-log "built $(du -h "$BIN_NEW" | cut -f1)"
+    # A binary that cannot even print its own usage must never reach the swap.
+    if ! "$BIN_NEW" >/dev/null 2>&1 && [ ! -x "$BIN_NEW" ]; then
+        rm -f "$BIN_NEW"
+        rollback_git
+        fail "new binary is not executable"
+    fi
+    log "built $(du -h "$BIN_NEW" | cut -f1)"
 
-# ------------------------------------------------------------------ rebuild
-if [ "$REBUILD" -eq 1 ]; then
-    # The rebuild needs room for a second copy of the index alongside the live
-    # one. Running the disk out mid-scan would leave the staging cache behind
-    # and still not produce a usable index.
-    if [ -f "$DB" ]; then
-        NEED_KB=$(( $(du -k "$DB" | cut -f1) * 2 ))
-        FREE_KB=$(df -Pk "$DB_DIR" | awk 'NR==2 {print $4}')
-        if [ "$FREE_KB" -lt "$NEED_KB" ]; then
-            rm -f "$BIN_NEW"; rollback_git
-            fail "need ~$((NEED_KB/1024))MB free in $DB_DIR for the rebuild, have $((FREE_KB/1024))MB"
+    # -------------------------------------------------------------- rebuild
+    if [ "$REBUILD" -eq 1 ]; then
+        # The rebuild needs room for a second copy of the index alongside the
+        # live one. Running the disk out mid-scan would leave the staging cache
+        # behind and still not produce a usable index.
+        if [ -f "$DB" ]; then
+            NEED_KB=$(( $(du -k "$DB" | cut -f1) * 2 ))
+            FREE_KB=$(df -Pk "$DB_DIR" | awk 'NR==2 {print $4}')
+            if [ "$FREE_KB" -lt "$NEED_KB" ]; then
+                rm -f "$BIN_NEW"; rollback_git
+                fail "need ~$((NEED_KB/1024))MB free in $DB_DIR for the rebuild, have $((FREE_KB/1024))MB"
+            fi
         fi
+
+        # Build into a sibling database so the running server keeps reading the
+        # live one. The publication lock is keyed on the database path, so the
+        # scan and the live server never contend.
+        # The temporary config must live beside the real one. Relative source
+        # and base_database paths resolve against the config file's own
+        # directory, so a copy in /tmp would silently repoint every source.
+        TMP_CONFIG="$(mktemp "$(dirname "$CONFIG")/.ck3-index-update.XXXXXX.toml")"
+        trap 'rm -f "$TMP_CONFIG"' EXIT
+        # database is rewritten to an absolute path; base_database is left
+        # alone so the rebuild still gets its upstream seed.
+        sed "s|^\([[:space:]]*database[[:space:]]*=[[:space:]]*\).*|\1\"$DB_NEXT\"|" "$CONFIG" > "$TMP_CONFIG"
+        if ! grep -q "^[[:space:]]*database[[:space:]]*=[[:space:]]*\"$DB_NEXT\"" "$TMP_CONFIG"; then
+            rm -f "$BIN_NEW"; rollback_git
+            fail "could not repoint database in a temporary config; aborting before any change"
+        fi
+
+        rm -f "$DB_NEXT" "$DB_NEXT-wal" "$DB_NEXT-shm"
+        log "rebuilding index into $(basename "$DB_NEXT") (live server unaffected)"
+        if ! "$BIN_NEW" --config "$TMP_CONFIG" scan --clean; then
+            rm -f "$BIN_NEW" "$DB_NEXT" "$DB_NEXT-wal" "$DB_NEXT-shm"
+            rollback_git
+            fail "rebuild failed; live index and binary untouched"
+        fi
+
+        log "verifying new index"
+        if ! "$BIN_NEW" --config "$TMP_CONFIG" health --require-ready >/dev/null; then
+            rm -f "$BIN_NEW" "$DB_NEXT" "$DB_NEXT-wal" "$DB_NEXT-shm"
+            rollback_git
+            fail "new index failed its health check; nothing was swapped"
+        fi
+        log "new index verified"
     fi
 
-    # Build into a sibling database so the running server keeps reading the
-    # live one. The publication lock is keyed on the database path, so the scan
-    # and the live server never contend.
-    # The temporary config must live beside the real one. Relative source and
-    # base_database paths resolve against the config file's own directory, so a
-    # copy in /tmp would silently repoint every source at /tmp.
-    TMP_CONFIG="$(mktemp "$(dirname "$CONFIG")/.ck3-index-update.XXXXXX.toml")"
-    trap 'rm -f "$TMP_CONFIG"' EXIT
-    # database is rewritten to an absolute path; base_database is left alone so
-    # the rebuild still gets its upstream seed.
-    sed "s|^\([[:space:]]*database[[:space:]]*=[[:space:]]*\).*|\1\"$DB_NEXT\"|" "$CONFIG" > "$TMP_CONFIG"
-    if ! grep -q "^[[:space:]]*database[[:space:]]*=[[:space:]]*\"$DB_NEXT\"" "$TMP_CONFIG"; then
-        rm -f "$BIN_NEW"; rollback_git
-        fail "could not repoint database in a temporary config; aborting before any change"
-    fi
-
-    rm -f "$DB_NEXT" "$DB_NEXT-wal" "$DB_NEXT-shm"
-    log "rebuilding index into $(basename "$DB_NEXT") (live server unaffected)"
-    if ! "$BIN_NEW" --config "$TMP_CONFIG" scan --clean; then
-        rm -f "$BIN_NEW" "$DB_NEXT" "$DB_NEXT-wal" "$DB_NEXT-shm"
-        rollback_git
-        fail "rebuild failed; live index and binary untouched"
-    fi
-
-    log "verifying new index"
-    if ! "$BIN_NEW" --config "$TMP_CONFIG" health >/dev/null; then
-        rm -f "$BIN_NEW" "$DB_NEXT" "$DB_NEXT-wal" "$DB_NEXT-shm"
-        rollback_git
-        fail "new index failed its health check; nothing was swapped"
-    fi
-    log "new index verified"
+    write_deploy_state verified
+else
+    VERSION="$(tr -d '[:space:]' < VERSION)"
+    REVISION="$(git rev-parse --short HEAD)"
 fi
 
 # --------------------------------------------------------------------- swap
 STOP_CMD="${CK3_STOP_CMD:-}"
 START_CMD="${CK3_START_CMD:-}"
 
-if [ -z "$STOP_CMD" ] || [ -z "$START_CMD" ]; then
-    if [ "$KEEP_GOING" -eq 0 ]; then
+if [ "$DEPLOY_PHASE" = "verified" ]; then
+    if [ -z "$STOP_CMD" ] || [ -z "$START_CMD" ]; then
+        if [ "$KEEP_GOING" -eq 0 ]; then
+            log ""
+            log "CK3_STOP_CMD / CK3_START_CMD are not set, so the agent cannot be"
+            log "cycled automatically. The verified deployment remains staged."
+            log "Set both variables and re-run this command; it will resume even"
+            log "though the source revision already matches origin."
+            log ""
+            exit 3
+        fi
+        log "no agent hooks set and --keep-going given; swapping without cycling"
+    else
+        log "stopping agent"
+        eval "$STOP_CMD" || fail "stop command failed; nothing was swapped"
+    fi
+    write_deploy_state stopped
+fi
+
+# From here the window is intentionally tiny: two renames, no scanning. Each
+# completed phase is journaled so a later invocation can resume without pulling,
+# rebuilding, or repeating an already completed swap.
+if [ "$DEPLOY_PHASE" = "stopped" ]; then
+    if [ -f "$BIN" ]; then
+        cp -p "$BIN" "$BIN.bak"
+    fi
+    mv "$BIN_NEW" "$BIN"
+    write_deploy_state binary_swapped
+fi
+
+if [ "$DEPLOY_PHASE" = "binary_swapped" ]; then
+    if [ "$REBUILD" -eq 1 ]; then
+        if [ -f "$DB" ]; then
+            mv "$DB" "$DB.bak"
+            # Sidecars belong to the old database; leaving them next to the new
+            # one would make SQLite read a WAL that does not match it.
+            rm -f "$DB-wal" "$DB-shm"
+        fi
+        mv "$DB_NEXT" "$DB"
+        if [ -f "$DB_NEXT-wal" ]; then mv "$DB_NEXT-wal" "$DB-wal"; fi
+        if [ -f "$DB_NEXT-shm" ]; then mv "$DB_NEXT-shm" "$DB-shm"; fi
+    fi
+    write_deploy_state database_swapped
+fi
+
+if [ "$DEPLOY_PHASE" = "database_swapped" ]; then
+    if [ -n "$START_CMD" ]; then
+        log "starting agent"
+        eval "$START_CMD" || fail "start command failed; binary is $REVISION, re-run to retry the start"
+    elif [ "$KEEP_GOING" -eq 0 ]; then
         log ""
-        log "CK3_STOP_CMD / CK3_START_CMD are not set, so the agent cannot be"
-        log "cycled automatically. Everything is built and verified; finish with:"
-        log ""
-        log "  <stop your agent>"
-        log "  mv '$BIN_NEW' '$BIN'"
-        if [ "$REBUILD" -eq 1 ]; then log "  mv '$DB_NEXT' '$DB'"; fi
-        log "  <start your agent>"
-        log ""
-        log "Or set both variables and re-run to have this done for you."
+        log "The binary and database are swapped, but CK3_START_CMD is not set."
+        log "Set it and re-run this command to finish starting the agent."
         exit 3
     fi
-    log "no agent hooks set and --keep-going given; swapping without cycling"
-else
-    log "stopping agent"
-    eval "$STOP_CMD" || fail "stop command failed; nothing was swapped"
+    write_deploy_state started
 fi
 
-# From here the window is intentionally tiny: two renames, no scanning.
-# Note the deliberate `if` blocks rather than `[ x ] && y`: under set -e a false
-# test would end the script here, after the agent has already been stopped.
-if [ -f "$BIN" ]; then
-    cp -p "$BIN" "$BIN.bak"
-fi
-mv "$BIN_NEW" "$BIN"
-
-if [ "$REBUILD" -eq 1 ]; then
-    if [ -f "$DB" ]; then
-        mv "$DB" "$DB.bak"
-        # Sidecars belong to the old database; leaving them next to the new one
-        # would make SQLite read a WAL that does not match it.
-        rm -f "$DB-wal" "$DB-shm"
-    fi
-    mv "$DB_NEXT" "$DB"
-    if [ -f "$DB_NEXT-wal" ]; then mv "$DB_NEXT-wal" "$DB-wal"; fi
-    if [ -f "$DB_NEXT-shm" ]; then mv "$DB_NEXT-shm" "$DB-shm"; fi
-fi
-
-if [ -n "$START_CMD" ]; then
-    log "starting agent"
-    eval "$START_CMD" || fail "start command failed; binary is $REVISION, start the agent by hand"
+if [ "$DEPLOY_PHASE" = "started" ]; then
+    rm -f "$DEPLOY_STATE"
 fi
 
 log "updated to $VERSION ($REVISION)"

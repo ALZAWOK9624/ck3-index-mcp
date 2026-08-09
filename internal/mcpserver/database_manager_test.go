@@ -45,7 +45,8 @@ func TestMCPDatabaseManagerSwitchKeepsInflightLeasesAndReusesRetiredDatabase(t *
 
 	switched, err := manager.Switch(ctx, "second")
 	if err != nil {
-		t.Fatal(err)
+		toolErr := toolErrorFrom(err)
+		t.Fatalf("switch failed: %s details=%+v", toolErr.Message, toolErr.Details)
 	}
 	if !switched.Changed || switched.Previous.Name != "first" || switched.Active.Name != "second" || switched.Active.Epoch != 2 {
 		t.Fatalf("switch result = %+v", switched)
@@ -89,6 +90,124 @@ func TestMCPDatabaseManagerSwitchKeepsInflightLeasesAndReusesRetiredDatabase(t *
 	manager.mu.Unlock()
 	if secondStillLoaded {
 		t.Fatal("retired second database remained loaded after its final lease was released")
+	}
+}
+
+func TestMCPDatabaseManagerBindsDistinctEngineRulesToEachDatabase(t *testing.T) {
+	manager := newDistinctRuleDatabaseManager(t)
+	defer manager.Close()
+
+	first, err := manager.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertMCPDatabaseRule(t, first.DB, "first_database_trigger", true)
+	assertMCPDatabaseRule(t, first.DB, "second_database_trigger", false)
+	first.Release()
+
+	if _, err := manager.Switch(context.Background(), "second"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Release()
+	assertMCPDatabaseRule(t, second.DB, "second_database_trigger", true)
+	assertMCPDatabaseRule(t, second.DB, "first_database_trigger", false)
+}
+
+func TestMCPDatabaseManagerInflightLeaseKeepsItsEngineRulesAfterSwitch(t *testing.T) {
+	manager := newDistinctRuleDatabaseManager(t)
+	defer manager.Close()
+	first, err := manager.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Release()
+
+	if _, err := manager.Switch(context.Background(), "second"); err != nil {
+		t.Fatal(err)
+	}
+	assertMCPDatabaseRule(t, first.DB, "first_database_trigger", true)
+	assertMCPDatabaseRule(t, first.DB, "second_database_trigger", false)
+
+	second, err := manager.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Release()
+	assertMCPDatabaseRule(t, second.DB, "second_database_trigger", true)
+}
+
+func TestMCPDatabaseManagerSwitchBackReusesOriginalEngineRules(t *testing.T) {
+	manager := newDistinctRuleDatabaseManager(t)
+	defer manager.Close()
+	first, err := manager.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Release()
+
+	if _, err := manager.Switch(context.Background(), "second"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Switch(context.Background(), "first"); err != nil {
+		t.Fatal(err)
+	}
+	reused, err := manager.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reused.Release()
+	if reused.DB != first.DB {
+		t.Fatal("switching A -> B -> A did not reuse the still-leased A database")
+	}
+	assertMCPDatabaseRule(t, reused.DB, "first_database_trigger", true)
+	assertMCPDatabaseRule(t, reused.DB, "second_database_trigger", false)
+}
+
+func TestMCPDatabaseManagerRejectsHealthReportThatIsNotQueryReady(t *testing.T) {
+	dir := t.TempDir()
+	firstPath := createReadyMCPDatabase(t, dir, "first.sqlite", 1)
+	secondPath := createReadyMCPDatabase(t, dir, "second.sqlite", 2)
+	setMCPDatabaseMeta(t, secondPath, "scan_status", indexer.IndexStatusInitializing)
+	cfg := databaseManagerTestConfig(firstPath, secondPath)
+
+	secondDB, err := indexer.OpenReadOnlyWithOptions(secondPath, cfg.SQLiteReadOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	health, healthErr := secondDB.HealthConfiguredDepth(context.Background(), indexer.Config{
+		ConfigPath: cfg.ConfigPath, Database: secondPath,
+		SQLiteReadConnections: cfg.SQLiteReadConnections, MCPMaxTasks: cfg.MCPMaxTasks,
+		MCPMaxHeavyTasks: cfg.MCPMaxHeavyTasks, MCPMaxRasterTasks: cfg.MCPMaxRasterTasks,
+	}, indexer.HealthQuick)
+	_ = secondDB.Close()
+	if healthErr != nil || health.CanServeIndexQueries() || health.ScanStatus != indexer.IndexStatusInitializing {
+		t.Fatalf("non-ready health = %+v err=%v", health, healthErr)
+	}
+
+	firstDB, err := indexer.OpenReadOnlyWithOptions(firstPath, cfg.SQLiteReadOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := newMCPDatabaseManager(cfg, firstPath, firstDB)
+	if err != nil {
+		_ = firstDB.Close()
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	_, err = manager.Switch(context.Background(), "second")
+	if err == nil {
+		t.Fatal("non-ready database was activated")
+	}
+	toolErr := toolErrorFrom(err)
+	if toolErr.Code != ErrorDatabaseTargetUnavailable || toolErr.Details["reason"] != "health_not_ready" {
+		t.Fatalf("non-ready switch error = code=%s details=%+v", toolErr.Code, toolErr.Details)
+	}
+	if current := manager.Current(); current.Name != "first" || current.Epoch != 1 {
+		t.Fatalf("failed switch changed active database: %+v", current)
 	}
 }
 
@@ -350,16 +469,115 @@ func createReadyMCPDatabase(t *testing.T, dir, name string, generation int64) st
 	}
 	defer sqlDB.Close()
 	values := map[string]string{
-		"scan_generation": fmt.Sprint(generation),
-		"scan_revision":   fmt.Sprintf("fixture-%d", generation),
-		"scan_status":     "ready",
+		"scan_generation":    fmt.Sprint(generation),
+		"scan_revision":      fmt.Sprintf("fixture-%d", generation),
+		"scan_status":        "ready",
+		"index_rule_version": indexer.CurrentIndexRuleVersion(),
 	}
 	for key, value := range values {
 		if _, err := sqlDB.Exec(`INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value); err != nil {
 			t.Fatal(err)
 		}
 	}
+	for _, statement := range []string{
+		`INSERT INTO map_provinces(province_id, perimeter) VALUES(1,1)`,
+		`INSERT INTO map_province_geometry(province_id,fill_rle,boundary_rle) VALUES(1,X'00',X'00')`,
+		`INSERT INTO map_adjacencies(province_id,neighbor_id,border_len) VALUES(1,1,0)`,
+		`INSERT INTO map_titles(title_id,title_type,province_id) VALUES('b_fixture','barony',1)`,
+	} {
+		if _, err := sqlDB.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return path
+}
+
+func newDistinctRuleDatabaseManager(t *testing.T) *mcpDatabaseManager {
+	t.Helper()
+	dir := t.TempDir()
+	firstPath := createReadyMCPDatabase(t, dir, "first.sqlite", 1)
+	secondPath := createReadyMCPDatabase(t, dir, "second.sqlite", 2)
+	firstLogs := createMCPTestEngineLogs(t, dir, "first-logs", "first_database_trigger", "character")
+	secondLogs := createMCPTestEngineLogs(t, dir, "second-logs", "second_database_trigger", "province")
+	bindMCPDatabaseEngineFingerprint(t, firstPath, firstLogs)
+	bindMCPDatabaseEngineFingerprint(t, secondPath, secondLogs)
+
+	project := filepath.Join(dir, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secondConfigPath := filepath.Join(dir, "second.toml")
+	secondConfig := fmt.Sprintf("database = %q\nengine_logs = %q\n[[source]]\nname = \"project\"\npath = %q\nrank = 1\nrole = \"project\"\n",
+		filepath.ToSlash(secondPath), filepath.ToSlash(secondLogs), filepath.ToSlash(project))
+	if err := os.WriteFile(secondConfigPath, []byte(secondConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := databaseManagerTestConfig(firstPath, "")
+	cfg.EngineLogs = firstLogs
+	cfg.MCPDatabases[0].Database = ""
+	cfg.MCPDatabases[0].ConfigPath = secondConfigPath
+
+	firstDB, err := indexer.OpenReadOnlyWithOptions(firstPath, cfg.SQLiteReadOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := firstDB.RestoreEngineRules(context.Background(), firstLogs); err != nil {
+		_ = firstDB.Close()
+		t.Fatal(err)
+	}
+	manager, err := newMCPDatabaseManager(cfg, firstPath, firstDB)
+	if err != nil {
+		_ = firstDB.Close()
+		t.Fatal(err)
+	}
+	return manager
+}
+
+func createMCPTestEngineLogs(t *testing.T, dir, name, trigger, scope string) string {
+	t.Helper()
+	logs := filepath.Join(dir, name)
+	if err := os.MkdirAll(filepath.Join(logs, "data_types"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []string{"effects.log", "event_targets.log", "event_scopes.log"} {
+		if err := os.WriteFile(filepath.Join(logs, file), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	text := fmt.Sprintf("%s - fixture\nSupported Scopes: %s\n", trigger, scope)
+	if err := os.WriteFile(filepath.Join(logs, "triggers.log"), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return logs
+}
+
+func bindMCPDatabaseEngineFingerprint(t *testing.T, path, logs string) {
+	t.Helper()
+	bundle, err := indexer.LoadEngineBundle(context.Background(), logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setMCPDatabaseMeta(t, path, "engine_data_fingerprint", bundle.Fingerprint)
+}
+
+func setMCPDatabaseMeta(t *testing.T, path, key, value string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertMCPDatabaseRule(t *testing.T, db *indexer.DB, key string, want bool) {
+	t.Helper()
+	found := db.LookupScope(key) != nil
+	if found != want {
+		t.Fatalf("database rule %q found=%v want=%v", key, found, want)
+	}
 }
 
 func mustMCPIndexState(t *testing.T, db *indexer.DB) indexer.IndexState {

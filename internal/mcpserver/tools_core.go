@@ -353,7 +353,7 @@ func handleScriptReference(ctx context.Context, runtime *Runtime, definition *To
 	switch args.Kind {
 	case "scope":
 		if !liveIndexReady {
-			value, err = lookupScopeTool(args.ID)
+			value, err = lookupScopeTool(runtime.DB, args.ID)
 			if result, ok := value.(map[string]any); ok {
 				result["confidence"] = "high"
 				result["rule_source"] = "engine_1_19_snapshot"
@@ -366,7 +366,7 @@ func handleScriptReference(ctx context.Context, runtime *Runtime, definition *To
 		} else if len(live) > 0 {
 			value = map[string]any{"found": true, "key": args.ID, "rules": live, "confidence": "high", "rule_source": "engine_logs", "guidance": []string{"Live engine log rules take precedence; the generated CK3 1.19 snapshot is used only while live evidence is unavailable."}}
 		} else {
-			value, err = lookupScopeTool(args.ID)
+			value, err = lookupScopeTool(runtime.DB, args.ID)
 			if result, ok := value.(map[string]any); ok {
 				result["confidence"] = "high"
 				result["rule_source"] = "engine_1_19_snapshot"
@@ -392,14 +392,14 @@ func handleScriptReference(ctx context.Context, runtime *Runtime, definition *To
 			} else if len(live) > 0 {
 				value = map[string]any{"found": true, "key": args.ID, "rules": live, "confidence": "high", "rule_source": "engine_logs", "guidance": []string{"Live on_action logs take precedence; Expected Scope: none means this hook has no implicit root scope."}}
 			} else {
-				value, err = lookupOnActionTool(args.ID)
+				value, err = lookupOnActionTool(runtime.DB, args.ID)
 				if result, ok := value.(map[string]any); ok {
 					result["confidence"] = "high"
 					result["rule_source"] = "engine_1_19_snapshot"
 				}
 			}
 		} else {
-			value, err = lookupOnActionTool(args.ID)
+			value, err = lookupOnActionTool(runtime.DB, args.ID)
 			if result, ok := value.(map[string]any); ok {
 				result["confidence"] = "high"
 				result["rule_source"] = "engine_1_19_snapshot"
@@ -438,7 +438,7 @@ func handleScriptReference(ctx context.Context, runtime *Runtime, definition *To
 	case "example":
 		value, err = lookupExampleTool(args.ID)
 	case "modifier":
-		value, err = lookupModifierTool(args.ID)
+		value, err = lookupModifierTool(runtime.DB, args.ID)
 	default:
 		return toolOutput{}, invalidArgument("kind", "kind must be one of the documented script reference families")
 	}

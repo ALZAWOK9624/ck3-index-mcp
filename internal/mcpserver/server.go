@@ -392,7 +392,7 @@ func serveWithToolCaller(ctx context.Context, cfg indexer.Config, dbPath string,
 	if err != nil {
 		return err
 	}
-	if err := indexer.RestorePublishedEngineRules(ctx, db, cfg.EngineLogs); err != nil {
+	if err := db.RestoreEngineRules(ctx, cfg.EngineLogs); err != nil {
 		_ = db.Close()
 		return err
 	}

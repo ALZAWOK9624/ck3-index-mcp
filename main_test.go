@@ -74,6 +74,38 @@ func TestRunScanFilesRequiresAtLeastOnePathBeforeConfigAccess(t *testing.T) {
 	}
 }
 
+func TestRunHealthRequireReadyFailsForQueryableButUnpublishedDatabase(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	database := filepath.Join(root, "health.sqlite")
+	db, err := indexer.Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.EnsureSchema(context.Background()); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "ck3-index.toml")
+	config := fmt.Sprintf("database = %q\n[[source]]\nname = \"project\"\npath = %q\nrank = 1\nrole = \"project\"\n",
+		filepath.ToSlash(database), filepath.ToSlash(project))
+	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(context.Background(), []string{"--config", configPath, "health"}); err != nil {
+		t.Fatalf("report-only health failed for readable database: %v", err)
+	}
+	if err := run(context.Background(), []string{"--config", configPath, "health", "--require-ready"}); err == nil || !strings.Contains(err.Error(), "readiness gate failed") {
+		t.Fatalf("strict health error = %v, want readiness failure", err)
+	}
+}
+
 func TestMapTerrainEditCLIPreviewsThenPublishes(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, "project")

@@ -43,6 +43,10 @@ type VirtualFileAnalysis struct {
 }
 
 func AnalyzeVirtualFile(relPath, sourceName string, sourceRank int, content string) (VirtualFileAnalysis, error) {
+	return analyzeVirtualFileWithRules(relPath, sourceName, sourceRank, content, currentEngineRuleSet())
+}
+
+func analyzeVirtualFileWithRules(relPath, sourceName string, sourceRank int, content string, rules *EngineRuleSet) (VirtualFileAnalysis, error) {
 	rel, err := normalizePatchRelPath(relPath)
 	if err != nil {
 		return VirtualFileAnalysis{}, err
@@ -82,8 +86,8 @@ func AnalyzeVirtualFile(relPath, sourceName string, sourceRank int, content stri
 		}
 		a.Diagnostics = append(a.Diagnostics, ctxDiagnostics(rel, "compiler", checkScriptContext(a.Parsed.Nodes, rel))...)
 		a.Diagnostics = append(a.Diagnostics, ctxDiagnostics(rel, "compiler", checkScriptLint(a.Parsed.Nodes, rel, SourceRoleProject))...)
-		a.Diagnostics = append(a.Diagnostics, ctxDiagnostics(rel, "compiler", checkRuntimeContracts(a.Parsed.Nodes, rel))...)
-		a.Diagnostics = append(a.Diagnostics, ctxDiagnostics(rel, "compiler", checkScopeTracker(a.Parsed.Nodes, rel))...)
+		a.Diagnostics = append(a.Diagnostics, ctxDiagnostics(rel, "compiler", checkRuntimeContractsWithRules(a.Parsed.Nodes, rel, rules))...)
+		a.Diagnostics = append(a.Diagnostics, ctxDiagnostics(rel, "compiler", checkScopeTrackerWithRules(a.Parsed.Nodes, rel, rules))...)
 		a.SavedScopes = collectSavedScopes(a.Parsed.Nodes)
 		a.Variables = collectVariables(a.Parsed.Nodes)
 		if strings.Contains(rel, "scripted_effects") {
@@ -186,6 +190,7 @@ func (db *DB) LLMPreflightPatch(ctx context.Context, files []PatchFileInput, opt
 		dbObjectMiss: map[string]bool{},
 	}
 	analyses := make([]VirtualFileAnalysis, 0, len(files))
+	engineRules := db.engineRuleSet()
 	impact := map[string]int{"files": len(files)}
 	var impactEvidence []LLMEvidence
 	for i, f := range files {
@@ -235,7 +240,7 @@ func (db *DB) LLMPreflightPatch(ctx context.Context, files []PatchFileInput, opt
 		default:
 			return LLMResult{}, fmt.Errorf("unsupported patch op %q", op)
 		}
-		a, err := AnalyzeVirtualFile(f.Path, "patch", 1, f.Content)
+		a, err := analyzeVirtualFileWithRules(f.Path, "patch", 1, f.Content, engineRules)
 		if err != nil {
 			return LLMResult{}, err
 		}

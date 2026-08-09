@@ -171,6 +171,10 @@ func handleRefresh(ctx context.Context, runtime *Runtime, definition *ToolDefini
 		if refreshErr != nil {
 			return toolOutput{}, refreshErr
 		}
+		if rulesErr := runtime.DB.RestoreEngineRules(context.WithoutCancel(ctx), runtime.Config.EngineLogs); rulesErr != nil {
+			markMCPCommitted(ctx)
+			return toolOutput{}, rulesErr
+		}
 		// The cache path is a host detail; refresh callers only need the newly
 		// published generation included in status below.
 		stats.Database = ""
@@ -242,6 +246,10 @@ func handleRefresh(ctx context.Context, runtime *Runtime, definition *ToolDefini
 		finish(refreshErr)
 		if refreshErr != nil {
 			return toolOutput{}, refreshErr
+		}
+		if rulesErr := runtime.DB.RestoreEngineRules(context.WithoutCancel(ctx), runtime.Config.EngineLogs); rulesErr != nil {
+			markMCPCommitted(ctx)
+			return toolOutput{}, rulesErr
 		}
 		stats.Database = ""
 		status, statusErr := refreshStatusOutput(context.WithoutCancel(ctx), runtime)

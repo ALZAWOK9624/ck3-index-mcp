@@ -46,6 +46,11 @@ func LookupScope(key string) *ScopeLookup {
 	return lookupScopeWithRules(currentEngineRuleSet(), key)
 }
 
+// LookupScope resolves against the engine snapshot bound to this database.
+func (db *DB) LookupScope(key string) *ScopeLookup {
+	return lookupScopeWithRules(db.engineRuleSet(), key)
+}
+
 func lookupScopeWithRules(rules *EngineRuleSet, key string) *ScopeLookup {
 	kl := strings.ToLower(key)
 	var ts, es EngineScope
@@ -119,6 +124,11 @@ func IsDefine(key string) bool {
 // IsOnAction returns true if the key is a known CK3 on_action name.
 func IsOnAction(key string) bool {
 	return isOnActionWithRules(currentEngineRuleSet(), key)
+}
+
+// IsOnAction resolves against the engine snapshot bound to this database.
+func (db *DB) IsOnAction(key string) bool {
+	return isOnActionWithRules(db.engineRuleSet(), key)
 }
 
 func isOnActionWithRules(rules *EngineRuleSet, key string) bool {
@@ -232,6 +242,11 @@ func matchesGeneratedModifierTemplate(pattern, key string) bool {
 // but modifiers.log did not publish an area contract for it.
 func LookupModifier(key string) ModifierLookup {
 	return lookupModifierWithRules(currentEngineRuleSet(), key)
+}
+
+// LookupModifier resolves against the engine snapshot bound to this database.
+func (db *DB) LookupModifier(key string) ModifierLookup {
+	return lookupModifierWithRules(db.engineRuleSet(), key)
 }
 
 func lookupModifierWithRules(rules *EngineRuleSet, key string) ModifierLookup {

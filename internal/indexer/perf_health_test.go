@@ -22,6 +22,42 @@ func TestWALHealthThreshold(t *testing.T) {
 	}
 }
 
+func TestHealthCanServeIndexQueriesUsesExplicitReadinessContract(t *testing.T) {
+	ready := HealthReport{
+		Status: "ok", ScanStatus: IndexStatusReady, AuthoritativeDatabase: true,
+		MapDatabase: MapDatabaseStatus{Complete: true}, FTS5Available: true,
+		IndexRuleVersion: indexRuleVersion,
+	}
+	for _, status := range []string{"ok", "warning", "degraded"} {
+		report := ready
+		report.Status = status
+		if !report.CanServeIndexQueries() {
+			t.Fatalf("operational status %q rejected an otherwise ready index", status)
+		}
+	}
+	tests := []struct {
+		name   string
+		mutate func(*HealthReport)
+	}{
+		{name: "error status", mutate: func(report *HealthReport) { report.Status = "error" }},
+		{name: "generation not ready", mutate: func(report *HealthReport) { report.ScanStatus = IndexStatusInitializing }},
+		{name: "wrong database", mutate: func(report *HealthReport) { report.AuthoritativeDatabase = false }},
+		{name: "map incomplete", mutate: func(report *HealthReport) { report.MapDatabase.Complete = false }},
+		{name: "fts unavailable", mutate: func(report *HealthReport) { report.FTS5Available = false }},
+		{name: "performance index missing", mutate: func(report *HealthReport) { report.MissingIndexes = []string{"idx_objects_name"} }},
+		{name: "rule version mismatch", mutate: func(report *HealthReport) { report.IndexRuleVersion = "old-rules" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			report := ready
+			test.mutate(&report)
+			if report.CanServeIndexQueries() {
+				t.Fatalf("unsafe report passed readiness gate: %+v", report)
+			}
+		})
+	}
+}
+
 func TestHealthReportsSQLiteReadMemoryBudget(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "health.sqlite"))
 	if err != nil {

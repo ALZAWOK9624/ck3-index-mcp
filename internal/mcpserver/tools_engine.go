@@ -6,8 +6,8 @@ import (
 	"ck3-index/internal/indexer"
 )
 
-func lookupScopeTool(key string) (any, error) {
-	sl := indexer.LookupScope(key)
+func lookupScopeTool(db *indexer.DB, key string) (any, error) {
+	sl := db.LookupScope(key)
 	if sl == nil {
 		return map[string]any{
 			"found":    false,
@@ -51,8 +51,8 @@ func lookupDefineTool(key string) (any, error) {
 	return map[string]any{"found": found, "key": key, "guidance": []string{"Use found=false as a warning only; mods can define custom @names outside engine defines."}}, nil
 }
 
-func lookupOnActionTool(key string) (any, error) {
-	found := indexer.IsOnAction(key)
+func lookupOnActionTool(db *indexer.DB, key string) (any, error) {
+	found := db.IsOnAction(key)
 	return map[string]any{"found": found, "key": key, "guidance": []string{"For on_action edits, query_object and find_refs should still be used to inspect local overrides and consumers."}}, nil
 }
 
@@ -74,8 +74,8 @@ func lookupExampleTool(key string) (any, error) {
 	}, nil
 }
 
-func lookupModifierTool(key string) (any, error) {
-	ml := indexer.LookupModifier(key)
+func lookupModifierTool(db *indexer.DB, key string) (any, error) {
+	ml := db.LookupModifier(key)
 	if !ml.Found {
 		return map[string]any{
 			"found":    false,

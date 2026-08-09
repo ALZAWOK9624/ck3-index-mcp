@@ -71,16 +71,23 @@ func engineRuleSetFromBundle(bundle *EngineBundle) *EngineRuleSet {
 }
 
 func publishEngineRules(bundle *EngineBundle, state IndexState) {
-	engineScopeRegistry.Lock()
-	defer engineScopeRegistry.Unlock()
+	publishEngineRuleSnapshot(publishedEngineRules(bundle, state))
+}
+
+func publishedEngineRules(bundle *EngineBundle, state IndexState) *PublishedEngineRules {
 	rules := engineRuleSetFromBundle(bundle)
 	if rules == nil {
-		engineScopeRegistry.published = nil
-		return
+		return nil
 	}
-	engineScopeRegistry.published = &PublishedEngineRules{
+	return &PublishedEngineRules{
 		Rules: rules, Generation: state.Generation, Revision: state.Revision, Fingerprint: bundle.Fingerprint,
 	}
+}
+
+func publishEngineRuleSnapshot(published *PublishedEngineRules) {
+	engineScopeRegistry.Lock()
+	defer engineScopeRegistry.Unlock()
+	engineScopeRegistry.published = published
 }
 
 func currentEngineRuleSet() *EngineRuleSet {
@@ -92,20 +99,27 @@ func currentEngineRuleSet() *EngineRuleSet {
 	return engineScopeRegistry.published.Rules
 }
 
-func publishEngineBundleMatchingDB(ctx context.Context, db *DB, bundle *EngineBundle) error {
+func engineRulesMatchingDB(ctx context.Context, db *DB, bundle *EngineBundle) (*PublishedEngineRules, error) {
 	state, err := db.IndexState(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	fingerprint, err := db.metaValue(ctx, "engine_data_fingerprint")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if bundle == nil || !state.Ready() || fingerprint != bundle.Fingerprint {
-		publishEngineRules(nil, IndexState{})
-		return nil
+		return nil, nil
 	}
-	publishEngineRules(bundle, state)
+	return publishedEngineRules(bundle, state), nil
+}
+
+func publishEngineBundleMatchingDB(ctx context.Context, db *DB, bundle *EngineBundle) error {
+	published, err := engineRulesMatchingDB(ctx, db, bundle)
+	if err != nil {
+		return err
+	}
+	publishEngineRuleSnapshot(published)
 	return nil
 }
 
@@ -115,10 +129,45 @@ func publishEngineBundleMatchingDB(ctx context.Context, db *DB, bundle *EngineBu
 func RestorePublishedEngineRules(ctx context.Context, db *DB, engineLogs string) error {
 	bundle, err := LoadEngineBundle(ctx, engineLogs)
 	if err != nil {
-		publishEngineRules(nil, IndexState{})
+		publishEngineRuleSnapshot(nil)
 		return err
 	}
 	return publishEngineBundleMatchingDB(ctx, db, bundle)
+}
+
+// RestoreEngineRules binds the engine-log snapshot proved to match this DB's
+// ready generation to this DB instance. Unlike RestorePublishedEngineRules it
+// never changes process-global state, so independently leased databases can be
+// queried concurrently without one hot switch changing another request's
+// validation rules.
+func (db *DB) RestoreEngineRules(ctx context.Context, engineLogs string) error {
+	bundle, err := LoadEngineBundle(ctx, engineLogs)
+	if err != nil {
+		db.setEngineRules(nil)
+		return err
+	}
+	published, err := engineRulesMatchingDB(ctx, db, bundle)
+	if err != nil {
+		db.setEngineRules(nil)
+		return err
+	}
+	db.setEngineRules(published)
+	return nil
+}
+
+func (db *DB) setEngineRules(published *PublishedEngineRules) {
+	db.engineRulesMu.Lock()
+	db.engineRules = published
+	db.engineRulesMu.Unlock()
+}
+
+func (db *DB) engineRuleSet() *EngineRuleSet {
+	db.engineRulesMu.RLock()
+	defer db.engineRulesMu.RUnlock()
+	if db.engineRules == nil {
+		return nil
+	}
+	return db.engineRules.Rules
 }
 
 func engineRuleName(head string) string {

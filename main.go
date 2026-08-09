@@ -1223,6 +1223,13 @@ func run(ctx context.Context, args []string) error {
 		}
 		return printJSON(report)
 	case "health":
+		requireReady := false
+		for _, arg := range args {
+			if arg != "--require-ready" || requireReady {
+				return errors.New("usage: ck3-index health [--require-ready]")
+			}
+			requireReady = true
+		}
 		db, err := openReadOnlyDB(cfgPath)
 		if err != nil {
 			return err
@@ -1238,7 +1245,13 @@ func run(ctx context.Context, args []string) error {
 		}
 		gis := db.GISSidecarStatus(ctx, cfg)
 		report.GIS = &gis
-		return printJSON(report)
+		if err := printJSON(report); err != nil {
+			return err
+		}
+		if requireReady && !report.CanServeIndexQueries() {
+			return fmt.Errorf("health readiness gate failed: status=%s scan_status=%s", report.Status, report.ScanStatus)
+		}
+		return nil
 	default:
 		if strings.TrimSpace(cmd) == "" {
 			printHelp()
@@ -1520,7 +1533,7 @@ func printHelp() {
   validate                 run built-in read-only validation
   accuracy [dir]           run golden accuracy fixtures (default testdata/accuracy)
   bench                    benchmark hot LLM query paths and index plans
-  health                   report DB/index/MCP health signals
+  health [--require-ready] report DB/index/MCP health signals; fail unless the index is query-ready when requested
   mcp                      serve read-only MCP tools over stdio
 
 Use --config <path> before the command to select a config file.`)

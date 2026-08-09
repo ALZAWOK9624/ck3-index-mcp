@@ -82,6 +82,28 @@ type HealthReport struct {
 	Sources    []SourceIdentity `json:"sources,omitempty"`
 }
 
+// CanServeIndexQueries is the strict activation/deployment gate. Health status
+// also reports operational warnings such as a large WAL or missing local MCP
+// registration; those do not make a ready index unsafe to query. The fields
+// below do: they prove that this binary, this configured path, and the complete
+// indexed query surface belong together.
+func (report HealthReport) CanServeIndexQueries() bool {
+	return report.Status != "error" &&
+		report.ScanStatus == IndexStatusReady &&
+		report.AuthoritativeDatabase &&
+		report.MapDatabase.Complete &&
+		report.FTS5Available &&
+		len(report.MissingIndexes) == 0 &&
+		report.IndexRuleVersion == indexRuleVersion
+}
+
+// CurrentIndexRuleVersion reports the binary's index contract version for
+// deployment tooling and black-box fixtures. Callers must still use health to
+// decide whether a particular database carries this version.
+func CurrentIndexRuleVersion() string {
+	return indexRuleVersion
+}
+
 // SourceIdentity is the resolved identity of one configured source: enough of
 // the root it scans to tell trees apart, plus the fields deciding precedence.
 type SourceIdentity struct {

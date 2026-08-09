@@ -125,6 +125,8 @@ base 必须用一份**工程来源指向空目录**、其余来源与本配置�
 .\ck3-index.exe health
 ```
 
+部署或自动更新脚本应使用 `.\ck3-index.exe health --require-ready`。该模式仍输出完整 health JSON，但当索引 generation 未 ready、数据库与配置不一致、地图/FTS/性能索引不完整，或索引规则版本不匹配时返回非零退出码；普通 `health` 保持仅报告状态的兼容行为。
+
 之后编辑少量文件时，优先做增量更新：
 
 ```powershell

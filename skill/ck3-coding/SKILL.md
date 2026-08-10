@@ -128,6 +128,56 @@ Otherwise the response already names the spellings that were tried on your behal
 - Walking a family of ids -- every innovation, every game concept, every doctrine of a faith -- goes in one call through `queries`, up to eight terms. Each term is reported separately in `batch`, including the ones that matched nothing, so the absent members are as visible as the present ones. Asking for them one per call is the same evidence at eight times the round trips.
 - Do not re-summarize a batch by searching its terms again individually. The per-term rows are the summary; a term that needs more depth is the only reason to ask for it alone.
 
+## Reading an idiom, not just finding one
+
+CK3 script is a restricted declarative language: no functions that return, no
+real loops, no data structures beyond flags, variables and lists. Every
+non-trivial mechanic is therefore built out of conventions, and a large mod is
+mostly a record of which convention its authors settled on. That makes an
+indexed mod excellent evidence of *what people write* and no evidence at all of
+*what is correct*.
+
+Frequency is not authority. One indexed mod holds 11291 `add_character_flag`
+against 360 `set_variable`; another holds 2453 `set_variable` against 207
+flags. Neither ratio is a recommendation -- they are two schools, and the
+flag-heavy one is usually a codebase old enough to predate typed variables
+still running unrewritten. An example chosen by how often it occurs will pick
+whichever era the mod is stuck in.
+
+So when a question is "how do I implement X", find the pattern in the mod and
+then check it against the game:
+
+1. Locate a working instance (`ck3_search kind=script_text`, or
+   `ck3_prepare_edit operation=patterns` for the empirical field shapes).
+2. Ask the same question of vanilla with `source=game`. Vanilla is the
+   reference implementation: it shows the usage the engine was built around.
+3. If the mod and vanilla reach the same result by different routes, say so and
+   name the trade -- a flag is cheap and boolean-only and has to be cleaned up
+   by hand; a variable carries a value and a scope and costs more state.
+4. If only the mod does it, treat it as a workaround rather than an idiom, and
+   say which limitation it is working around.
+
+A pattern presented without that check is a claim that "this is how it is
+done", supported only by having seen it somewhere.
+
+## Reference indexes versus the project
+
+`ck3_database` may expose indexes that exist only as reference material -- a
+third-party total conversion carrying no relation to the configured project.
+Their evidence is authoritative about themselves and about nothing else.
+
+- Script from a reference index proves how *that* mod implements something. It
+  never proves how the configured project works, and the two must not be mixed
+  in one answer without naming which index each claim came from.
+- A reference index built from mod files alone holds no setting or lore
+  authority. Localization strings there are UI flavour written for that mod's
+  own continuity; they are not the source work it adapts, and adaptations
+  compress, reorder and invent. Answer setting questions from such an index
+  only with an explicit note that the source is the mod's own text.
+- `ck3_database operation=switch` changes what every later call sees. Say which
+  index an answer came from, and switch back when the task returns to the
+  project.
+
 ## Workflow
 
 1. Query before editing:

@@ -227,6 +227,7 @@ var chineseFieldDescriptions = map[string]string{
 	"Source map subject: numeric province id, b_/c_/d_/k_/e_ title id, or an exact unique English or Chinese localized name.": "来源地图地点：数字省份 ID、b_/c_/d_/k_/e_ 头衔 ID，或可唯一解析的准确英文或中文本地化名称。",
 	"Target map subject in the same forms as from.":                                                                           "目标地图地点，接受与 from 相同的形式。",
 	"CK3 id, localized text, resource path, diagnostic code, or semantic prefix.":                                             "CK3 标识符、本地化文本、资源路径、诊断代码或语义前缀。",
+	"Several terms answered in one call, each reported separately in batch. Use instead of query when walking a known family of ids; page and per-term depth are only available on a single query.": "一次调用回答多个检索词，每个词在 batch 中单独报告。遍历已知的一族 id 时用它替代 query；分页与单词深度检索仅在单个 query 下可用。",
 	"CK3 script-history year.":                                     "CK3 脚本历史年份。",
 	"Complete source-root-relative files analyzed only in memory.": "仅在内存中分析、相对于来源根目录的完整文件。",
 	"Configured source-map name, or active.":                       "已配置的来源地图名称，或 active。",

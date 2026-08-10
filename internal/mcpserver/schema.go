@@ -153,10 +153,34 @@ func validateArguments(raw json.RawMessage, schema map[string]any, compatibility
 			matched = matched || valid
 		}
 		if !matched {
+			// Offering a second way to supply an argument must not change what
+			// omitting it is called. A caller that sent neither query nor
+			// queries is missing a required argument exactly as before; only
+			// the number of ways to satisfy it grew, so the code stays
+			// MISSING_REQUIRED_ARGUMENT and the message names the choices.
+			if pureRequiredAlternatives(alternatives) {
+				return missingOneOfArguments(choices)
+			}
 			return invalidArgument("", fmt.Sprintf("arguments must include one of: %s", strings.Join(choices, ", ")))
 		}
 	}
 	return nil
+}
+
+// pureRequiredAlternatives reports whether every anyOf branch does nothing but
+// name required fields. Those branches describe "which argument", not "which
+// shape", so failing them is a missing argument rather than a malformed one.
+func pureRequiredAlternatives(alternatives []any) bool {
+	for _, item := range alternatives {
+		alternative, ok := item.(map[string]any)
+		if !ok || len(alternative) != 1 {
+			return false
+		}
+		if len(schemaStrings(alternative["required"])) == 0 {
+			return false
+		}
+	}
+	return len(alternatives) > 0
 }
 
 func validateProperty(name string, raw json.RawMessage, property map[string]any) error {

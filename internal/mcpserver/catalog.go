@@ -17,15 +17,7 @@ func buildCanonicalTools() []ToolDefinition {
 			Name:        "ck3_search",
 			Title:       "Search CK3 Index",
 			Description: "Search when the exact CK3 id is unknown. Returns ranked object, localization, resource, reference, diagnostic, datatype, script-key, and full-script token evidence.",
-			InputSchema: objectSchema(map[string]any{
-				"query":       stringProperty("CK3 id, localized text, resource path, diagnostic code, or semantic prefix."),
-				"kind":        stringProperty("Optional evidence category.", "object", "reference", "localization", "resource", "diagnostic", "script_key", "script_text", "datatype"),
-				"source":      stringProperty("Optional indexed source name."),
-				"path_prefix": stringProperty("Optional source-root-relative path prefix."),
-				"limit":       limitProperty(),
-				"page":        pageProperty(),
-				"visibility":  visibilityProperty(),
-			}, "query"),
+			InputSchema: searchInputSchema(),
 			OutputSchema: preciseToolOutputSchema(llmResultOutputSchema()), Annotations: annotations, Handler: handleSearch,
 			CompatibilityProperties: legacyPrivacyProperties,
 		},
@@ -232,6 +224,36 @@ func buildCanonicalTools() []ToolDefinition {
 	definitions = declarePrivateOnlyVisibility(definitions)
 	definitions = declareTrimmableResponseFields(definitions)
 	return standardizeCanonicalToolDescriptions(definitions)
+}
+
+// searchInputSchema accepts one term or several. Walking an id family a term
+// at a time was 163 calls in the audited sessions -- fifty consecutive
+// searches for one innovation each, every one of them succeeding. The evidence
+// per call was never the constraint; the round trips were.
+func searchInputSchema() map[string]any {
+	schema := objectSchema(map[string]any{
+		"query": stringProperty("CK3 id, localized text, resource path, diagnostic code, or semantic prefix."),
+		"queries": arrayProperty(
+			"Several terms answered in one call, each reported separately in batch. Use instead of query when walking a known family of ids; page and per-term depth are only available on a single query.",
+			map[string]any{"type": "string", "minLength": 1, "maxLength": 200},
+		),
+		"kind":        stringProperty("Optional evidence category.", "object", "reference", "localization", "resource", "diagnostic", "script_key", "script_text", "datatype"),
+		"source":      stringProperty("Optional indexed source name."),
+		"path_prefix": stringProperty("Optional source-root-relative path prefix."),
+		"limit":       limitProperty(),
+		"page":        pageProperty(),
+		"visibility":  visibilityProperty(),
+	})
+	queries, _ := schema["properties"].(map[string]any)["queries"].(map[string]any)
+	queries["minItems"] = 1
+	queries["maxItems"] = 8
+	// Exactly one of the two forms, enforced at the catalog boundary so a
+	// caller that sends both is corrected before any search runs.
+	schema["anyOf"] = []any{
+		map[string]any{"required": []string{"query"}},
+		map[string]any{"required": []string{"queries"}},
+	}
+	return schema
 }
 
 func saveOperationProperty() map[string]any {

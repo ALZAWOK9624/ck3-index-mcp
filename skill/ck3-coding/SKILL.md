@@ -98,7 +98,9 @@ Do not spend a turn correcting these. The server does it and tells you.
 
 Three outcomes, three different next moves. Do not treat them the same.
 
-**Empty evidence.** The response already names the spellings that were tried on your behalf and any `kind`, `source`, or `path_prefix` that narrowed the search. Rephrasing the same concept again is the single most wasteful thing you can do here, and it is the most common. Instead:
+**Empty evidence.** First ask whether the term could be indexed at all. The index contains the configured CK3 source roots and nothing else -- `ck3_health` lists them. A name that only ever appears in worldbuilding prose, a wiki, a design document or a chat log is not in there, and no spelling of it will be: 333 of the audited calls were chains averaging zero hits, hunting lore names through an index that could not hold them. Search those documents with `rg` instead, and say plainly that the index does not cover them.
+
+Otherwise the response already names the spellings that were tried on your behalf and any `kind`, `source`, or `path_prefix` that narrowed the search. Rephrasing the same concept again is the single most wasteful thing you can do here, and it is the most common. Instead:
 
 1. Drop the filter the guidance names, and retry once without it.
 2. If the term is a display name rather than an identifier, search the localization value with `kind=localization`.
@@ -123,6 +125,8 @@ Three outcomes, three different next moves. Do not treat them the same.
 - `next_actions`, when present, is a validated call you can issue as-is.
 - Ask `ck3_inspect` for one known id rather than searching for it; search is for when the id is unknown.
 - `ck3_search` without `kind` covers objects, references, localization, resources, diagnostics, script keys, datatypes, and full script text in one call. Add `kind` to narrow a known-noisy term, not by default.
+- Walking a family of ids -- every innovation, every game concept, every doctrine of a faith -- goes in one call through `queries`, up to eight terms. Each term is reported separately in `batch`, including the ones that matched nothing, so the absent members are as visible as the present ones. Asking for them one per call is the same evidence at eight times the round trips.
+- Do not re-summarize a batch by searching its terms again individually. The per-term rows are the summary; a term that needs more depth is the only reason to ask for it alone.
 
 ## Workflow
 

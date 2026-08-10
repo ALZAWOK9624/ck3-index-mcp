@@ -209,3 +209,82 @@ func TestNoMatchGuidanceListsWhatWasAttempted(t *testing.T) {
 		}
 	}
 }
+
+// The prefix range only reaches ids that start with the token, and a
+// distinctive word usually sits in the middle of one. The ordinary path tries
+// FTS on the whole phrase, which ANDs every term and matches nothing; the
+// token has to reach FTS too or the caller is sent off to guess again.
+func TestNearMissTokenFallbackReachesInteriorMatchesThroughFTS(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	game := filepath.Join(dir, "game")
+	path := filepath.Join(game, "common", "landed_titles", "titles.txt")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("d_deep_ancientmoot_halls = { color = { 1 2 3 } }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{
+		ConfigPath: filepath.Join(dir, "ck3-index.toml"),
+		Database:   "cache/test.sqlite",
+		Sources: []Source{
+			{Name: "project", Path: game, Rank: 1, Role: SourceRoleProject, Private: false},
+		},
+	}
+	if _, err := Scan(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(filepath.Join(dir, "cache", "test.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// The prefix path alone cannot see it: the id does not start with the token.
+	prefix, err := db.searchIndexedSpelling(ctx, "ancientmoot", SearchOptions{}, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prefix) != 0 {
+		t.Fatalf("prefix lookup unexpectedly matched an interior token: %v", prefix)
+	}
+
+	// FTS indexes the interior, so the token reaches what the prefix cannot.
+	fts, err := db.searchFTS(ctx, "ancientmoot", SearchOptions{}, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fts) == 0 {
+		t.Fatal("FTS cannot see the interior token either; this fixture proves nothing")
+	}
+
+	result, err := db.LLMSearch(ctx, SearchOptions{
+		Query:      "Halls of the Ancientmoot",
+		LLMOptions: LLMOptions{Limit: 8, AllowProject: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A single token of a phrase is a lossy recovery, so it stays a suggestion
+	// rather than becoming evidence. Before the FTS fallback there was nothing
+	// here at all: the caller was told to stop and had no candidate to inspect.
+	if len(result.Evidence) != 0 {
+		t.Fatalf("a lossy token recovery was promoted to evidence: %+v", result.Evidence)
+	}
+	if len(result.Suggestions) == 0 {
+		t.Fatalf("a phrase whose distinctive token is indexed produced no candidate: %+v", result.Guidance)
+	}
+	if result.RecoveredQuery != "ancientmoot" || result.RecoveryConfidence != "low" {
+		t.Fatalf("recovery metadata = query=%q confidence=%q", result.RecoveredQuery, result.RecoveryConfidence)
+	}
+	found := false
+	for _, item := range result.Suggestions {
+		if strings.Contains(item.Name, "ancientmoot") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("suggestions do not contain the interior token match: %+v", result.Suggestions)
+	}
+}

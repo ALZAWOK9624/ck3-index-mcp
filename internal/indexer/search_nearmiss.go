@@ -132,6 +132,19 @@ func (db *DB) searchNearMiss(ctx context.Context, query string, opts SearchOptio
 		return nil, "", "", err
 	}
 	if len(evidence) == 0 {
+		// The prefix range only reaches identifiers that start with the token,
+		// and a distinctive word usually sits in the middle of one. FTS indexes
+		// the interior, and the ordinary path only ever tried it on the whole
+		// phrase: "Djinn-Kings of Sarradon" is four terms ANDed together and
+		// matches nothing, while "Sarradon" alone matches twenty-one rows.
+		// Retrying the token here is the difference between answering and
+		// sending the caller off to guess another spelling.
+		evidence, err = db.searchFTS(ctx, token, opts, limit)
+		if err != nil {
+			return nil, "", "", err
+		}
+	}
+	if len(evidence) == 0 {
 		return nil, "", "", nil
 	}
 	return evidence, token, "low", nil

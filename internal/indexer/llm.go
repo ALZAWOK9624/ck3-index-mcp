@@ -41,6 +41,9 @@ type LLMResult struct {
 	Truncated            bool                     `json:"truncated,omitempty"`
 	Pagination           *LLMPagination           `json:"pagination,omitempty"`
 	SuggestionPagination *LLMPagination           `json:"suggestion_pagination,omitempty"`
+	// Batch reports one row per term of a batch search, including terms that
+	// matched nothing. It is absent from every single-term result.
+	Batch []LLMBatchQuery `json:"batch,omitempty"`
 }
 
 // LLMPagination describes a bounded evidence page. It deliberately reports
@@ -107,7 +110,10 @@ type LLMTopologyPath struct {
 }
 
 type LLMEvidence struct {
-	Kind       string `json:"kind"`
+	Kind string `json:"kind"`
+	// Query is set only by a batch search, where the evidence lists of several
+	// terms are concatenated and a row is otherwise unattributable.
+	Query      string `json:"query,omitempty"`
 	Type       string `json:"type,omitempty"`
 	Name       string `json:"name,omitempty"`
 	Source     string `json:"source,omitempty"`

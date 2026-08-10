@@ -55,6 +55,18 @@ func handleSearch(ctx context.Context, runtime *Runtime, definition *ToolDefinit
 		return toolOutput{}, err
 	}
 	opts = configureRuntimeOptions(runtime, opts)
+	if len(args.Queries) > 0 {
+		if strings.TrimSpace(args.Query) != "" {
+			return toolOutput{}, invalidArgument("queries", "send either query or queries, not both")
+		}
+		value, err := runtime.DB.LLMSearchBatch(ctx, args.Queries, indexer.SearchOptions{
+			Kind: args.Kind, Source: args.Source, PathPrefix: args.PathPrefix, LLMOptions: opts,
+		})
+		if err != nil {
+			return toolOutput{}, invalidArgument("queries", err.Error())
+		}
+		return toolOutput{Value: value, Visibility: visibility}, nil
+	}
 	value, err := runtime.DB.LLMSearch(ctx, indexer.SearchOptions{Query: args.Query, Kind: args.Kind, Source: args.Source, PathPrefix: args.PathPrefix, Page: args.Page, LLMOptions: opts})
 	return toolOutput{Value: value, Visibility: visibility}, err
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"ck3-index/internal/indexer"
 )
@@ -88,6 +89,20 @@ func invalidArgument(field, message string) *ToolError {
 	}
 	return newToolError(ErrorInvalidArguments, "invalid_arguments", message, false, details,
 		map[string]any{"guidance": "Correct the documented argument and retry the same tool."})
+}
+
+// missingOneOfArguments is missingArgument for a tool that accepts the same
+// input under more than one field. field carries the first choice so a client
+// keyed on it still has something to point at.
+func missingOneOfArguments(choices []string) *ToolError {
+	field := ""
+	if len(choices) > 0 {
+		field = choices[0]
+	}
+	return newToolError(ErrorMissingRequiredArgument, "invalid_arguments",
+		fmt.Sprintf("missing required argument: provide one of %s", strings.Join(choices, ", ")), false,
+		map[string]any{"field": field, "accepted": choices},
+		map[string]any{"guidance": "Provide exactly one of the listed fields and retry the same tool."})
 }
 
 func missingArgument(field string) *ToolError {

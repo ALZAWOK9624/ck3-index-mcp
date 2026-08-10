@@ -89,7 +89,8 @@ func decodeToolArgs(raw json.RawMessage, schema map[string]any, compatibilityPro
 
 type ck3SearchArgs struct {
 	visibilityArgs
-	Query      string `json:"query"`
+	Query      string   `json:"query,omitempty"`
+	Queries    []string `json:"queries,omitempty"`
 	Kind       string `json:"kind,omitempty"`
 	Source     string `json:"source,omitempty"`
 	PathPrefix string `json:"path_prefix,omitempty"`

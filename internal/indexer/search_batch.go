@@ -33,7 +33,11 @@ type LLMBatchQuery struct {
 	Query    string `json:"query"`
 	Returned int    `json:"returned"`
 	HasMore  bool   `json:"has_more,omitempty"`
-	Spelling string `json:"recovered_spelling,omitempty"`
+	// Suggested counts low-confidence candidates. Without it a row reading
+	// returned=0 alongside a recovered spelling looks like a contradiction,
+	// when it means "nothing matched, but here is something to look at".
+	Suggested int    `json:"suggested,omitempty"`
+	Spelling  string `json:"recovered_spelling,omitempty"`
 }
 
 func normalizeBatchQueries(queries []string) ([]string, error) {
@@ -91,6 +95,7 @@ func (db *DB) LLMSearchBatch(ctx context.Context, queries []string, opts SearchO
 		if one.Pagination != nil {
 			row.HasMore = one.Pagination.HasMore
 		}
+		row.Suggested = len(one.Suggestions)
 		row.Spelling = one.RecoveredQuery
 		if len(one.Evidence) > 0 {
 			matched++

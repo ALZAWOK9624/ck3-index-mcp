@@ -288,3 +288,37 @@ func TestNearMissTokenFallbackReachesInteriorMatchesThroughFTS(t *testing.T) {
 		t.Fatalf("suggestions do not contain the interior token match: %+v", result.Suggestions)
 	}
 }
+
+// A CK3 identifier names its family first and discriminates last. Recovering
+// innovation_burstbolt as "innovation" matched every innovation in the game
+// and told the caller nothing, which is what the production probe returned.
+func TestIdentifierTokenPrefersTheDiscriminatingTail(t *testing.T) {
+	for _, testCase := range []struct{ query, want string }{
+		{"innovation_burstbolt", "burstbolt"},
+		{"innovation_night_vision_potion", "potion"},
+		{"scripted_effect_lichify", "lichify"},
+		{"pale-knight", "knight"},
+		// Prose keeps the longest-word rule: the distinctive word can sit
+		// anywhere, and "Sarradon" is what recovers this one.
+		{"Djinn-Kings of Sarradon", "sarradon"},
+		{"Halls of the Ancientmoot", "ancientmoot"},
+	} {
+		if got := longestQueryToken(testCase.query); got != testCase.want {
+			t.Errorf("longestQueryToken(%q) = %q, want %q", testCase.query, got, testCase.want)
+		}
+	}
+}
+
+func TestIdentifierLikeQueryOnlyMatchesSingleTokenIdentifiers(t *testing.T) {
+	for query, want := range map[string]bool{
+		"innovation_burstbolt":   true,
+		"pale-knight":            true,
+		"Djinn-Kings of Sarrado": false,
+		"plain":                  false,
+		"":                       false,
+	} {
+		if got := identifierLikeQuery(query); got != want {
+			t.Errorf("identifierLikeQuery(%q) = %v, want %v", query, got, want)
+		}
+	}
+}

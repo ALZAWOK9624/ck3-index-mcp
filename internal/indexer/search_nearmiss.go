@@ -71,19 +71,46 @@ func longestQueryToken(query string) string {
 	fields := strings.FieldsFunc(query, func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	})
-	best := ""
+	candidates := make([]string, 0, len(fields))
 	for _, field := range fields {
 		if isCommonQueryWord(field) {
 			continue
 		}
-		if len([]rune(field)) > len([]rune(best)) {
-			best = field
+		candidates = append(candidates, field)
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	best := candidates[0]
+	if identifierLikeQuery(query) {
+		// A CK3 identifier names its family first and discriminates last, and
+		// the family segment is routinely the longer one:
+		// innovation_burstbolt would otherwise be recovered as "innovation",
+		// which matches every innovation in the game and tells the caller
+		// nothing. The tail is the part that meant something.
+		best = candidates[len(candidates)-1]
+	} else {
+		for _, field := range candidates {
+			if len([]rune(field)) > len([]rune(best)) {
+				best = field
+			}
 		}
 	}
 	if len([]rune(best)) < nearMissTokenMinimum {
 		return ""
 	}
 	return strings.ToLower(best)
+}
+
+// identifierLikeQuery distinguishes a single snake/kebab-case id from a prose
+// phrase. Prose has whitespace and its most distinctive word can sit anywhere,
+// so the longest one remains the better guess there.
+func identifierLikeQuery(query string) bool {
+	query = strings.TrimSpace(query)
+	if query == "" || strings.ContainsAny(query, " \t\n") {
+		return false
+	}
+	return strings.ContainsAny(query, "_-")
 }
 
 func isCommonQueryWord(word string) bool {

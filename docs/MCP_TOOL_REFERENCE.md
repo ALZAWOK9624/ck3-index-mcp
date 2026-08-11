@@ -135,15 +135,19 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
 
-## `ck3_save` — 读取 CK3 存档元数据
+## `ck3_save` — 读取 CK3 存档
 
-读取单个 CK3 存档文件。card 报告存档身份：版本、游戏内日期、玩家角色、主头衔、家族、政体与玩家人数。compatibility 报告存档声明的 mod、DLC 与游戏规则，供调用方与自己的配置比对。audit 流式扫描 gamestate，列出存档携带但已索引来源不再定义的 ID。character 提取单个角色的属性、特质、家族与头衔。工具只陈述事实，不判断存档能否载入，也不生成文本。
+读取单个 CK3 存档文件。card 与 compatibility 只读元数据：存档身份——版本、游戏内日期、玩家、主头衔、家族、政体、玩家人数——以及存档声明的 mod、DLC 与游戏规则，供调用方与自己的配置比对。audit 与 character 流式扫描 gamestate：存档携带但已索引来源不再定义的 ID，以及单个角色的属性、特质、家族与头衔。timeline 提取存档记录的带日期事件——头衔继承史与人物记忆。document 走到 gamestate 的任意路径并报告那里有什么，因此没有专门投影的区块同样可读。工具只陈述存档记录的事实，不判断存档能否载入。
 
 | 参数 | 必填 | 类型 | 约束 | 说明 |
 |---|---:|---|---|---|
-| `character` | 否 | 字符串 |  | 要提取档案的角色存档 ID，operation=character 时必填。 |
+| `character` | 否 | 字符串 |  | 角色的存档 ID。operation=character 省略时提取存档自身记录的游玩角色；operation=timeline 只保留涉及该角色的事件。 |
+| `depth` | 否 | 整数 | 最小值=0; 最大值=6; 默认值=0 | operation=document 在该路径下展开几层。0 只列出直接子节点——这一项始终返回，也是最省的有效答案。 |
+| `document_path` | 否 | 字符串 |  | operation=document 使用的 gamestate 内点分路径，例如 landed_titles.landed_titles.4501 或 character_memory_manager.database.0。留空则列出顶层。重复键用 key[n] 指定第几个。 |
+| `event_kinds` | 否 | 数组 | 最少项数=1; 最多项数=7 | operation=timeline 收集哪些事件种类，省略则全收。封臣契约和宫廷任命的日期多在开局当天，不筛选会把后来的事件挤掉。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
-| `operation` | 否 | 字符串 | 可选值=[card compatibility audit character]; 默认值=card | 存档视图。card 为默认值，用于识别存档；compatibility 列出存档声明的内容；audit 把存档携带的每个 ID 与已索引来源核对；character 从 gamestate 中提取单个角色的档案。 |
+| `max_events` | 否 | 整数 | 最小值=1; 最大值=500; 默认值=50 | operation=timeline 返回多少个事件，取最近的若干个、按时间正序排列。它报告的总数统计的是全部命中事件，不只是返回的这些。 |
+| `operation` | 否 | 字符串 | 可选值=[card compatibility audit character timeline document]; 默认值=card | 存档视图。card 为默认值，用于识别存档；compatibility 列出存档声明的内容；audit 把存档携带的每个 ID 与已索引来源核对，并报告存档记录的游玩角色；character 从 gamestate 中提取单个角色的档案，未另行指定存档 ID 时取该游玩角色；timeline 汇总存档记录的带日期事件；document 读取 gamestate 中的任意路径。 |
 | `path` | 是 | 字符串 |  | 位于已配置存档根目录内的存档文件，按相对该根目录的路径给出。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。

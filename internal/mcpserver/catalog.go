@@ -5,6 +5,7 @@ import (
 
 	"ck3-index/internal/indexer"
 	"ck3-index/internal/packager"
+	"ck3-index/internal/savefile"
 )
 
 var legacyPrivacyProperties = []string{"mode", "privacy_mode", "allow_project"}
@@ -140,13 +141,17 @@ func buildCanonicalTools() []ToolDefinition {
 		},
 		{
 			Name:        "ck3_save",
-			Title:       "Read CK3 Save Metadata",
-			Description: "Read one CK3 save file's metadata section. card reports the save's identity: version, in-game date, player character, primary title, house, government, and player count. compatibility reports the mods, DLCs, and game rules the save declares, so a caller can compare them against its own configuration.",
+			Title:       "Read a CK3 Save",
+			Description: "Read one CK3 save file. card and compatibility read the metadata alone: the save's identity — version, in-game date, player, primary title, house, government, player count — and the mods, DLCs and game rules it declares, for a caller to compare against its own configuration. audit and character stream the gamestate: ids the save carries that no indexed source defines, and one character's attributes, traits, house and titles. timeline extracts the dated events a save records, from title succession history and character memories. document navigates to any path in the save and reports what is there, so a block no other operation projects is still readable. The tool reports what the save records and never decides whether it will load.",
 			InputSchema: objectSchema(map[string]any{
-				"path":      stringProperty("Save file inside a configured save root, named relative to that root."),
-				"operation": saveOperationProperty(),
-				"character": stringProperty("Save id of the character to profile, required by operation=character."),
-				"limit":     limitProperty(),
+				"path":          stringProperty("Save file inside a configured save root, named relative to that root."),
+				"operation":     saveOperationProperty(),
+				"character":     stringProperty("Save id of a character. operation=character profiles the save's own played character when this is omitted; operation=timeline keeps only events naming this character."),
+				"document_path": stringProperty("Dotted path inside the gamestate for operation=document, such as landed_titles.landed_titles.4501 or character_memory_manager.database.0. Empty lists the top level. Use key[n] to pick among repeated keys."),
+				"depth":         saveDepthProperty(),
+				"max_events":    saveMaxEventsProperty(),
+				"event_kinds":   saveEventKindsProperty(),
+				"limit":         limitProperty(),
 			}, "path"),
 			OutputSchema: genericOutputSchema(), Annotations: annotations, Handler: handleSave,
 		},
@@ -257,9 +262,57 @@ func searchInputSchema() map[string]any {
 }
 
 func saveOperationProperty() map[string]any {
-	operation := stringProperty("Save view. card is the default and identifies the save; compatibility lists the content the save declares; audit checks every id the save carries against the indexed sources; character profiles one character from the gamestate.", "card", "compatibility", "audit", "character")
+	operation := stringProperty("Save view. card is the default and identifies the save; compatibility lists the content the save declares; audit checks every id the save carries against the indexed sources and reports the played character; character profiles one character from the gamestate, the played one unless another save id is named; timeline collects the save's dated events; document reads any path in the gamestate.", "card", "compatibility", "audit", "character", "timeline", "document")
 	operation["default"] = "card"
 	return operation
+}
+
+// saveEventKindsProperty selects which of a timeline's sources contribute.
+//
+// A block no kind asks for is skipped rather than parsed, so narrowing the
+// kinds also narrows the work.
+func saveEventKindsProperty() map[string]any {
+	kinds := make([]any, 0, len(savefile.TimelineKinds))
+	for _, kind := range savefile.TimelineKinds {
+		kinds = append(kinds, kind)
+	}
+	return map[string]any{
+		"type": "array",
+		"description": "Which event kinds operation=timeline collects. Omit for every kind. " +
+			"A vassal contract or court appointment is dated at the campaign's start and will " +
+			"crowd out later events unless narrowed.",
+		"items":       map[string]any{"type": "string", "enum": kinds},
+		"minItems":    1,
+		"maxItems":    len(savefile.TimelineKinds),
+		"uniqueItems": true,
+	}
+}
+
+// saveMaxEventsProperty bounds one timeline.
+//
+// It is separate from limit because limit is the canonical 1..20 evidence
+// bound every tool shares, and twenty entries is not a chronology.
+func saveMaxEventsProperty() map[string]any {
+	return map[string]any{
+		"type": "integer",
+		"description": "How many events operation=timeline returns, most recent first-dated last. " +
+			"The totals it reports are of every matching event, not just these.",
+		"minimum": 1,
+		"maximum": 500,
+		"default": 50,
+	}
+}
+
+// saveDepthProperty bounds how much subtree one document call materialises.
+func saveDepthProperty() map[string]any {
+	return map[string]any{
+		"type": "integer",
+		"description": "How many levels below the path operation=document materialises. 0 lists the " +
+			"children only, which is always reported and is the cheapest useful answer.",
+		"minimum": 0,
+		"maximum": savefile.DefaultDocumentLimits().MaxDepth,
+		"default": 0,
+	}
 }
 
 func refreshInputSchema() map[string]any {

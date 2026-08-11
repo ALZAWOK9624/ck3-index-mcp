@@ -46,9 +46,12 @@ type saveCompatibilityResult struct {
 
 // saveFileReport describes the file itself and how confidently it was read.
 type saveFileReport struct {
-	Name               string            `json:"name"`
-	Bytes              int64             `json:"bytes"`
-	Layout             string            `json:"layout"`
+	Name   string `json:"name"`
+	Bytes  int64  `json:"bytes"`
+	Layout string `json:"layout"`
+	// Encoding is binary or text. A text save spells its own field names out
+	// and so is read without any token map at all.
+	Encoding           string            `json:"encoding"`
 	MetadataBytes      int               `json:"metadata_bytes"`
 	ArchiveEntries     []string          `json:"archive_entries,omitempty"`
 	TokenMapCoverage   savefile.Coverage `json:"token_map_coverage"`
@@ -70,6 +73,10 @@ func handleSave(ctx context.Context, runtime *Runtime, definition *ToolDefinitio
 		return handleSaveAudit(ctx, runtime, args)
 	case "character":
 		return handleSaveCharacter(ctx, runtime, args)
+	case "document":
+		return handleSaveDocument(ctx, runtime, args)
+	case "timeline":
+		return handleSaveTimeline(ctx, runtime, args)
 	default:
 		return toolOutput{}, unknownOperation(operation)
 	}
@@ -176,7 +183,7 @@ func readSaveMetadata(runtime *Runtime, requested string) (*savefile.Metadata, s
 			return nil, saveFileReport{}, saveToolError(err)
 		}
 	}
-	metadata, err := savefile.ReadMetadata(section, maps, limits)
+	metadata, err := savefile.ReadMetadataFor(envelope.Encoding, section, maps, limits)
 	if err != nil {
 		return nil, saveFileReport{}, saveToolError(err)
 	}
@@ -191,6 +198,7 @@ func readSaveMetadata(runtime *Runtime, requested string) (*savefile.Metadata, s
 		Name:               baseName(requested),
 		Bytes:              info.Size(),
 		Layout:             string(envelope.Layout),
+		Encoding:           string(envelope.Encoding),
 		MetadataBytes:      len(section),
 		ArchiveEntries:     entries,
 		TokenMapCoverage:   metadata.Coverage,

@@ -317,8 +317,19 @@ func TestBinaryDateDecoding(t *testing.T) {
 	if got := date(Token{Kind: KindI32, Signed: -1}); got != "" {
 		t.Errorf("a negative date decoded to %q", got)
 	}
-	if got := date(Token{Kind: KindQuoted, Text: []byte("1066.10.1")}); got != "" {
-		t.Errorf("a non-numeric date decoded to %q", got)
+	// A text save writes the date out, so the literal is the answer. Anything
+	// that is not a date literal still has to decode to nothing rather than
+	// to a plausible-looking guess.
+	if got := date(Token{Kind: KindUnquoted, Text: []byte("1066.10.1")}); got != "1066.10.1" {
+		t.Errorf("a text date decoded to %q", got)
+	}
+	if got := date(Token{Kind: KindQuoted, Text: []byte("1066.10.1.12")}); got != "1066.10.1.12" {
+		t.Errorf("a text date with an hour decoded to %q", got)
+	}
+	for _, notADate := range []string{"tribal_government", "1.19.0.6", "1066.10", "1066", "", "1066..1"} {
+		if got := date(Token{Kind: KindUnquoted, Text: []byte(notADate)}); got != "" {
+			t.Errorf("date(%q) = %q, want no answer", notADate, got)
+		}
 	}
 }
 
@@ -348,8 +359,8 @@ func TestHeaderAndContainerMustAgree(t *testing.T) {
 			kind: ErrContainerMismatch,
 		},
 		{
-			name: "text header",
-			save: concat(header(0, len(metadata)), metadata, gamestate),
+			name: "unsupported header kind",
+			save: concat(header(6, len(metadata)), metadata, gamestate),
 			kind: ErrUnsupportedLayout,
 		},
 		{

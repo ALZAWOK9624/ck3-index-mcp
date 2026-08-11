@@ -158,10 +158,17 @@ type GamestateScan struct {
 	BytesRead int64 `json:"bytes_read"`
 }
 
-// ScanGamestate makes one bounded streaming pass over a gamestate.
+// ScanGamestate makes one bounded streaming pass over a binary gamestate.
 func ScanGamestate(src io.Reader, resolver *TokenMap, query GamestateQuery, limits Limits) (*GamestateScan, error) {
-	if resolver == nil {
-		return nil, newError(ErrTokenMap, "a token map is required to navigate a gamestate")
+	return ScanGamestateFor(EncodingBinary, src, resolver, query, limits)
+}
+
+// ScanGamestateFor makes one bounded streaming pass over a gamestate written
+// in the named encoding. A text gamestate names its own fields and needs no
+// token map.
+func ScanGamestateFor(encoding Encoding, src io.Reader, resolver *TokenMap, query GamestateQuery, limits Limits) (*GamestateScan, error) {
+	if resolver == nil && encoding != EncodingText {
+		return nil, newError(ErrTokenMap, "a token map is required to navigate a binary gamestate")
 	}
 	// Token count cannot exceed half the byte count, so the byte ceiling
 	// already bounds the stream; a separate token budget would only add a
@@ -170,7 +177,7 @@ func ScanGamestate(src io.Reader, resolver *TokenMap, query GamestateQuery, limi
 	streamLimits.MaxTokens = limits.gamestateCeiling()/2 + 1
 
 	scan := &GamestateScan{}
-	decoder := NewStreamDecoder(src, streamLimits)
+	decoder := NewStreamDecoderFor(encoding, src, streamLimits)
 	traitIndex := map[int64]string{}
 
 	err := readObjectStream(decoder, resolver, func(name string, value Token, d *StreamDecoder) error {
@@ -536,7 +543,8 @@ func readObjectStream(d *StreamDecoder, resolver *TokenMap, visit streamVisitor)
 		if token.Kind == KindClose {
 			return nil
 		}
-		if token.Kind != KindID {
+		name, isKey := d.keyName(token, resolver)
+		if !isKey || !token.IsScalar() {
 			if err := d.SkipValue(token); err != nil {
 				return err
 			}
@@ -558,10 +566,6 @@ func readObjectStream(d *StreamDecoder, resolver *TokenMap, visit streamVisitor)
 		value, err := d.Next()
 		if err != nil {
 			return err
-		}
-		name := ""
-		if resolver != nil {
-			name, _ = resolver.Lookup(token.ID)
 		}
 		if err := visit(name, value, d); err != nil {
 			return err
@@ -662,6 +666,8 @@ func floatOf(token Token) float64 {
 		return float32BitsToFloat(token.Bits)
 	case KindF64:
 		return float64BitsToFloat(token.Bits)
+	case KindDecimal:
+		return textDecimal(token)
 	default:
 		return 0
 	}

@@ -88,8 +88,9 @@ func workspaceCapabilities(ctx context.Context, runtime *Runtime, requestedDomai
 	case !saveAvailable:
 		saveReason = "no save_roots are configured"
 	case strings.TrimSpace(runtime.Config.SaveTokenMapRoot) == "":
-		saveAvailable = false
-		saveReason = "no save_token_map_root is configured, so binary save fields cannot be named"
+		// A text save spells its own field names out and needs no map, so
+		// this narrows what can be read rather than blocking the capability.
+		saveReason = "no save_token_map_root is configured, so only text saves can be read; a binary save's fields cannot be named without a version-matched map"
 	}
 	filesAvailable := true
 	filesReason := ""

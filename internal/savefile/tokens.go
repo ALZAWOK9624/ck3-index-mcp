@@ -134,6 +134,11 @@ func ParseTokenMap(label string, raw []byte) (*TokenMap, error) {
 	return &TokenMap{Label: label, names: names}, nil
 }
 
+// tokenMapNotNeeded is the coverage label a text save reports. A text section
+// spells its field names out, so no map was consulted and naming one would
+// misattribute the answer.
+const tokenMapNotNeeded = "(not needed: text save)"
+
 // Coverage records how completely a token map named one section's
 // identifiers. It is reported verbatim so a caller can tell a confident
 // answer from a partial one.

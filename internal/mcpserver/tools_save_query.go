@@ -30,7 +30,11 @@ type saveAuditResult struct {
 	Findings       []saveAuditFinding `json:"findings"`
 	Truncated      bool               `json:"truncated"`
 	IndexedSymbols int                `json:"indexed_symbols"`
-	Interpretation string             `json:"interpretation"`
+	// PlayedCharacter is the save id operation=character profiles by default.
+	// The pass this audit already makes reads it, and it is the only id a
+	// caller holding nothing but the file can start from.
+	PlayedCharacter int64  `json:"played_character,omitempty"`
+	Interpretation  string `json:"interpretation"`
 }
 
 // saveCharacterResult is the dossier a biography is written from.
@@ -49,10 +53,200 @@ type saveCharacterResult struct {
 }
 
 type saveCharacterLookupSummary struct {
-	RequestedCharacter string `json:"requested_character"`
-	PlayedCharacter    int64  `json:"played_character,omitempty"`
-	GamestateBytesRead int64  `json:"gamestate_bytes_read"`
-	Passes             int    `json:"gamestate_passes"`
+	// RequestedCharacter is what the caller asked for, empty when the call
+	// named no character and the played one answered it.
+	RequestedCharacter string `json:"requested_character,omitempty"`
+	ResolvedCharacter  int64  `json:"resolved_character"`
+	// DefaultedToPlayed records that the id came from the save itself.
+	DefaultedToPlayed  bool  `json:"defaulted_to_played,omitempty"`
+	PlayedCharacter    int64 `json:"played_character,omitempty"`
+	GamestateBytesRead int64 `json:"gamestate_bytes_read"`
+	Passes             int   `json:"gamestate_passes"`
+}
+
+// saveDocumentResult is one bounded view of a position in the save.
+//
+// It is the answer to "what else is in here": a save carries far more than
+// the four projections above read, and no fixed set of them can cover a
+// format that changes every patch. Navigation costs one streaming pass and
+// everything off the path costs only the tokens needed to skip it.
+type saveDocumentResult struct {
+	Save     saveFileReport     `json:"save"`
+	Document *savefile.Document `json:"document"`
+	Guidance string             `json:"guidance"`
+}
+
+// saveTimelineResult is the dated record of what the save says happened.
+type saveTimelineResult struct {
+	Save   saveFileReport           `json:"save"`
+	Events []savefile.TimelineEvent `json:"events"`
+	// Total counts every matching event, which max_events may have capped
+	// Events below, and Totals breaks that down by source.
+	Total  int            `json:"total"`
+	Totals map[string]int `json:"totals_by_kind"`
+	// Examined counts what each source block held, so an empty answer from a
+	// source is distinguishable from a source that was not there.
+	Examined       map[string]int `json:"examined_by_kind"`
+	Character      int64          `json:"character,omitempty"`
+	Truncated      []string       `json:"truncated,omitempty"`
+	Interpretation string         `json:"interpretation"`
+	// Unread names blocks a reader might expect here and why they are absent,
+	// so a thin answer is not mistaken for a quiet save.
+	Unread map[string]string `json:"unread_sources"`
+}
+
+func handleSaveDocument(_ context.Context, runtime *Runtime, args ck3SaveArgs) (toolOutput, error) {
+	prepared, err := openSaveForQuery(runtime, args.Path)
+	if err != nil {
+		return toolOutput{}, err
+	}
+	defer prepared.close()
+
+	path, err := savefile.ParseDocumentPath(args.DocumentPath)
+	if err != nil {
+		return toolOutput{}, newToolError(ErrorSaveUnreadable, "invalid_arguments", err.Error(), false,
+			map[string]any{"field": "document_path"},
+			map[string]any{"guidance": "Name a path as a.b.c, using a[2] to pick among repeated keys."})
+	}
+	bounds := savefile.DefaultDocumentLimits()
+	depth := args.Depth
+	if depth > bounds.MaxDepth {
+		return toolOutput{}, invalidArgument("depth",
+			fmt.Sprintf("depth must not exceed %d; read a deeper path instead of a deeper subtree", bounds.MaxDepth))
+	}
+
+	reader, err := prepared.envelope.GamestateReader(prepared.source, prepared.limits)
+	if err != nil {
+		return toolOutput{}, saveToolError(err)
+	}
+	defer reader.Close()
+	document, err := savefile.ReadDocument(prepared.envelope.Encoding, reader, prepared.resolver,
+		path, depth, prepared.limits, bounds)
+	if err != nil {
+		return toolOutput{}, saveToolError(err)
+	}
+	return toolOutput{Value: saveDocumentResult{
+		Save:     prepared.report(nil),
+		Document: document,
+		Guidance: "children lists what is directly below this path and is always complete to its cap; " +
+			"raise depth to materialise the subtree, or extend the path to walk further. A null inside " +
+			"value means the node was not materialised at this depth, never that the save omits it.",
+	}}, nil
+}
+
+func handleSaveTimeline(_ context.Context, runtime *Runtime, args ck3SaveArgs) (toolOutput, error) {
+	prepared, err := openSaveForQuery(runtime, args.Path)
+	if err != nil {
+		return toolOutput{}, err
+	}
+	defer prepared.close()
+
+	var character int64
+	if requested := strings.TrimSpace(args.Character); requested != "" {
+		if character, err = parseCharacterID(requested); err != nil {
+			return toolOutput{}, err
+		}
+	}
+	reader, err := prepared.envelope.GamestateReader(prepared.source, prepared.limits)
+	if err != nil {
+		return toolOutput{}, saveToolError(err)
+	}
+	defer reader.Close()
+	kinds, err := parseTimelineKinds(args.EventKinds)
+	if err != nil {
+		return toolOutput{}, err
+	}
+	scan, err := savefile.ScanTimeline(prepared.envelope.Encoding, reader, prepared.resolver,
+		savefile.TimelineQuery{
+			Character: character, Kinds: kinds,
+			MaxEvents: boundedTimelineLimit(args.MaxEvents),
+		}, prepared.limits)
+	if err != nil {
+		return toolOutput{}, saveToolError(err)
+	}
+	result := saveTimelineResult{
+		Save:      prepared.report(nil),
+		Events:    scan.Events,
+		Total:     scan.Total,
+		Totals:    timelineTotals(scan),
+		Examined:  scan.Examined(),
+		Character: character,
+		Truncated: scan.Truncated,
+		Interpretation: "A save records a position, not a chronicle. These are every place it dates " +
+			"anything: title succession, character memories, running schemes, court appointments, " +
+			"vassal contracts, house relation changes, and struggles. The type on each event is the " +
+			"save's own label; why it happened is a reading of that label, not something the save states. " +
+			"house_relation events carry the save's own written reason, formatting codes and all.",
+		Unread: map[string]string{
+			"secrets, relations, opinions, council_task_manager, raid, armies": "read but not collected: " +
+				"these carry no date at all, so they are standing facts rather than events and a " +
+				"timeline entry for them would have to invent one. Read them with operation=document.",
+			"wars": "not read: no save with an active war has been available to confirm the shape of " +
+				"its dated fields, and guessing one would produce confident wrong dates; " +
+				"read them with operation=document document_path=wars",
+		},
+	}
+	if result.Events == nil {
+		result.Events = []savefile.TimelineEvent{}
+	}
+	return toolOutput{Value: result}, nil
+}
+
+// boundedTimelineLimit is wider than the shared evidence limit because a
+// chronology of eight entries is not one.
+func boundedTimelineLimit(requested int) int {
+	const fallback, max = 50, 500
+	if requested <= 0 {
+		return fallback
+	}
+	if requested > max {
+		return max
+	}
+	return requested
+}
+
+// timelineTotals renders the per-kind counts, always naming every source that
+// was read so one with nothing to report is still visibly present.
+func timelineTotals(scan *savefile.TimelineScan) map[string]int {
+	totals := make(map[string]int, len(savefile.TimelineKinds))
+	for _, kind := range savefile.TimelineKinds {
+		totals[kind] = 0
+	}
+	for kind, count := range scan.Totals {
+		totals[kind] = count
+	}
+	return totals
+}
+
+// parseTimelineKinds validates the requested event kinds.
+//
+// An unknown kind is refused rather than ignored: silently collecting
+// everything would answer a question the caller did not ask.
+func parseTimelineKinds(requested []string) ([]string, error) {
+	if len(requested) == 0 {
+		return nil, nil
+	}
+	kinds := make([]string, 0, len(requested))
+	for _, raw := range requested {
+		kind := strings.ToLower(strings.TrimSpace(raw))
+		if kind == "" {
+			continue
+		}
+		known := false
+		for _, candidate := range savefile.TimelineKinds {
+			if candidate == kind {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return nil, invalidArgument("event_kinds",
+				fmt.Sprintf("%q is not a timeline event kind; the kinds are %s",
+					raw, strings.Join(savefile.TimelineKinds, ", ")))
+		}
+		kinds = append(kinds, kind)
+	}
+	return kinds, nil
 }
 
 func handleSaveAudit(ctx context.Context, runtime *Runtime, args ck3SaveArgs) (toolOutput, error) {
@@ -89,6 +283,7 @@ func handleSaveAudit(ctx context.Context, runtime *Runtime, args ck3SaveArgs) (t
 	result.Checked.Titles = len(scan.TitleKeys)
 	result.Checked.Houses = len(scan.HouseNameKeys)
 	result.IndexedSymbols = symbols.Size()
+	result.PlayedCharacter = scan.PlayedCharacter
 
 	// The three vocabularies a save carries in full, cheaply: every trait it
 	// can name, every title it holds, every house it created.
@@ -125,30 +320,51 @@ func handleSaveAudit(ctx context.Context, runtime *Runtime, args ck3SaveArgs) (t
 
 func handleSaveCharacter(ctx context.Context, runtime *Runtime, args ck3SaveArgs) (toolOutput, error) {
 	requested := strings.TrimSpace(args.Character)
-	if requested == "" {
-		return toolOutput{}, missingArgument("character")
-	}
 	prepared, err := openSaveForQuery(runtime, args.Path)
 	if err != nil {
 		return toolOutput{}, err
 	}
 	defer prepared.close()
 
-	id, err := parseCharacterID(requested)
-	if err != nil {
+	// A caller that has only just received a save holds no character ids at
+	// all: the metadata carries the player's display name, never their save
+	// id. Defaulting to the save's own played character is what makes the
+	// operation reachable from a bare upload.
+	var (
+		id        int64
+		defaulted bool
+		passes    int
+		located   int64
+	)
+	if requested == "" {
+		locate, err := prepared.scan(savefile.GamestateQuery{})
+		if err != nil {
+			return toolOutput{}, err
+		}
+		passes++
+		located = locate.BytesRead
+		if locate.PlayedCharacter == 0 {
+			return toolOutput{}, newToolError(ErrorObjectNotFound, "not_found",
+				"this save records no played character, so there is no default to profile", false,
+				map[string]any{"field": "character"},
+				map[string]any{"guidance": "Supply a character save id; ck3_save operation=audit reports the played character when the save names one."})
+		}
+		id, defaulted = locate.PlayedCharacter, true
+	} else if id, err = parseCharacterID(requested); err != nil {
 		return toolOutput{}, err
 	}
 
-	passes := 1
 	scan, err := prepared.scan(savefile.GamestateQuery{Character: id, TitlesHeldBy: id})
 	if err != nil {
 		return toolOutput{}, err
 	}
+	passes++
+	scan.BytesRead += located
 	if scan.Character == nil {
 		return toolOutput{}, newToolError(ErrorObjectNotFound, "not_found",
 			fmt.Sprintf("character %d is not in this save", id), false,
 			map[string]any{"field": "character", "character": id},
-			map[string]any{"guidance": "Use ck3_save operation=card to see the played character, or supply a save id that exists."})
+			map[string]any{"guidance": "Omit character to profile the played character, or supply a save id that exists."})
 	}
 
 	// The stream passes dynasties before it reaches characters, so a house
@@ -176,6 +392,8 @@ func handleSaveCharacter(ctx context.Context, runtime *Runtime, args ck3SaveArgs
 		Titles:    scan.Titles,
 		Lookup: saveCharacterLookupSummary{
 			RequestedCharacter: requested,
+			ResolvedCharacter:  id,
+			DefaultedToPlayed:  defaulted,
 			PlayedCharacter:    scan.PlayedCharacter,
 			GamestateBytesRead: scan.BytesRead,
 			Passes:             passes,
@@ -239,7 +457,7 @@ func (p *preparedSave) scan(query savefile.GamestateQuery) (*savefile.GamestateS
 		return nil, saveToolError(err)
 	}
 	defer reader.Close()
-	scan, err := savefile.ScanGamestate(reader, p.resolver, query, p.limits)
+	scan, err := savefile.ScanGamestateFor(p.envelope.Encoding, reader, p.resolver, query, p.limits)
 	if err != nil {
 		return nil, saveToolError(err)
 	}
@@ -251,6 +469,7 @@ func (p *preparedSave) report(scan *savefile.GamestateScan) saveFileReport {
 		Name:               p.name,
 		Bytes:              p.bytes,
 		Layout:             string(p.envelope.Layout),
+		Encoding:           string(p.envelope.Encoding),
 		MetadataBytes:      p.metadataBytes,
 		ArchiveEntries:     p.entries,
 		TokenMapCoverage:   p.coverage,
@@ -310,7 +529,7 @@ func openSaveForQuery(runtime *Runtime, requested string) (*preparedSave, error)
 			return nil, saveToolError(err)
 		}
 	}
-	metadata, err := savefile.ReadMetadata(section, maps, limits)
+	metadata, err := savefile.ReadMetadataFor(envelope.Encoding, section, maps, limits)
 	if err != nil {
 		prepared.close()
 		return nil, saveToolError(err)
@@ -323,7 +542,8 @@ func openSaveForQuery(runtime *Runtime, requested string) (*preparedSave, error)
 			break
 		}
 	}
-	if prepared.resolver == nil {
+	// A text save names its own fields, so it is navigable with no map at all.
+	if prepared.resolver == nil && envelope.Encoding != savefile.EncodingText {
 		prepared.close()
 		return nil, newToolError(ErrorSaveTokenMapUnavailable, "unavailable",
 			"no token map covers this save's fields", false,

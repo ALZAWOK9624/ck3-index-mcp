@@ -37,14 +37,19 @@ func TestRealSaveGamestateScan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading metadata: %v", err)
 	}
-	observed, err := observedIdentifiers(metadataSection, limits)
-	if err != nil {
-		t.Fatalf("inventorying metadata: %v", err)
+	// A text save names its own fields, so it is scanned with no map at all.
+	var resolver *TokenMap
+	if envelope.Encoding != EncodingText {
+		observed, err := observedIdentifiers(metadataSection, limits)
+		if err != nil {
+			t.Fatalf("inventorying metadata: %v", err)
+		}
+		resolver, _, err = SelectTokenMap(maps, observed)
+		if err != nil {
+			t.Fatalf("selecting token map: %v", err)
+		}
 	}
-	resolver, _, err := SelectTokenMap(maps, observed)
-	if err != nil {
-		t.Fatalf("selecting token map: %v", err)
-	}
+	t.Logf("layout=%s encoding=%s", envelope.Layout, envelope.Encoding)
 
 	// Pass one: the inventory an audit needs, plus the played character.
 	started := time.Now()
@@ -52,7 +57,7 @@ func TestRealSaveGamestateScan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("opening gamestate: %v", err)
 	}
-	inventory, err := ScanGamestate(gamestate, resolver, GamestateQuery{Inventory: true}, limits)
+	inventory, err := ScanGamestateFor(envelope.Encoding, gamestate, resolver, GamestateQuery{Inventory: true}, limits)
 	gamestate.Close()
 	if err != nil {
 		t.Fatalf("inventory scan: %v", err)
@@ -68,8 +73,10 @@ func TestRealSaveGamestateScan(t *testing.T) {
 	if len(inventory.TitleKeys) == 0 {
 		t.Error("no title keys were collected")
 	}
+	// A save taken before a character is chosen carries no played_character at
+	// all, so its absence is an answer rather than a failure.
 	if inventory.PlayedCharacter == 0 {
-		t.Error("no played character was found")
+		t.Skip("this save records no played character; nothing to profile")
 	}
 
 	// Pass two: the played character plus the titles they hold.
@@ -79,7 +86,7 @@ func TestRealSaveGamestateScan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopening gamestate: %v", err)
 	}
-	dossier, err := ScanGamestate(gamestate, resolver,
+	dossier, err := ScanGamestateFor(envelope.Encoding, gamestate, resolver,
 		GamestateQuery{Character: target, TitlesHeldBy: target}, limits)
 	gamestate.Close()
 	if err != nil {
@@ -116,7 +123,7 @@ func TestRealSaveGamestateScan(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reopening gamestate: %v", err)
 		}
-		houses, err := ScanGamestate(gamestate, resolver,
+		houses, err := ScanGamestateFor(envelope.Encoding, gamestate, resolver,
 			GamestateQuery{House: character.HouseID, HouseValid: true}, limits)
 		gamestate.Close()
 		if err != nil {

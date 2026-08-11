@@ -59,7 +59,9 @@ gis_timeout_seconds = 900
 # regular files inside these directories, reached without following symlinks.
 # `save_token_map_root` holds the version-matched `*.tokens.txt` maps that name
 # a binary save's fields; without a map that covers a save, `ck3_save` reports
-# that it cannot name the fields rather than guessing.
+# that it cannot name the fields rather than guessing. A text save -- what CK3
+# writes in debug mode, and what a melted save is -- spells its own field names
+# out and is read without any map.
 # save_roots = ["cache/saves"]
 # save_token_map_root = "cache/save-token-maps"
 # save_max_bytes = 536870912

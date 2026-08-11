@@ -195,8 +195,9 @@ func writeMCPSaveFixture(t *testing.T, dir string, cfg *indexer.Config) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(maps, "fixture.tokens.txt"),
-		[]byte("0x3155 meta_data\n0x00ee version\n0x3157 meta_date\n0x29e6 meta_player_name\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(maps, "fixture.tokens.txt"), []byte(
+		"0x3155 meta_data\n0x00ee version\n0x3157 meta_date\n0x29e6 meta_player_name\n"+
+			"0x0f05 living\n0x0f06 played_character\n0x0f0d first_name\n0x0f10 character\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(saves, "fixture.ck3"), fixtureBinarySave(), 0644); err != nil {
@@ -208,6 +209,11 @@ func writeMCPSaveFixture(t *testing.T, dir string, cfg *indexer.Config) {
 
 // fixtureBinarySave builds the smallest uncompressed binary save that decodes
 // to a usable card: a meta_data container with a version, a date, and a name.
+//
+// Its gamestate carries one living character and a played_character naming
+// them, in that order, because that is the order a real save uses: the id the
+// character operation defaults to is only known once the stream has already
+// run past the characters.
 func fixtureBinarySave() []byte {
 	le := func(value uint16) []byte { return []byte{byte(value), byte(value >> 8)} }
 	quoted := func(text string) []byte {
@@ -217,8 +223,21 @@ func fixtureBinarySave() []byte {
 	i32 := func(value int32) []byte {
 		return append(le(0x000c), byte(value), byte(value>>8), byte(value>>16), byte(value>>24))
 	}
+	u32 := func(value uint32) []byte {
+		return append(le(0x0014), byte(value), byte(value>>8), byte(value>>16), byte(value>>24))
+	}
 	field := func(id uint16, value []byte) []byte {
 		return append(append(le(id), le(0x0001)...), value...)
+	}
+	container := func(inner ...[]byte) []byte {
+		out := le(0x0003)
+		for _, part := range inner {
+			out = append(out, part...)
+		}
+		return append(out, le(0x0004)...)
+	}
+	numbered := func(id uint32, value []byte) []byte {
+		return append(append(u32(id), le(0x0001)...), value...)
 	}
 
 	var body []byte
@@ -237,8 +256,17 @@ func fixtureBinarySave() []byte {
 	save := append([]byte(header), metadata...)
 	// An uncompressed save must carry a gamestate after its metadata, even
 	// though a card never reads it.
-	return append(save, field(0x00ee, quoted("gamestate"))...)
+	gamestate := append(
+		field(0x0f05, container(numbered(fixtureSaveCharacter, container(
+			field(0x0f0d, quoted("Fixture")),
+		)))),
+		field(0x0f06, container(field(0x0f10, u32(fixtureSaveCharacter))))...)
+	return append(save, gamestate...)
 }
+
+// fixtureSaveCharacter is the fixture save's living character, and the one its
+// played_character names.
+const fixtureSaveCharacter = 42
 
 func TestMCPGUIUsesIndexPrivacyBoundary(t *testing.T) {
 	dir := t.TempDir()

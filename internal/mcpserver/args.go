@@ -122,10 +122,14 @@ type ck3RefreshArgs struct {
 }
 
 type ck3SaveArgs struct {
-	Path      string `json:"path"`
-	Operation string `json:"operation,omitempty"`
-	Character string `json:"character,omitempty"`
-	Limit     int    `json:"limit,omitempty"`
+	Path         string `json:"path"`
+	Operation    string `json:"operation,omitempty"`
+	Character    string `json:"character,omitempty"`
+	DocumentPath string   `json:"document_path,omitempty"`
+	Depth        int      `json:"depth,omitempty"`
+	MaxEvents    int      `json:"max_events,omitempty"`
+	EventKinds   []string `json:"event_kinds,omitempty"`
+	Limit        int      `json:"limit,omitempty"`
 }
 
 type ck3DependenciesArgs struct {

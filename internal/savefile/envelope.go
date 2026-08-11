@@ -12,14 +12,22 @@ import (
 // Layout is one canonical CK3 binary save shape.
 type Layout string
 
-// The three writable binary layouts. Text layouts are refused outright.
+// The six layouts CK3 writes: three containers, each in either encoding. The
+// header kind encodes both, with the even codes carrying the text form.
 const (
+	// LayoutTextUncompressed is header kind 0: both sections are plain text
+	// with no archive at all. CK3 writes this in debug mode.
+	LayoutTextUncompressed Layout = "text_uncompressed"
 	// LayoutBinaryUncompressed is header kind 1: both sections are plain
 	// bytes with no archive at all.
 	LayoutBinaryUncompressed Layout = "binary_uncompressed"
+	// LayoutUnifiedTextZip is header kind 2: the text counterpart of kind 3.
+	LayoutUnifiedTextZip Layout = "unified_text_zip"
 	// LayoutUnifiedBinaryZip is header kind 3: inline metadata immediately
 	// followed by the archive holding the gamestate.
 	LayoutUnifiedBinaryZip Layout = "unified_binary_zip"
+	// LayoutSplitTextZip is header kind 4: the text counterpart of kind 5.
+	LayoutSplitTextZip Layout = "split_text_zip"
 	// LayoutSplitBinaryZip is header kind 5: the archive holds both the
 	// meta and gamestate entries.
 	LayoutSplitBinaryZip Layout = "split_binary_zip"
@@ -106,6 +114,8 @@ type Header struct {
 type Envelope struct {
 	Header Header
 	Layout Layout
+	// Encoding is the grammar both sections are written in.
+	Encoding Encoding
 
 	metadataStart int64
 	metadataEnd   int64
@@ -174,15 +184,20 @@ func Analyze(src Reader, limits Limits) (*Envelope, error) {
 	}
 
 	var layout Layout
+	var encoding Encoding
 	switch header.KindCode {
+	case 0:
+		layout, encoding = LayoutTextUncompressed, EncodingText
 	case 1:
-		layout = LayoutBinaryUncompressed
+		layout, encoding = LayoutBinaryUncompressed, EncodingBinary
+	case 2:
+		layout, encoding = LayoutUnifiedTextZip, EncodingText
 	case 3:
-		layout = LayoutUnifiedBinaryZip
+		layout, encoding = LayoutUnifiedBinaryZip, EncodingBinary
+	case 4:
+		layout, encoding = LayoutSplitTextZip, EncodingText
 	case 5:
-		layout = LayoutSplitBinaryZip
-	case 0, 2, 4:
-		return nil, newError(ErrUnsupportedLayout, "this is a text save; only binary saves are read")
+		layout, encoding = LayoutSplitBinaryZip, EncodingBinary
 	default:
 		return nil, newError(ErrUnsupportedLayout,
 			fmt.Sprintf("unsupported save header kind 0x%02x", header.KindCode))
@@ -191,8 +206,8 @@ func Analyze(src Reader, limits Limits) (*Envelope, error) {
 		return nil, newError(ErrBounds, "the save is shorter than its declared header")
 	}
 
-	envelope := &Envelope{Header: header, Layout: layout}
-	if layout == LayoutSplitBinaryZip {
+	envelope := &Envelope{Header: header, Layout: layout, Encoding: encoding}
+	if layout == LayoutSplitBinaryZip || layout == LayoutSplitTextZip {
 		if header.DeclaredMetadataBytes != 0 {
 			return nil, newError(ErrContainerMismatch,
 				"a split save declares inline metadata, but its metadata belongs to the archive")
@@ -222,7 +237,7 @@ func Analyze(src Reader, limits Limits) (*Envelope, error) {
 		return nil, err
 	}
 	followedByArchive := bytes.Equal(following, zipLocalSignature)
-	if layout == LayoutUnifiedBinaryZip {
+	if layout == LayoutUnifiedBinaryZip || layout == LayoutUnifiedTextZip {
 		if !followedByArchive {
 			return nil, newError(ErrContainerMismatch,
 				"a unified save has no archive immediately after its inline metadata")
@@ -258,7 +273,7 @@ func inlineMetadataEnd(src Reader, header Header) (int64, error) {
 
 // Metadata returns the decoded metadata section.
 func (e *Envelope) Metadata(src Reader, limits Limits) ([]byte, error) {
-	if e.Layout != LayoutSplitBinaryZip {
+	if e.Layout != LayoutSplitBinaryZip && e.Layout != LayoutSplitTextZip {
 		length := e.metadataEnd - e.metadataStart
 		if length > limits.MaxSectionBytes {
 			return nil, newError(ErrTooLarge, "the metadata exceeds the configured section limit")
@@ -275,7 +290,7 @@ func (e *Envelope) Metadata(src Reader, limits Limits) ([]byte, error) {
 // reads it through a StreamDecoder rather than a byte slice. The caller closes
 // the returned reader.
 func (e *Envelope) GamestateReader(src Reader, limits Limits) (io.ReadCloser, error) {
-	if e.Layout == LayoutBinaryUncompressed {
+	if e.Layout == LayoutBinaryUncompressed || e.Layout == LayoutTextUncompressed {
 		length := src.Size - e.metadataEnd
 		if length <= 0 {
 			return nil, newError(ErrBounds, "the save has no inline gamestate")

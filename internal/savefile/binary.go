@@ -57,6 +57,10 @@ const (
 	KindUnquoted
 	KindRGB
 	KindLookup
+	// KindDecimal is a text save's plain decimal literal. It has no binary
+	// counterpart: the binary form's F64 is fixed point, so reusing that kind
+	// here would scale every value by 100000.
+	KindDecimal
 )
 
 // Token is one decoded binary token.
@@ -88,32 +92,60 @@ type Token struct {
 func (t Token) IsScalar() bool {
 	switch t.Kind {
 	case KindU32, KindU64, KindI32, KindI64, KindBool, KindF32, KindF64,
-		KindQuoted, KindUnquoted, KindRGB, KindLookup, KindID:
+		KindQuoted, KindUnquoted, KindRGB, KindLookup, KindID, KindDecimal:
 		return true
 	default:
 		return false
 	}
 }
 
-// Decoder walks one binary section within a fixed resource budget.
+// Decoder walks one section within a fixed resource budget.
 type Decoder struct {
-	data   []byte
-	pos    int
-	limits Limits
-	tokens int64
-	depth  int
+	data     []byte
+	pos      int
+	limits   Limits
+	tokens   int64
+	depth    int
+	encoding Encoding
+	names    nameTable
 }
 
-// NewDecoder returns a decoder over one already-extracted section.
+// NewDecoder returns a binary decoder over one already-extracted section.
 func NewDecoder(data []byte, limits Limits) *Decoder {
-	return &Decoder{data: data, limits: limits}
+	return NewDecoderFor(EncodingBinary, data, limits)
 }
+
+// NewDecoderFor returns a decoder for one section in the named encoding.
+func NewDecoderFor(encoding Encoding, data []byte, limits Limits) *Decoder {
+	return &Decoder{data: data, limits: limits, encoding: encoding}
+}
+
+// Encoding reports which grammar this decoder reads.
+func (d *Decoder) Encoding() Encoding { return d.encoding }
+
+func (d *Decoder) peekAhead(n int) ([]byte, error) {
+	if available := len(d.data) - d.pos; n > available {
+		n = available
+	}
+	return d.data[d.pos : d.pos+n], nil
+}
+
+func (d *Decoder) discard(n int) { d.pos += n }
 
 // Offset reports how many bytes have been consumed.
 func (d *Decoder) Offset() int { return d.pos }
 
 // Done reports whether the whole section has been consumed.
-func (d *Decoder) Done() bool { return d.pos >= len(d.data) }
+//
+// A text section ending in whitespace or a comment is finished, not truncated,
+// so the filler has to be consumed before the question can be answered.
+func (d *Decoder) Done() bool {
+	if d.encoding == EncodingText {
+		remaining, err := skipTextFiller(d)
+		return err != nil || !remaining
+	}
+	return d.pos >= len(d.data)
+}
 
 // Depth reports the current container nesting level.
 func (d *Decoder) Depth() int { return d.depth }
@@ -161,7 +193,29 @@ func (d *Decoder) Next() (Token, error) {
 	if d.Done() {
 		return Token{}, newError(ErrTruncated, "the section ended where a token was expected")
 	}
+	if d.encoding == EncodingText {
+		return decodeTextToken(d, d.limits, &d.tokens, &d.depth)
+	}
 	return decodeToken(d.take, d.limits, &d.tokens, &d.depth)
+}
+
+// keyName resolves the field name a key token carries.
+//
+// A binary key is a numeric identifier that only a token map can name; a text
+// key names itself. Interning the text form keeps a gamestate with millions of
+// fields from allocating a string per field.
+func (d *Decoder) keyName(token Token, resolver *TokenMap) (string, bool) {
+	if d.encoding == EncodingText {
+		return d.names.intern(token.Text), true
+	}
+	if token.Kind != KindID {
+		return "", false
+	}
+	if resolver == nil {
+		return "", true
+	}
+	name, _ := resolver.Lookup(token.ID)
+	return name, true
 }
 
 // decodeToken is the one implementation of the binary token grammar, shared by

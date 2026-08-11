@@ -3,6 +3,7 @@ package savefile
 import (
 	"errors"
 	"io"
+	"strconv"
 )
 
 // streamBufferBytes is the working window the streaming decoder keeps.
@@ -20,25 +21,36 @@ const streamBufferBytes = 1 << 20
 // Token.Text points into that window and is only valid until the next call to
 // Next. Callers that keep a value must copy it.
 type StreamDecoder struct {
-	src    io.Reader
-	buf    []byte
-	start  int
-	end    int
-	eof    bool
-	limits Limits
-	tokens int64
-	depth  int
-	read   int64
+	src      io.Reader
+	buf      []byte
+	start    int
+	end      int
+	eof      bool
+	limits   Limits
+	tokens   int64
+	depth    int
+	read     int64
+	encoding Encoding
+	names    nameTable
 }
 
-// NewStreamDecoder returns a decoder over one decompressed section.
+// NewStreamDecoder returns a binary decoder over one decompressed section.
 func NewStreamDecoder(src io.Reader, limits Limits) *StreamDecoder {
+	return NewStreamDecoderFor(EncodingBinary, src, limits)
+}
+
+// NewStreamDecoderFor returns a decoder for one section in the named encoding.
+func NewStreamDecoderFor(encoding Encoding, src io.Reader, limits Limits) *StreamDecoder {
 	return &StreamDecoder{
-		src:    src,
-		buf:    make([]byte, streamBufferBytes),
-		limits: limits,
+		src:      src,
+		buf:      make([]byte, streamBufferBytes),
+		limits:   limits,
+		encoding: encoding,
 	}
 }
+
+// Encoding reports which grammar this decoder reads.
+func (d *StreamDecoder) Encoding() Encoding { return d.encoding }
 
 // Depth reports the current container nesting level.
 func (d *StreamDecoder) Depth() int { return d.depth }
@@ -48,6 +60,13 @@ func (d *StreamDecoder) Consumed() int64 { return d.read }
 
 // Done reports whether the section has been fully consumed.
 func (d *StreamDecoder) Done() bool {
+	// A text section ending in whitespace or a comment is finished, not
+	// truncated, so the filler has to be consumed before the question can be
+	// answered.
+	if d.encoding == EncodingText {
+		remaining, err := skipTextFiller(d)
+		return err != nil || !remaining
+	}
 	if d.start < d.end {
 		return false
 	}
@@ -113,12 +132,82 @@ func (d *StreamDecoder) take(n int) ([]byte, error) {
 	return out, nil
 }
 
+// peekAhead returns up to n unconsumed bytes without consuming them, growing
+// the window when a single scalar needs more room than it has.
+func (d *StreamDecoder) peekAhead(n int) ([]byte, error) {
+	if n > len(d.buf) {
+		grown := make([]byte, n)
+		copy(grown, d.buf[d.start:d.end])
+		d.end -= d.start
+		d.start = 0
+		d.buf = grown
+	}
+	for d.end-d.start < n && !d.eof {
+		if err := d.fill(); err != nil {
+			return nil, err
+		}
+	}
+	available := d.end - d.start
+	if available > n {
+		available = n
+	}
+	return d.buf[d.start : d.start+available], nil
+}
+
+func (d *StreamDecoder) discard(n int) {
+	d.start += n
+	d.read += int64(n)
+}
+
 // Next decodes the next token.
 func (d *StreamDecoder) Next() (Token, error) {
 	if d.Done() {
 		return Token{}, newError(ErrTruncated, "the section ended where a token was expected")
 	}
+	if d.encoding == EncodingText {
+		return decodeTextToken(d, d.limits, &d.tokens, &d.depth)
+	}
 	return decodeToken(d.take, d.limits, &d.tokens, &d.depth)
+}
+
+// keyName resolves the field name a key token carries. See Decoder.keyName.
+func (d *StreamDecoder) keyName(token Token, resolver *TokenMap) (string, bool) {
+	if d.encoding == EncodingText {
+		return d.names.intern(token.Text), true
+	}
+	if token.Kind != KindID {
+		return "", false
+	}
+	if resolver == nil {
+		return "", true
+	}
+	name, _ := resolver.Lookup(token.ID)
+	return name, true
+}
+
+// entryKey is keyName widened to the keys a document walk must address.
+//
+// The targeted scans only ever look up identifiers, because they know which
+// field they want. A generic walk also has to name the numeric keys CK3 uses
+// for its entity tables — `4501={ ... }` under landed_titles — so those are
+// addressed by their decimal spelling.
+func (d *StreamDecoder) entryKey(token Token, resolver *TokenMap) (string, bool) {
+	// Punctuation is never a key. keyName is only ever reached from callers
+	// that have already established this; a document walk has not, because it
+	// meets anonymous containers as list items.
+	if !token.IsScalar() {
+		return "", false
+	}
+	switch token.Kind {
+	case KindU32, KindU64:
+		return strconv.FormatUint(token.Unsigned, 10), true
+	case KindI32, KindI64:
+		if d.encoding == EncodingText {
+			return d.names.intern(token.Text), true
+		}
+		return strconv.FormatInt(token.Signed, 10), true
+	}
+	return d.keyName(token, resolver)
 }
 
 // SkipValue consumes whatever remains of the value that begins with token.

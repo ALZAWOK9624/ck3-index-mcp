@@ -69,13 +69,28 @@ const (
 // the fields. Both passes are bounded, and the section is small enough that
 // two passes cost nothing measurable.
 func ReadMetadata(section []byte, maps []*TokenMap, limits Limits) (*Metadata, error) {
-	observed, err := observedIdentifiers(section, limits)
-	if err != nil {
-		return nil, err
-	}
-	tokenMap, coverage, err := SelectTokenMap(maps, observed)
-	if err != nil {
-		return nil, err
+	return ReadMetadataFor(EncodingBinary, section, maps, limits)
+}
+
+// ReadMetadataFor decodes one metadata section written in the named encoding.
+//
+// A text section names its own fields, so it needs no token map and none is
+// consulted: the coverage it reports says so rather than claiming a map it
+// never used.
+func ReadMetadataFor(encoding Encoding, section []byte, maps []*TokenMap, limits Limits) (*Metadata, error) {
+	var tokenMap *TokenMap
+	var coverage Coverage
+	if encoding == EncodingText {
+		coverage = Coverage{Complete: true, TokenMap: tokenMapNotNeeded}
+	} else {
+		observed, err := observedIdentifiers(section, limits)
+		if err != nil {
+			return nil, err
+		}
+		tokenMap, coverage, err = SelectTokenMap(maps, observed)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	metadata := &Metadata{
@@ -84,9 +99,9 @@ func ReadMetadata(section []byte, maps []*TokenMap, limits Limits) (*Metadata, e
 		GameRules: []string{},
 		Coverage:  coverage,
 	}
-	decoder := NewDecoder(section, limits)
+	decoder := NewDecoderFor(encoding, section, limits)
 	found := false
-	err = readObject(decoder, tokenMap, func(name string, value Token, d *Decoder) error {
+	err := readObject(decoder, tokenMap, func(name string, value Token, d *Decoder) error {
 		if name != fieldMetaData || value.Kind != KindOpen {
 			return d.SkipValue(value)
 		}
@@ -232,7 +247,8 @@ func readObject(d *Decoder, resolver *TokenMap, visit objectVisitor) error {
 		if token.Kind == KindClose {
 			return nil
 		}
-		if token.Kind != KindID {
+		name, isKey := d.keyName(token, resolver)
+		if !isKey || !token.IsScalar() {
 			if err := d.SkipValue(token); err != nil {
 				return err
 			}
@@ -259,10 +275,6 @@ func readObject(d *Decoder, resolver *TokenMap, visit objectVisitor) error {
 		value, err := d.Next()
 		if err != nil {
 			return err
-		}
-		name := ""
-		if resolver != nil {
-			name, _ = resolver.Lookup(token.ID)
 		}
 		if err := visit(name, value, d); err != nil {
 			return err
@@ -357,6 +369,9 @@ var monthOrdinal = [12]int64{0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 3
 //
 // Verified against a real CK3 1.19.0.6 save, where meta_date 53144712 decodes
 // to 1066.10.1 and meta_real_date 44908776 to 126.7.29.
+// A text save needs no decoding at all: it writes the date out as 1066.10.1,
+// which is already the answer. That shape is why the text lexer leaves a
+// two-dot literal as text instead of classifying it as a decimal.
 func date(token Token) string {
 	var raw int64
 	switch token.Kind {
@@ -367,6 +382,8 @@ func date(token Token) string {
 			return ""
 		}
 		raw = int64(token.Unsigned)
+	case KindQuoted, KindUnquoted:
+		return textDate(token.Text)
 	default:
 		return ""
 	}

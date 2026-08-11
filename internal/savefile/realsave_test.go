@@ -47,13 +47,13 @@ func TestRealSaveMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading metadata: %v", err)
 	}
-	metadata, err := ReadMetadata(section, maps, limits)
+	metadata, err := ReadMetadataFor(envelope.Encoding, section, maps, limits)
 	if err != nil {
 		t.Fatalf("decoding metadata: %v", err)
 	}
 
-	t.Logf("layout=%s metadata_bytes=%d token_map=%s coverage=%d/%d",
-		envelope.Layout, len(section), metadata.Coverage.TokenMap,
+	t.Logf("layout=%s encoding=%s metadata_bytes=%d token_map=%s coverage=%d/%d",
+		envelope.Layout, envelope.Encoding, len(section), metadata.Coverage.TokenMap,
 		metadata.Coverage.ResolvedIdentifiers, metadata.Coverage.ObservedIdentifiers)
 	t.Logf("version=%s date=%s player=%q title=%q house=%q government=%s players=%d",
 		metadata.Version, metadata.Date, metadata.PlayerName, metadata.TitleName,

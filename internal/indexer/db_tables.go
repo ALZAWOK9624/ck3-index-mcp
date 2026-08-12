@@ -50,10 +50,31 @@ var semanticIndexTableCatalog = [...]string{
 	"engine_scope_rules",
 	"search_fts",
 	"script_text_fts",
+	"trigram_loc",
 }
 
-// script_text_fts is a contentless derived cache keyed by files.id. It cannot
-// be copied row-for-row because contentless FTS columns deliberately return no
-// stored source text; staged publication rebuilds it from the copied files
-// table instead.
-var publishedIndexTables = semanticIndexTableCatalog[:len(semanticIndexTableCatalog)-1]
+// script_text_fts and trigram_loc are contentless derived caches keyed by
+// files.id and localization.id. Neither can be copied row-for-row because
+// contentless FTS columns deliberately return no stored source text -- a copy
+// would insert NULLs and fresh rowids -- so staged publication rebuilds both
+// from the copied source tables instead.
+//
+// Excluded by name, not by position: appending a table to the catalog used to
+// push the previously-last entry back into the published set silently.
+var contentlessDerivedTables = map[string]bool{
+	"script_text_fts": true,
+	"trigram_loc":     true,
+}
+
+var publishedIndexTables = publishableTables(semanticIndexTableCatalog[:])
+
+func publishableTables(catalog []string) []string {
+	out := make([]string, 0, len(catalog))
+	for _, table := range catalog {
+		if contentlessDerivedTables[table] {
+			continue
+		}
+		out = append(out, table)
+	}
+	return out
+}

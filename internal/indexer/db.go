@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
-
-	_ "modernc.org/sqlite"
 )
 
 type DB struct {
@@ -106,21 +104,23 @@ func openSQLite(path string, readOnly bool, options SQLiteReadOptions) (*DB, err
 	}
 	uri := url.URL{Scheme: "file", Path: uriPath}
 	query := uri.Query()
-	// modernc applies _pragma to every connection opened by database/sql.
+	// The DSN pragma spelling is driver-specific (modernc uses name=value,
+	// the native driver uses name(value)); sqlitePragmaQueryParam picks.
+	// Both drivers apply _pragma to every connection opened by database/sql.
 	// A one-off PRAGMA Exec only configures whichever pooled connection ran it,
 	// causing intermittent SQLITE_BUSY failures on the remaining connections.
 	//
 	// Add, never Set: url.Values.Set replaces the whole key, so a second Set
 	// would silently discard every pragma but the last.
 	for _, pragma := range readConnectionPragmas(options) {
-		query.Add("_pragma", pragma)
+		query.Add("_pragma", sqlitePragmaQueryParam(pragma.name, pragma.value))
 	}
 	if readOnly {
 		query.Set("mode", "ro")
 	}
 	uri.RawQuery = query.Encode()
 	dsn := uri.String()
-	db, err := sql.Open("sqlite", dsn)
+	db, err := openDatabase(dsn, readConnectionPragmas(options))
 	if err != nil {
 		return nil, err
 	}
@@ -157,16 +157,34 @@ const (
 // temp_store matters more than the cache here. Nearly every hot query orders by
 // columns no index covers and therefore builds a temporary b-tree; on the
 // default setting each of those spills to disk.
-func readConnectionPragmas(options SQLiteReadOptions) []string {
-	return []string{
-		"busy_timeout=5000",
-		fmt.Sprintf("cache_size=-%d", int64(options.CacheMBPerConnection)*1024),
-		"temp_store=MEMORY",
+func readConnectionPragmas(options SQLiteReadOptions) []sqlitePragma {
+	return []sqlitePragma{
+		{"busy_timeout", "5000"},
+		{"cache_size", fmt.Sprintf("-%d", int64(options.CacheMBPerConnection)*1024)},
+		{"temp_store", "MEMORY"},
 		// Memory-mapped reads avoid a pread and a page copy per access. The value is
 		// an upper bound, not an allocation: SQLite maps at most the file's length,
 		// and falls back to ordinary I/O where the mapping cannot be established.
-		fmt.Sprintf("mmap_size=%d", int64(options.MMapLimitMB)*1024*1024),
+		{"mmap_size", fmt.Sprintf("%d", int64(options.MMapLimitMB)*1024*1024)},
 	}
+}
+
+// openDatabase opens the SQLite pool. In the default build the modernc driver
+// applies the tuning pragmas per pooled connection via its _pragma DSN
+// handling. In the native build (ck3_native tag) newNativeConnector returns a
+// connector that executes the same pragmas on every connection the pool opens.
+func openDatabase(dsn string, pragmas []sqlitePragma) (*sql.DB, error) {
+	if connector := newNativeConnector(dsn, pragmas); connector != nil {
+		return sql.OpenDB(connector), nil
+	}
+	return sql.Open("sqlite", dsn)
+}
+
+// sqlitePragma is one connection pragma. name/value are joined by
+// sqlitePragmaQueryParam, which encodes per-driver DSN spelling.
+type sqlitePragma struct {
+	name  string
+	value string
 }
 
 func (db *DB) Close() error { return db.sql.Close() }
@@ -265,6 +283,9 @@ func (db *DB) ensureSchema(ctx context.Context) error {
 		}
 	}
 	if err := db.ensureScriptTextTriggers(ctx); err != nil {
+		return err
+	}
+	if err := db.ensureTrigramLocTriggers(ctx); err != nil {
 		return err
 	}
 	return db.CreateIndexes(ctx)
@@ -741,6 +762,7 @@ func (db *DB) ensureSchemaNoIndexes(ctx context.Context) error {
 		)`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(kind, name, text, source, path UNINDEXED, file_id UNINDEXED, tokenize='unicode61 remove_diacritics 2')`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS script_text_fts USING fts5(search_text, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2')`,
+		`CREATE VIRTUAL TABLE IF NOT EXISTS trigram_loc USING fts5(value, content='', contentless_delete=1, tokenize='trigram')`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.sql.ExecContext(ctx, stmt); err != nil {
@@ -793,6 +815,53 @@ func dropScriptTextTriggers(ctx context.Context, execer contextExecer) error {
 
 func (db *DB) ensureScriptTextTriggers(ctx context.Context) error {
 	return createScriptTextTriggers(ctx, db.sql)
+}
+
+// trigramLocTriggerNames keeps trigram_loc in step with the localization
+// table. Like the script-text triggers they are exactly right for incremental
+// scans and exactly wrong for a bulk load, so every bulk path drops them and
+// rebuilds trigram_loc in one statement afterwards.
+var trigramLocTriggerNames = []string{
+	"trigram_loc_ai",
+	"trigram_loc_ad",
+	"trigram_loc_au",
+}
+
+func createTrigramLocTriggers(ctx context.Context, execer contextExecer) error {
+	statements := []string{
+		`CREATE TRIGGER IF NOT EXISTS trigram_loc_ai AFTER INSERT ON localization BEGIN
+			INSERT INTO trigram_loc(rowid,value) VALUES(new.id,new.value);
+		END`,
+		// contentless_delete=1 tables forbid the special 'delete' command and
+		// accept plain DELETE keyed by rowid, mirroring the script-text
+		// triggers.
+		`CREATE TRIGGER IF NOT EXISTS trigram_loc_ad AFTER DELETE ON localization BEGIN
+			DELETE FROM trigram_loc WHERE rowid=old.id;
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS trigram_loc_au AFTER UPDATE OF value ON localization BEGIN
+			DELETE FROM trigram_loc WHERE rowid=old.id;
+			INSERT INTO trigram_loc(rowid,value) VALUES(new.id,new.value);
+		END`,
+	}
+	for _, statement := range statements {
+		if _, err := execer.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("create trigram maintenance trigger: %w", err)
+		}
+	}
+	return nil
+}
+
+func dropTrigramLocTriggers(ctx context.Context, execer contextExecer) error {
+	for _, name := range trigramLocTriggerNames {
+		if _, err := execer.ExecContext(ctx, `DROP TRIGGER IF EXISTS `+name); err != nil {
+			return fmt.Errorf("drop trigram maintenance trigger: %w", err)
+		}
+	}
+	return nil
+}
+
+func (db *DB) ensureTrigramLocTriggers(ctx context.Context) error {
+	return createTrigramLocTriggers(ctx, db.sql)
 }
 
 func (db *DB) metaValue(ctx context.Context, key string) (string, error) {

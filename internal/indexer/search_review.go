@@ -2,10 +2,12 @@ package indexer
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 type SearchOptions struct {
@@ -622,11 +624,49 @@ func (db *DB) searchLocalizationValues(ctx context.Context, query string, opts S
 	if opts.Kind != "" && opts.Kind != "localization" {
 		return nil, nil
 	}
+	// Trigram FTS5 needs at least three characters; shorter queries keep the
+	// full instr() scan. The trigram path pre-narrows by case-insensitive
+	// substring, then instr() re-filters case-sensitively, so the result set
+	// is byte-identical to the instr-only path.
+	if utf8.RuneCountInString(strings.TrimSpace(query)) >= 3 {
+		evidence, err := db.searchLocalizationValuesTrigram(ctx, query, opts, limit)
+		if err == nil {
+			return evidence, nil
+		}
+		if !missingTrigramIndex(err) {
+			return nil, err
+		}
+		// A generation published before trigram_loc existed has no such table,
+		// and a read-only open never runs ensureSchema to create one. Degrade
+		// to the scan instead of failing the search outright; the index rule
+		// version bump makes the next refresh build the table.
+	}
 	rows, err := db.sql.QueryContext(ctx, `SELECT l.key,l.source_name,f.rel_path,l.line,l.language,l.value FROM localization l JOIN files f ON f.id=l.file_id WHERE f.overridden=0 AND instr(l.value,?)>0 AND (?='' OR l.source_name=?) AND (?='' OR f.rel_path LIKE ?) ORDER BY l.source_rank,l.key LIMIT ?`, query, opts.Source, opts.Source, opts.PathPrefix, escapeLike(opts.PathPrefix)+"%", limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanLocalizationEvidence(rows)
+}
+
+// missingTrigramIndex reports the one failure the caller can recover from:
+// the substring index does not exist in this generation.
+func missingTrigramIndex(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no such table: trigram_loc")
+}
+
+func (db *DB) searchLocalizationValuesTrigram(ctx context.Context, query string, opts SearchOptions, limit int) ([]LLMEvidence, error) {
+	trimmed := strings.TrimSpace(query)
+	match := `"` + strings.ReplaceAll(trimmed, `"`, `""`) + `"`
+	rows, err := db.sql.QueryContext(ctx, `SELECT l.key,l.source_name,f.rel_path,l.line,l.language,l.value FROM trigram_loc t JOIN localization l ON l.id=t.rowid JOIN files f ON f.id=l.file_id WHERE trigram_loc MATCH ? AND instr(l.value,?)>0 AND f.overridden=0 AND (?='' OR l.source_name=?) AND (?='' OR f.rel_path LIKE ?) ORDER BY l.source_rank,l.key LIMIT ?`, match, query, opts.Source, opts.Source, opts.PathPrefix, escapeLike(opts.PathPrefix)+"%", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanLocalizationEvidence(rows)
+}
+
+func scanLocalizationEvidence(rows *sql.Rows) ([]LLMEvidence, error) {
 	var out []LLMEvidence
 	for rows.Next() {
 		var ev LLMEvidence

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 // A session audit found 163 calls spent walking one id family a term at a
@@ -67,6 +68,11 @@ func normalizeBatchQueries(queries []string) ([]string, error) {
 }
 
 // LLMSearchBatch runs each term and returns one result carrying all of them.
+// Terms run concurrently so an eight-term batch costs the slowest term, not
+// the sum. The real-world telemetry this fixes: batch calls with near-miss
+// terms serialized at ~0.7s each (p90 6.1s), and contended sessions at up to
+// 36s. The concurrency is bounded by the SQLite read pool (8 connections), so
+// a batch can never open more readers than the pool already allows.
 func (db *DB) LLMSearchBatch(ctx context.Context, queries []string, opts SearchOptions) (LLMResult, error) {
 	terms, err := normalizeBatchQueries(queries)
 	if err != nil {
@@ -79,7 +85,16 @@ func (db *DB) LLMSearchBatch(ctx context.Context, queries []string, opts SearchO
 
 	result := LLMResult{Intent: "ck3_search", Counts: map[string]int{}}
 	matched := 0
-	for _, term := range terms {
+	type batchOutcome struct {
+		row   LLMBatchQuery
+		one   LLMResult
+		err   error
+		index int
+	}
+	outcomes := make([]batchOutcome, len(terms))
+	sem := make(chan struct{}, maxBatchSearchQueries)
+	var wg sync.WaitGroup
+	for i, term := range terms {
 		single := opts
 		single.Query = term
 		// Paging a batch would ask which term the page belongs to; a caller who
@@ -87,16 +102,37 @@ func (db *DB) LLMSearchBatch(ctx context.Context, queries []string, opts SearchO
 		single.Page = 0
 		single.Limit = perQuery
 
-		one, err := db.LLMSearch(ctx, single)
-		if err != nil {
-			return LLMResult{}, err
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(index int, term string, single SearchOptions) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			outcomes[index].index = index
+			if ctx.Err() != nil {
+				outcomes[index].err = ctx.Err()
+				return
+			}
+			one, searchErr := db.LLMSearch(ctx, single)
+			if searchErr != nil {
+				outcomes[index].err = searchErr
+				return
+			}
+			outcomes[index].one = one
+			outcomes[index].row = LLMBatchQuery{Query: term, Returned: len(one.Evidence)}
+			if one.Pagination != nil {
+				outcomes[index].row.HasMore = one.Pagination.HasMore
+			}
+			outcomes[index].row.Suggested = len(one.Suggestions)
+			outcomes[index].row.Spelling = one.RecoveredQuery
+		}(i, term, single)
+	}
+	wg.Wait()
+	for i := range outcomes {
+		if outcomes[i].err != nil {
+			return LLMResult{}, outcomes[i].err
 		}
-		row := LLMBatchQuery{Query: term, Returned: len(one.Evidence)}
-		if one.Pagination != nil {
-			row.HasMore = one.Pagination.HasMore
-		}
-		row.Suggested = len(one.Suggestions)
-		row.Spelling = one.RecoveredQuery
+		one := outcomes[i].one
+		row := outcomes[i].row
 		if len(one.Evidence) > 0 {
 			matched++
 		}
@@ -111,7 +147,7 @@ func (db *DB) LLMSearchBatch(ctx context.Context, queries []string, opts SearchO
 			// The term is carried on the item because the evidence lists are
 			// concatenated: without it a caller cannot tell which of eight
 			// questions a row answers.
-			item.Query = term
+			item.Query = terms[i]
 			result.Evidence = append(result.Evidence, item)
 		}
 		result.Batch = append(result.Batch, row)

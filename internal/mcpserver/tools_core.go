@@ -515,6 +515,7 @@ func handleHealth(ctx context.Context, runtime *Runtime, definition *ToolDefinit
 		report["active_database"] = runtime.databaseIdentity()
 		report["configured_database_count"] = 1
 	}
+	report["tool_cache"] = mcpReadToolCache.stats()
 	return toolOutput{Value: report, Visibility: "private"}, nil
 }
 

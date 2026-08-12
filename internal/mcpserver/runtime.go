@@ -87,6 +87,24 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 			map[string]any{"scan_status": before.Status, "reason": before.StaleReason, "required_action": before.RequiredAction},
 			map[string]any{"operation": "full", "guidance": "Run ck3_refresh with operation=full to rebuild the index before using any index-backed tool."}), runtime), nil
 	}
+	// In-process result cache for pure index reads. A hit is only served when
+	// the current generation still matches the cached one, which is the same
+	// stability guarantee the post-execution check below enforces for fresh
+	// executions.
+	if definition.Annotations.ReadOnlyHint && cacheableReadTools[definition.Name] && beforeErr == nil && before.Ready() {
+		key := toolCacheKey(definition.Name, runtime.DBPath, runtime.DatabaseEpoch, before.Generation, call.Arguments)
+		if cached, ok := mcpReadToolCache.get(key); ok {
+			afterState, stateErr := db.IndexState(ctx)
+			if stateErr == nil && afterState.Ready() && afterState.Generation == before.Generation && !indexStatePublishing(afterState) {
+				var cachedResult map[string]any
+				if err := json.Unmarshal(cached, &cachedResult); err == nil {
+					return cachedResult, nil
+				}
+			}
+			// The generation moved between the key and the hit; fall through
+			// and execute normally.
+		}
+	}
 	output, err := definition.Handler(ctx, runtime, definition, handlerArguments)
 	if err != nil {
 		return encodeToolError(err, runtime), nil
@@ -173,6 +191,11 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 	boundedResult, err := enforceResponseBudget(result, responseControl.MaxResponseBytes, definition.TrimmableFields...)
 	if err != nil {
 		return encodeToolError(err, runtime), nil
+	}
+	if definition.Annotations.ReadOnlyHint && cacheableReadTools[definition.Name] && afterErr == nil && after.Ready() {
+		if data, marshalErr := json.Marshal(boundedResult); marshalErr == nil {
+			mcpReadToolCache.put(toolCacheKey(definition.Name, runtime.DBPath, runtime.DatabaseEpoch, after.Generation, call.Arguments), data)
+		}
 	}
 	return boundedResult, nil
 }

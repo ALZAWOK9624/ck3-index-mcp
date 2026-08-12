@@ -532,6 +532,9 @@ func rebuildSearchFTS(ctx context.Context, tx *sql.Tx) error {
 	if err := rebuildScriptTextFTS(ctx, tx); err != nil {
 		return err
 	}
+	if err := rebuildTrigramLoc(ctx, tx); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -549,6 +552,24 @@ func rebuildScriptTextFTS(ctx context.Context, execer contextExecer) error {
 	if _, err := execer.ExecContext(ctx, `INSERT INTO script_text_fts(rowid,search_text)
 		SELECT id,search_text FROM files WHERE overridden=0 AND kind='script'`); err != nil {
 		return fmt.Errorf("script-text FTS5 rebuild failed: %w", err)
+	}
+	return nil
+}
+
+// rebuildTrigramLoc rebuilds the trigram substring index over localization
+// values. rowid mirrors localization.id so lookups join straight back to the
+// source rows; the index carries every row (including overridden files) and
+// the query-side join filters activeness, matching the instr() path exactly.
+func rebuildTrigramLoc(ctx context.Context, execer contextExecer) error {
+	if _, err := execer.ExecContext(ctx, `DROP TABLE IF EXISTS trigram_loc`); err != nil {
+		return fmt.Errorf("trigram FTS5 unavailable: %w", err)
+	}
+	if _, err := execer.ExecContext(ctx, `CREATE VIRTUAL TABLE trigram_loc USING fts5(value, content='', contentless_delete=1, tokenize='trigram')`); err != nil {
+		return fmt.Errorf("trigram FTS5 unavailable: %w", err)
+	}
+	if _, err := execer.ExecContext(ctx, `INSERT INTO trigram_loc(rowid,value)
+		SELECT id,value FROM localization`); err != nil {
+		return fmt.Errorf("trigram FTS5 rebuild failed: %w", err)
 	}
 	return nil
 }

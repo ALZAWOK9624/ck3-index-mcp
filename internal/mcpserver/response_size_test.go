@@ -91,10 +91,20 @@ func measureToolResult(t *testing.T, name string, result map[string]any) respons
 		t.Fatal(err)
 	}
 	measurement := responseSizeMeasurement{Name: name, WireBytes: len(wire)}
+	// content blocks are []map[string]any on a freshly executed call and
+	// []any after a cache hit round-trips them through JSON. Both forms are
+	// wire-identical; measure both.
 	if blocks, ok := result["content"].([]map[string]any); ok {
 		for _, block := range blocks {
 			text, _ := block["text"].(string)
 			measurement.ContentBytes += len(text)
+		}
+	} else if blocks, ok := result["content"].([]any); ok {
+		for _, raw := range blocks {
+			if block, ok := raw.(map[string]any); ok {
+				text, _ := block["text"].(string)
+				measurement.ContentBytes += len(text)
+			}
 		}
 	}
 	if structured, ok := result["structuredContent"].(map[string]any); ok {

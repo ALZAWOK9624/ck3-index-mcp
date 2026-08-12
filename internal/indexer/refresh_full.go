@@ -423,6 +423,9 @@ func publishStagedFullScan(ctx context.Context, cfg Config, stagePath string, ba
 	if err := dropScriptTextTriggers(ctx, conn); err != nil {
 		return err
 	}
+	if err := dropTrigramLocTriggers(ctx, conn); err != nil {
+		return err
+	}
 	for _, table := range publishedIndexTables {
 		if _, err := conn.ExecContext(ctx, `DELETE FROM `+qualifiedSQLiteIdentifier("main", table)); err != nil {
 			return fmt.Errorf("clear published table %s: %w", table, err)
@@ -437,7 +440,13 @@ func publishStagedFullScan(ctx context.Context, cfg Config, stagePath string, ba
 	if err := rebuildScriptTextFTS(ctx, conn); err != nil {
 		return err
 	}
+	if err := rebuildTrigramLoc(ctx, conn); err != nil {
+		return err
+	}
 	if err := createScriptTextTriggers(ctx, conn); err != nil {
+		return err
+	}
+	if err := createTrigramLocTriggers(ctx, conn); err != nil {
 		return err
 	}
 	if err := restoreIndexes(ctx); err != nil {

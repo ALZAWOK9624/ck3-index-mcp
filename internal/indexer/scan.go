@@ -4,11 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -116,7 +113,11 @@ type fileRecord struct {
 	OverrideRule     string
 }
 
-const indexRuleVersion = "2026-08-09-v0.5.0-map-contract-2"
+// Bumped for trigram_loc: an index built before it exists carries no trigram
+// rows, and the localization substring search now answers from that table.
+// Without the bump a published generation would keep reporting itself ready
+// while silently answering every substring query with nothing.
+const indexRuleVersion = "2026-08-13-v0.5.0-trigram-loc-1"
 
 // Keep ordinary full scans well below SQLite's variable limit when they take
 // the scoped resolver/validator path. Larger edits remain correct by falling
@@ -1668,17 +1669,12 @@ func insertFile(ctx context.Context, tx *sql.Tx, src Source, path, rel, kind str
 	return fileRecord{ID: id, SourceName: src.Name, SourceRank: src.Rank, Path: path, RelPath: rel, Kind: kind, MTime: info.ModTime().UnixNano(), Size: info.Size(), SHA: sum}, nil
 }
 
+// shaFile hashes the file at path. The ck3_native build routes this through
+// the C SHA-NI implementation with Windows sequential-scan reads; the
+// pure-Go build falls back to os.Open + io.CopyBuffer.
 func shaFile(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	sum, _, err := sha256FileHex(path)
+	return sum, err
 }
 
 type fileJob struct {
@@ -1987,8 +1983,7 @@ func parseOneFile(j fileJob) fileResult {
 		result.err = err
 		return result
 	}
-	h := sha256.Sum256(data)
-	sum := hex.EncodeToString(h[:])
+	sum, _ := sha256BytesHex(data)
 	recordHashWork(hashStart, int64(len(data)))
 	result.sum = sum
 	if !j.forceParse && j.prev.ID != 0 && j.prev.SHA != "" && !j.prev.Overridden &&

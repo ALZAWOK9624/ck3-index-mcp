@@ -94,7 +94,10 @@ func buildMultiDirectionalHillshade(heightmap image.Image) *image.Gray {
 	return hillshade
 }
 
-func buildMultiScaleRelief(heightmap image.Image) (*image.Gray, *image.Gray, *image.Gray) {
+// buildMultiScaleReliefGo is the pure-Go implementation. buildMultiScaleRelief
+// dispatches to this one or to the native implementation in
+// map_relief_dispatch_native.go when built with -tags ck3_native.
+func buildMultiScaleReliefGo(heightmap image.Image) (*image.Gray, *image.Gray, *image.Gray) {
 	bounds := heightmap.Bounds()
 	width, height := bounds.Dx(), bounds.Dy()
 	field := newHeightField(heightmap)

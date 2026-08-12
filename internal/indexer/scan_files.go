@@ -309,113 +309,126 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 	}
 	workTotals.applyTimings(&stats)
 	stats.TimingsMillis["sqlite_write"] = sqliteWriteTotal.Milliseconds()
-	scopedFinalizer := len(newFileIDs) <= scopedFinalizerFileLimit && len(affected) <= scopedFinalizerSymbolLimit
-	if scopedFinalizer {
-		fits, err := scopedValidatorCandidatesFit(ctx, tx, src.Rank, newFileIDs, affected, scopedValidatorFileLimit)
-		if err != nil {
-			return ScanStats{}, err
-		}
-		scopedFinalizer = fits
-	}
+	// A refresh where every job came back unchanged changed nothing semantic:
+	// only mtime/size metadata can have moved (refreshSkippedFileMetadata never
+	// touches search_text). Refs resolution, validation, graph integrity,
+	// the architecture cache, map context and the scoped FTS refresh are all
+	// pure cost in that case, so skip them and go straight to the durable
+	// commit. Measured on the real index this turns an 18.4s no-op
+	// ck3_refresh files call into roughly the hash + commit cost.
+	noSemanticChange := stats.ChangedFiles == 0 && len(removed) == 0
 	stageStart := time.Now()
-	if scopedFinalizer {
-		if err := refreshRefsResolvedScoped(ctx, tx, newFileIDs, affected); err != nil {
-			return ScanStats{}, err
+	if !noSemanticChange {
+		scopedFinalizer := len(newFileIDs) <= scopedFinalizerFileLimit && len(affected) <= scopedFinalizerSymbolLimit
+		if scopedFinalizer {
+			fits, err := scopedValidatorCandidatesFit(ctx, tx, src.Rank, newFileIDs, affected, scopedValidatorFileLimit)
+			if err != nil {
+				return ScanStats{}, err
+			}
+			scopedFinalizer = fits
 		}
-		stats.TimingsMillis["resolve_refs"] = time.Since(stageStart).Milliseconds()
-		stats.TimingsMillis["resolve_refs_scoped"] = stats.TimingsMillis["resolve_refs"]
 		stageStart = time.Now()
-		if err := refreshValidatorDiagnosticsScoped(ctx, tx, src.Rank, newFileIDs, affected); err != nil {
+		if scopedFinalizer {
+			if err := refreshRefsResolvedScoped(ctx, tx, newFileIDs, affected); err != nil {
+				return ScanStats{}, err
+			}
+			stats.TimingsMillis["resolve_refs"] = time.Since(stageStart).Milliseconds()
+			stats.TimingsMillis["resolve_refs_scoped"] = stats.TimingsMillis["resolve_refs"]
+			stageStart = time.Now()
+			if err := refreshValidatorDiagnosticsScoped(ctx, tx, src.Rank, newFileIDs, affected); err != nil {
+				return ScanStats{}, err
+			}
+			if err := refreshTitleIntegrityDiagnostics(ctx, tx); err != nil {
+				return ScanStats{}, err
+			}
+			if err := refreshGovernmentRegistrationDiagnostics(ctx, tx, src.Rank); err != nil {
+				return ScanStats{}, err
+			}
+			if err := refreshGovernmentFallbackDiagnostics(ctx, tx); err != nil {
+				return ScanStats{}, err
+			}
+			if err := refreshGovernmentMechanicDefaultDiagnostics(ctx, tx); err != nil {
+				return ScanStats{}, err
+			}
+			if err := refreshCourtTypeDefaultDiagnostics(ctx, tx); err != nil {
+				return ScanStats{}, err
+			}
+			if err := refreshErrorLogContractDiagnostics(ctx, tx, src.Rank); err != nil {
+				return ScanStats{}, err
+			}
+			stats.TimingsMillis["validator"] = time.Since(stageStart).Milliseconds()
+			stats.TimingsMillis["validator_scoped"] = stats.TimingsMillis["validator"]
+		} else {
+			// `scan --files` is usually tiny, but a small provider can fan out to
+			// hundreds of consumers. Retain correctness and SQL safety by using the
+			// same global finalizer as a broad full scan in that case.
+			stageStart = time.Now()
+			objectNames, err := loadAllObjectNames(ctx, tx)
+			if err != nil {
+				return ScanStats{}, err
+			}
+			if err := loadAllLocKeys(ctx, tx, locKeys); err != nil {
+				return ScanStats{}, err
+			}
+			if err := loadAllResources(ctx, tx, resources); err != nil {
+				return ScanStats{}, err
+			}
+			evidence, err := loadReferenceResolutionEvidence(ctx, tx, locKeys, resources)
+			if err != nil {
+				return ScanStats{}, err
+			}
+			stats.TimingsMillis["load_symbols"] = time.Since(stageStart).Milliseconds()
+			stageStart = time.Now()
+			if err := refreshRefsResolvedGo(ctx, tx, objectNames, locKeys, evidence); err != nil {
+				return ScanStats{}, err
+			}
+			stats.TimingsMillis["resolve_refs"] = time.Since(stageStart).Milliseconds()
+			stageStart = time.Now()
+			if _, err := tx.ExecContext(ctx, `DELETE FROM diagnostics WHERE source='validator'`); err != nil {
+				return ScanStats{}, err
+			}
+			if err := addValidationDiagnostics(ctx, tx, src.Rank, locKeys, objectNames, evidence); err != nil {
+				return ScanStats{}, err
+			}
+			if err := refreshTitleIntegrityDiagnostics(ctx, tx); err != nil {
+				return ScanStats{}, err
+			}
+			if err := refreshGovernmentRegistrationDiagnostics(ctx, tx, src.Rank); err != nil {
+				return ScanStats{}, err
+			}
+			if err := refreshGovernmentFallbackDiagnostics(ctx, tx); err != nil {
+				return ScanStats{}, err
+			}
+			if err := refreshGovernmentMechanicDefaultDiagnostics(ctx, tx); err != nil {
+				return ScanStats{}, err
+			}
+			if err := refreshCourtTypeDefaultDiagnostics(ctx, tx); err != nil {
+				return ScanStats{}, err
+			}
+			if err := refreshErrorLogContractDiagnostics(ctx, tx, src.Rank); err != nil {
+				return ScanStats{}, err
+			}
+			stats.TimingsMillis["validator"] = time.Since(stageStart).Milliseconds()
+		}
+		if err := db.RefreshArchitectureOverviewCache(ctx, tx); err != nil {
 			return ScanStats{}, err
 		}
-		if err := refreshTitleIntegrityDiagnostics(ctx, tx); err != nil {
-			return ScanStats{}, err
+		if mapRefresh {
+			mapManifest, err := collectMapInputManifest(ctx, cfg)
+			if err != nil {
+				return ScanStats{}, err
+			}
+			if err := rebuildMapCache(ctx, tx, cfg, mapManifest); err != nil {
+				return ScanStats{}, err
+			}
 		}
-		if err := refreshGovernmentRegistrationDiagnostics(ctx, tx, src.Rank); err != nil {
-			return ScanStats{}, err
-		}
-		if err := refreshGovernmentFallbackDiagnostics(ctx, tx); err != nil {
-			return ScanStats{}, err
-		}
-		if err := refreshGovernmentMechanicDefaultDiagnostics(ctx, tx); err != nil {
-			return ScanStats{}, err
-		}
-		if err := refreshCourtTypeDefaultDiagnostics(ctx, tx); err != nil {
-			return ScanStats{}, err
-		}
-		if err := refreshErrorLogContractDiagnostics(ctx, tx, src.Rank); err != nil {
-			return ScanStats{}, err
-		}
-		stats.TimingsMillis["validator"] = time.Since(stageStart).Milliseconds()
-		stats.TimingsMillis["validator_scoped"] = stats.TimingsMillis["validator"]
-	} else {
-		// `scan --files` is usually tiny, but a small provider can fan out to
-		// hundreds of consumers. Retain correctness and SQL safety by using the
-		// same global finalizer as a broad full scan in that case.
-		stageStart = time.Now()
-		objectNames, err := loadAllObjectNames(ctx, tx)
-		if err != nil {
-			return ScanStats{}, err
-		}
-		if err := loadAllLocKeys(ctx, tx, locKeys); err != nil {
-			return ScanStats{}, err
-		}
-		if err := loadAllResources(ctx, tx, resources); err != nil {
-			return ScanStats{}, err
-		}
-		evidence, err := loadReferenceResolutionEvidence(ctx, tx, locKeys, resources)
-		if err != nil {
-			return ScanStats{}, err
-		}
-		stats.TimingsMillis["load_symbols"] = time.Since(stageStart).Milliseconds()
-		stageStart = time.Now()
-		if err := refreshRefsResolvedGo(ctx, tx, objectNames, locKeys, evidence); err != nil {
-			return ScanStats{}, err
-		}
-		stats.TimingsMillis["resolve_refs"] = time.Since(stageStart).Milliseconds()
-		stageStart = time.Now()
-		if _, err := tx.ExecContext(ctx, `DELETE FROM diagnostics WHERE source='validator'`); err != nil {
-			return ScanStats{}, err
-		}
-		if err := addValidationDiagnostics(ctx, tx, src.Rank, locKeys, objectNames, evidence); err != nil {
-			return ScanStats{}, err
-		}
-		if err := refreshTitleIntegrityDiagnostics(ctx, tx); err != nil {
-			return ScanStats{}, err
-		}
-		if err := refreshGovernmentRegistrationDiagnostics(ctx, tx, src.Rank); err != nil {
-			return ScanStats{}, err
-		}
-		if err := refreshGovernmentFallbackDiagnostics(ctx, tx); err != nil {
-			return ScanStats{}, err
-		}
-		if err := refreshGovernmentMechanicDefaultDiagnostics(ctx, tx); err != nil {
-			return ScanStats{}, err
-		}
-		if err := refreshCourtTypeDefaultDiagnostics(ctx, tx); err != nil {
-			return ScanStats{}, err
-		}
-		if err := refreshErrorLogContractDiagnostics(ctx, tx, src.Rank); err != nil {
-			return ScanStats{}, err
-		}
-		stats.TimingsMillis["validator"] = time.Since(stageStart).Milliseconds()
-	}
-	if err := db.RefreshArchitectureOverviewCache(ctx, tx); err != nil {
-		return ScanStats{}, err
-	}
-	if mapRefresh {
-		mapManifest, err := collectMapInputManifest(ctx, cfg)
-		if err != nil {
-			return ScanStats{}, err
-		}
-		if err := rebuildMapCache(ctx, tx, cfg, mapManifest); err != nil {
-			return ScanStats{}, err
-		}
-	}
+	} // !noSemanticChange
 	stageStart = time.Now()
 	if ftsCurrent {
-		if err := refreshSearchFTSForFiles(ctx, tx, oldFileIDs, newFileIDs); err != nil {
-			return ScanStats{}, err
+		if !noSemanticChange {
+			if err := refreshSearchFTSForFiles(ctx, tx, oldFileIDs, newFileIDs); err != nil {
+				return ScanStats{}, err
+			}
 		}
 		stats.TimingsMillis["semantic_fts_scoped"] = time.Since(stageStart).Milliseconds()
 	} else {

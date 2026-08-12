@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -136,12 +137,53 @@ func (c *readToolCache) stats() readToolCacheStats {
 // the generation covers refresh commits. Arguments are canonicalized by
 // re-marshaling through a generic value so key order differences between two
 // equivalent calls collapse to one key.
-func toolCacheKey(name, databasePath string, epoch uint64, generation int64, args json.RawMessage) string {
+// The revision is not decoration: a clean reset rebuilds meta and can hand out
+// generation 1 again, so (path, epoch, generation) repeats across two entirely
+// different published databases. Keying and validating on the revision as well
+// is what stops the second one from being answered out of the first one's cache.
+func toolCacheKey(name, databasePath string, epoch uint64, generation int64, revision string, args json.RawMessage) string {
 	return name + "\x00" +
 		databasePath + "\x00" +
 		strconv.FormatUint(epoch, 10) + "\x00" +
 		strconv.FormatInt(generation, 10) + "\x00" +
+		revision + "\x00" +
 		string(canonicalToolArgs(args))
+}
+
+// cacheableReadRequest decides eligibility per request, not per tool. Two
+// otherwise pure index reads have one operation each that leaves the index and
+// reads project files directly, and the cache key can only observe the index
+// generation -- which does not move when a file outside the index changes.
+func cacheableReadRequest(name string, args json.RawMessage) bool {
+	switch name {
+	case "ck3_inspect":
+		// operation=compare reads the source and base files themselves.
+		return cacheableReadTools[name] && !toolArgumentEquals(args, "operation", "compare")
+	case "ck3_script_reference":
+		// kind=on_action scans the adjacent comments in vanilla files.
+		return cacheableReadTools[name] && !toolArgumentEquals(args, "kind", "on_action")
+	default:
+		return cacheableReadTools[name]
+	}
+}
+
+// toolArgumentEquals reports whether a string argument holds the given value.
+// An unreadable or absent argument answers false, so an operation this build
+// cannot parse is never treated as the excluded one -- the caller decides
+// eligibility conservatively at the call site instead.
+func toolArgumentEquals(args json.RawMessage, field, value string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(args, &decoded); err != nil {
+		return false
+	}
+	got, ok := decoded[field].(string)
+	if !ok {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(got), value)
 }
 
 func canonicalToolArgs(raw json.RawMessage) json.RawMessage {

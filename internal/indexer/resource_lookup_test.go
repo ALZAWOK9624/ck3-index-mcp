@@ -145,7 +145,7 @@ func benchmarkResourceLookup(b *testing.B, resolve func(resourceLookup, string) 
 	}
 	lookup := newResourceLookup(paths)
 	queries := []string{
-		"icons/group_137/icon_09137.dds", // suffix fallback, hit
+		"icons/group_137/icon_09137.dds",  // suffix fallback, hit
 		"icons/group_137/absent_icon.dds", // suffix fallback, miss
 		"interface/icons/group_042",       // extensionless fallback, hit
 		"interface/icons/group_999",       // extensionless fallback, miss

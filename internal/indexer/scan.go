@@ -201,7 +201,7 @@ func scanWithModePublishing(ctx context.Context, cfg Config, forceClean, publish
 	// ensureSchema recreates a missing FTS table. Remember its pre-schema
 	// presence so a repaired-but-empty table cannot be mistaken for a complete
 	// published semantic index later in this scan.
-	ftsPresentBeforeSchema := !forceClean && db.tableExists(ctx, "search_fts") && db.tableExists(ctx, "script_text_fts")
+	ftsPresentBeforeSchema := !forceClean && db.tableExists(ctx, "search_fts") && db.tableExists(ctx, "script_text_fts") && db.tableExists(ctx, "trigram_loc")
 	if forceClean {
 		if err := db.reset(ctx); err != nil {
 			return ScanStats{}, err
@@ -793,7 +793,7 @@ parsedFilesComplete:
 			return ScanStats{}, err
 		}
 	}
-	fullFTSRebuild := engineDataDirty || cachedRuleVersion != indexRuleVersion || !ftsPresentBeforeSchema || !ftsCurrent || !db.tableExists(ctx, "search_fts") || !db.tableExists(ctx, "script_text_fts")
+	fullFTSRebuild := engineDataDirty || cachedRuleVersion != indexRuleVersion || !ftsPresentBeforeSchema || !ftsCurrent || !db.tableExists(ctx, "search_fts") || !db.tableExists(ctx, "script_text_fts") || !db.tableExists(ctx, "trigram_loc")
 	ftsStart := time.Now()
 	if fullFTSRebuild {
 		fmt.Fprintln(os.Stderr, "[scan] rebuilding semantic FTS")
@@ -814,6 +814,13 @@ parsedFilesComplete:
 	// replaced. CREATE TRIGGER IF NOT EXISTS makes this a no-op on the
 	// incremental path, where the triggers were never removed.
 	if err := createScriptTextTriggers(ctx, tx); err != nil {
+		return ScanStats{}, err
+	}
+	// trigram_loc is maintained by the same rules and was dropped along with
+	// localization by reset(). Leaving it to the next writable open's
+	// ensureSchema would publish a generation that does not maintain its own
+	// substring index.
+	if err := createTrigramLocTriggers(ctx, tx); err != nil {
 		return ScanStats{}, err
 	}
 	if err := storeSearchFTSRowCount(ctx, tx); err != nil {

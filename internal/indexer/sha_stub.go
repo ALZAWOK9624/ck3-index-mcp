@@ -1,4 +1,4 @@
-//go:build !ck3_native || !cgo || !windows
+//go:build !ck3_native || !cgo || !windows || !amd64
 
 package indexer
 

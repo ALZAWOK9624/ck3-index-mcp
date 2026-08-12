@@ -31,9 +31,14 @@ const (
 // point of asking for several at once, and it cannot be read off an evidence
 // list that simply lacks them.
 type LLMBatchQuery struct {
-	Query    string `json:"query"`
-	Returned int    `json:"returned"`
-	HasMore  bool   `json:"has_more,omitempty"`
+	Query string `json:"query"`
+	// Returned is what this response carries for the term, and equals Emitted.
+	// Available is what the search found before the shared evidence ceiling
+	// was applied, so a caller can tell "absent" from "crowded out".
+	Returned  int  `json:"returned"`
+	Available int  `json:"available,omitempty"`
+	Emitted   int  `json:"emitted,omitempty"`
+	HasMore   bool `json:"has_more,omitempty"`
 	// Suggested counts low-confidence candidates. Without it a row reading
 	// returned=0 alongside a recovered spelling looks like a contradiction,
 	// when it means "nothing matched, but here is something to look at".
@@ -139,6 +144,7 @@ func (db *DB) LLMSearchBatch(ctx context.Context, queries []string, opts SearchO
 		for kind, count := range one.Counts {
 			result.Counts[kind] += count
 		}
+		emitted := 0
 		for _, item := range one.Evidence {
 			if len(result.Evidence) >= batchSearchEvidenceCeil {
 				result.Truncated = true
@@ -149,11 +155,23 @@ func (db *DB) LLMSearchBatch(ctx context.Context, queries []string, opts SearchO
 			// questions a row answers.
 			item.Query = terms[i]
 			result.Evidence = append(result.Evidence, item)
+			emitted++
+		}
+		// The shared ceiling is applied while merging, so a term's own row must
+		// separate what the search found from what this response carries. A row
+		// claiming eight items when the ceiling let none through reads as
+		// evidence the caller never received.
+		row.Available = len(one.Evidence)
+		row.Emitted = emitted
+		row.Returned = emitted
+		if emitted < len(one.Evidence) {
+			row.HasMore = true
 		}
 		result.Batch = append(result.Batch, row)
 	}
 
-	result.Summary = fmt.Sprintf("Batch search over %d term(s); %d returned evidence.", len(terms), matched)
+	result.Summary = fmt.Sprintf("Batch search over %d term(s); %d matched; %d evidence item(s) emitted.",
+		len(terms), matched, len(result.Evidence))
 	result.Guidance = []string{
 		"Every term is reported in batch, including the ones that matched nothing.",
 		"Use ck3_inspect on an exact id from this evidence rather than searching for it again.",

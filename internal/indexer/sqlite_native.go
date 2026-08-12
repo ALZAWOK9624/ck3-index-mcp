@@ -1,4 +1,4 @@
-//go:build ck3_native && cgo
+//go:build ck3_native && cgo && sqlite_fts5
 
 package indexer
 

@@ -91,10 +91,10 @@ type ck3SearchArgs struct {
 	visibilityArgs
 	Query      string   `json:"query,omitempty"`
 	Queries    []string `json:"queries,omitempty"`
-	Kind       string `json:"kind,omitempty"`
-	Source     string `json:"source,omitempty"`
-	PathPrefix string `json:"path_prefix,omitempty"`
-	Page       int    `json:"page,omitempty"`
+	Kind       string   `json:"kind,omitempty"`
+	Source     string   `json:"source,omitempty"`
+	PathPrefix string   `json:"path_prefix,omitempty"`
+	Page       int      `json:"page,omitempty"`
 }
 
 type ck3InspectArgs struct {
@@ -122,9 +122,9 @@ type ck3RefreshArgs struct {
 }
 
 type ck3SaveArgs struct {
-	Path         string `json:"path"`
-	Operation    string `json:"operation,omitempty"`
-	Character    string `json:"character,omitempty"`
+	Path         string   `json:"path"`
+	Operation    string   `json:"operation,omitempty"`
+	Character    string   `json:"character,omitempty"`
 	DocumentPath string   `json:"document_path,omitempty"`
 	Depth        int      `json:"depth,omitempty"`
 	MaxEvents    int      `json:"max_events,omitempty"`

@@ -59,7 +59,34 @@ func searchFTSCacheMatches(ctx context.Context, tx *sql.Tx) (bool, error) {
 			AND f.kind='script'`).Scan(&activeScripts, &scriptTextRows, &matchedScripts); err != nil {
 		return false, err
 	}
-	return activeScripts == scriptTextRows && activeScripts == matchedScripts, nil
+	if activeScripts != scriptTextRows || activeScripts != matchedScripts {
+		return false, nil
+	}
+	return trigramLocMatches(ctx, tx)
+}
+
+// trigramLocMatches verifies the substring index still covers localization
+// row for row. Row count alone is not enough: a table that lost some rowids
+// and gained the same number of orphans would pass a count check and then
+// silently answer substring searches with a subset. And an empty table is the
+// dangerous case, because ensureSchema creates one on any writable open --
+// without this check a dropped index is "repaired" into a table that exists,
+// reports healthy, and returns nothing.
+func trigramLocMatches(ctx context.Context, tx *sql.Tx) (bool, error) {
+	var localizationRows, trigramRows, missing, orphans int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT
+			(SELECT COUNT(*) FROM localization),
+			(SELECT COUNT(*) FROM trigram_loc),
+			(SELECT COUNT(*) FROM localization AS l
+				LEFT JOIN trigram_loc AS t ON t.rowid=l.id
+				WHERE t.rowid IS NULL),
+			(SELECT COUNT(*) FROM trigram_loc AS t
+				LEFT JOIN localization AS l ON l.id=t.rowid
+				WHERE l.id IS NULL)`).Scan(&localizationRows, &trigramRows, &missing, &orphans); err != nil {
+		return false, err
+	}
+	return localizationRows == trigramRows && missing == 0 && orphans == 0, nil
 }
 
 func storeSearchFTSRowCount(ctx context.Context, tx *sql.Tx) error {

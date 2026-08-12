@@ -15,10 +15,10 @@ func buildCanonicalTools() []ToolDefinition {
 	output := genericOutputSchema()
 	definitions := []ToolDefinition{
 		{
-			Name:        "ck3_search",
-			Title:       "Search CK3 Index",
-			Description: "Search when the exact CK3 id is unknown. Returns ranked object, localization, resource, reference, diagnostic, datatype, script-key, and full-script token evidence.",
-			InputSchema: searchInputSchema(),
+			Name:         "ck3_search",
+			Title:        "Search CK3 Index",
+			Description:  "Search when the exact CK3 id is unknown. Returns ranked object, localization, resource, reference, diagnostic, datatype, script-key, and full-script token evidence.",
+			InputSchema:  searchInputSchema(),
 			OutputSchema: preciseToolOutputSchema(llmResultOutputSchema()), Annotations: annotations, Handler: handleSearch,
 			CompatibilityProperties: legacyPrivacyProperties,
 		},

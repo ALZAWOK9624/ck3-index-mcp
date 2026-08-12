@@ -2,6 +2,7 @@ package indexer
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -168,5 +169,68 @@ func TestBatchSearchKeepsPublicVisibilityQuiet(t *testing.T) {
 	}
 	if len(result.Batch) != 1 {
 		t.Fatalf("public batch lost its per-term rows: %+v", result.Batch)
+	}
+}
+
+// The evidence ceiling is applied while merging terms, so the later terms in a
+// wide batch can be cut off entirely. Their rows used to keep reporting what
+// the search found rather than what the response carries, which reads as
+// evidence the caller never received.
+func TestBatchSearchRowsCountWhatTheResponseCarries(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	game := filepath.Join(dir, "game")
+	path := filepath.Join(game, "common", "decisions", "wide.txt")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var content strings.Builder
+	for _, family := range []string{"zzwidea", "zzwideb", "zzwidec"} {
+		for i := 0; i < 40; i++ {
+			fmt.Fprintf(&content, "%s_%02d = { is_shown = { always = yes } }\n", family, i)
+		}
+	}
+	if err := os.WriteFile(path, []byte(content.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{
+		ConfigPath: filepath.Join(dir, "ck3-index.toml"),
+		Database:   "cache/test.sqlite",
+		Sources:    []Source{{Name: "project", Path: game, Rank: 1, Role: SourceRoleProject}},
+	}
+	if _, err := Scan(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(filepath.Join(dir, "cache", "test.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	result, err := db.LLMSearchBatch(ctx, []string{"zzwidea", "zzwideb", "zzwidec"}, SearchOptions{LLMOptions: LLMOptions{Limit: 20, AllowProject: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Evidence) > batchSearchEvidenceCeil {
+		t.Fatalf("evidence %d exceeded the ceiling %d", len(result.Evidence), batchSearchEvidenceCeil)
+	}
+	emitted := 0
+	for _, row := range result.Batch {
+		if row.Emitted > row.Available {
+			t.Fatalf("term %q reports %d emitted of %d available", row.Query, row.Emitted, row.Available)
+		}
+		if row.Returned != row.Emitted {
+			t.Fatalf("term %q: returned=%d but emitted=%d", row.Query, row.Returned, row.Emitted)
+		}
+		if row.Emitted < row.Available && !row.HasMore {
+			t.Fatalf("term %q was cut off at %d of %d without has_more", row.Query, row.Emitted, row.Available)
+		}
+		emitted += row.Emitted
+	}
+	if emitted != len(result.Evidence) {
+		t.Fatalf("rows account for %d evidence items, response carries %d", emitted, len(result.Evidence))
+	}
+	if !strings.Contains(result.Summary, "evidence item(s) emitted") {
+		t.Fatalf("summary does not report emitted items: %q", result.Summary)
 	}
 }

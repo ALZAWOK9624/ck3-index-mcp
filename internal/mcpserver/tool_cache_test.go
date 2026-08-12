@@ -23,11 +23,11 @@ func TestCanonicalToolArgsNormalizesKeyOrder(t *testing.T) {
 }
 
 func TestToolCacheKeySeparatesGenerationsAndArgs(t *testing.T) {
-	a := toolCacheKey("ck3_search", "db-a", 1, 42, json.RawMessage(`{"query":"x"}`))
-	b := toolCacheKey("ck3_search", "db-a", 1, 43, json.RawMessage(`{"query":"x"}`))
-	c := toolCacheKey("ck3_search", "db-b", 2, 42, json.RawMessage(`{"query":"x"}`))
-	d := toolCacheKey("ck3_search", "db-a", 1, 42, json.RawMessage(`{"query":"y"}`))
-	e := toolCacheKey("ck3_inspect", "db-a", 1, 42, json.RawMessage(`{"query":"x"}`))
+	a := toolCacheKey("ck3_search", "db-a", 1, 42, "rev-a", json.RawMessage(`{"query":"x"}`))
+	b := toolCacheKey("ck3_search", "db-a", 1, 43, "rev-a", json.RawMessage(`{"query":"x"}`))
+	c := toolCacheKey("ck3_search", "db-b", 2, 42, "rev-a", json.RawMessage(`{"query":"x"}`))
+	d := toolCacheKey("ck3_search", "db-a", 1, 42, "rev-a", json.RawMessage(`{"query":"y"}`))
+	e := toolCacheKey("ck3_inspect", "db-a", 1, 42, "rev-a", json.RawMessage(`{"query":"x"}`))
 	keys := []string{a, b, c, d, e}
 	seen := map[string]bool{}
 	for _, key := range keys {
@@ -104,5 +104,57 @@ func TestReadToolCacheConcurrentAccess(t *testing.T) {
 	}
 	if stats := cache.stats(); stats.CurBytes > 1<<20 {
 		t.Fatalf("concurrent access exceeded budget: %d", stats.CurBytes)
+	}
+}
+
+// A clean reset rebuilds meta and can restart numbering, so the same
+// (path, epoch, generation) triple can name two different published databases.
+// Without the revision the second one is answered out of the first one's cache.
+func TestToolCacheKeySeparatesRevisionsAtTheSameGeneration(t *testing.T) {
+	args := json.RawMessage(`{"query":"x"}`)
+	first := toolCacheKey("ck3_search", "db-a", 1, 1, "revision-a", args)
+	afterReset := toolCacheKey("ck3_search", "db-a", 1, 1, "revision-b", args)
+	if first == afterReset {
+		t.Fatal("generation 1 before and after a clean reset produced one key")
+	}
+	laterGeneration := toolCacheKey("ck3_search", "db-a", 1, 2, "revision-a", args)
+	if first == laterGeneration {
+		t.Fatal("two generations of one revision produced one key")
+	}
+	cache := newReadToolCache(1<<20, 1<<16)
+	cache.put(first, []byte(`{"evidence":"old"}`))
+	if _, ok := cache.get(afterReset); ok {
+		t.Fatal("a rebuilt database was served from the previous database's entry")
+	}
+	if _, ok := cache.get(first); !ok {
+		t.Fatal("the original entry should still be cached")
+	}
+}
+
+// Two operations on otherwise cacheable tools read files the index generation
+// does not cover, so they must never be served from a generation-keyed cache.
+func TestCacheableReadRequestExcludesExternalFileOperations(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		tool string
+		args string
+		want bool
+	}{
+		{"inspect aggregate", "ck3_inspect", `{"id":"trait_brave"}`, true},
+		{"inspect definition", "ck3_inspect", `{"id":"trait_brave","operation":"definition"}`, true},
+		{"inspect compare reads files", "ck3_inspect", `{"id":"trait_brave","operation":"compare"}`, false},
+		{"inspect compare mixed case", "ck3_inspect", `{"id":"trait_brave","operation":"COMPARE"}`, false},
+		{"script reference trigger", "ck3_script_reference", `{"id":"add_gold","kind":"trigger"}`, true},
+		{"script reference on_action reads files", "ck3_script_reference", `{"id":"on_birth","kind":"on_action"}`, false},
+		{"search stays cacheable", "ck3_search", `{"query":"x"}`, true},
+		{"workspace reads engine logs", "ck3_workspace", `{"operation":"overview"}`, false},
+		{"province mapping decodes rasters", "map_province_mapping", `{}`, false},
+		{"refresh is never cacheable", "ck3_refresh", `{"operation":"files"}`, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := cacheableReadRequest(test.tool, json.RawMessage(test.args)); got != test.want {
+				t.Fatalf("cacheableReadRequest(%s, %s)=%v, want %v", test.tool, test.args, got, test.want)
+			}
+		})
 	}
 }

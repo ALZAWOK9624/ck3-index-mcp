@@ -1,4 +1,4 @@
-//go:build ck3_native && cgo && windows
+//go:build ck3_native && cgo && windows && amd64
 
 package indexer
 
@@ -293,6 +293,70 @@ static void gh_sha256_blocks(uint32_t state[8], const uint8_t *data, uint64_t by
 	}
 }
 
+// gh_sha256_update absorbs one arbitrary run of bytes, carrying the partial
+// block across calls. Feeding each read's whole blocks straight to the
+// transform is only correct while tail is empty: ReadFile is allowed to return
+// a short count that is not end of file (network redirectors, filter drivers,
+// virtual filesystems), and hashing the next read's blocks before completing
+// the block the previous read left behind reorders the message. The digest is
+// then wrong, and nothing reports an error.
+static void gh_sha256_update(uint32_t state[8], uint8_t tail[64], size_t *tail_len,
+	const uint8_t *data, size_t len)
+{
+	if (*tail_len != 0) {
+		size_t need = 64 - *tail_len;
+		size_t take = len < need ? len : need;
+		memcpy(tail + *tail_len, data, take);
+		*tail_len += take;
+		data += take;
+		len -= take;
+		if (*tail_len == 64) {
+			sha256_process_x86(state, tail, 64);
+			*tail_len = 0;
+		}
+	}
+	size_t full = len & ~(size_t)63;
+	if (full != 0) {
+		gh_sha256_blocks(state, data, (uint64_t)full);
+		data += full;
+		len -= full;
+	}
+	if (len != 0) {
+		memcpy(tail, data, len);
+		*tail_len = len;
+	}
+}
+
+// gh_sha_ctx is the streaming state: whatever the caller has absorbed so far,
+// plus the bytes of the block it has not completed. The file path and the
+// chunk-sequence tests both drive this, so the ordering the tests prove is the
+// ordering production uses.
+typedef struct {
+	uint32_t state[8];
+	uint8_t tail[64];
+	size_t tail_len;
+	uint64_t total;
+} gh_sha_ctx;
+
+static void gh_sha256_ctx_init(gh_sha_ctx *c)
+{
+	gh_sha256_iv(c->state);
+	c->tail_len = 0;
+	c->total = 0;
+}
+
+static void gh_sha256_ctx_update(gh_sha_ctx *c, const uint8_t *data, uint64_t len)
+{
+	c->total += len;
+	gh_sha256_update(c->state, c->tail, &c->tail_len, data, (size_t)len);
+}
+
+static void gh_sha256_ctx_final(gh_sha_ctx *c, char out[65])
+{
+	gh_sha256_finish(c->state, c->tail, c->tail_len, c->total);
+	gh_digest_hex(c->state, out);
+}
+
 // gh_sha256_bytes_hex hashes an in-memory buffer.
 static void gh_sha256_bytes_hex(const uint8_t *data, uint64_t len, char out[65])
 {
@@ -335,13 +399,21 @@ static int gh_sha256_file_hex(const char *path_utf8, char out[65], uint32_t *err
 		free(wpath);
 		return -1;
 	}
-	HANDLE h = CreateFileW(wpath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+	// Share write and delete as well as read. Denying them made hashing fail
+	// outright whenever an editor held the file open, and editors that save
+	// through a temporary file plus rename need DELETE sharing too. The torn
+	// read that sharing admits is detected below by comparing the file's size
+	// and last-write time across the read.
+	HANDLE h = CreateFileW(wpath, GENERIC_READ,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
 		FILE_FLAG_SEQUENTIAL_SCAN, NULL);
 	free(wpath);
 	if (h == INVALID_HANDLE_VALUE) {
 		*errout = (uint32_t)GetLastError();
 		return -1;
 	}
+	BY_HANDLE_FILE_INFORMATION beforeInfo;
+	int haveBefore = GetFileInformationByHandle(h, &beforeInfo) != 0;
 	// The read buffer is per call. A single static buffer would be shared by
 	// every scan worker -- parseOneFile runs on up to sixteen goroutines --
 	// and they would overwrite each other's bytes, producing digests that are
@@ -352,11 +424,8 @@ static int gh_sha256_file_hex(const char *path_utf8, char out[65], uint32_t *err
 		*errout = (uint32_t)ERROR_NOT_ENOUGH_MEMORY;
 		return -1;
 	}
-	uint32_t state[8];
-	gh_sha256_iv(state);
-	uint8_t tail[64];
-	size_t tail_len = 0;
-	uint64_t total = 0;
+	gh_sha_ctx ctx;
+	gh_sha256_ctx_init(&ctx);
 	int failed = 0;
 	for (;;) {
 		DWORD got = 0;
@@ -372,34 +441,28 @@ static int gh_sha256_file_hex(const char *path_utf8, char out[65], uint32_t *err
 		if (got == 0) {
 			break;
 		}
-		total += got;
-		uint32_t full = got / 64;
-		uint32_t rem = got % 64;
-		if (full) {
-			gh_sha256_blocks(state, buf, (uint64_t)full * 64);
-		}
-		if (rem) {
-			size_t room = 64 - tail_len;
-			size_t take = rem < room ? rem : room;
-			memcpy(tail + tail_len, buf + (size_t)full * 64, take);
-			tail_len += take;
-			if (tail_len == 64) {
-				sha256_process_x86(state, tail, 64);
-				tail_len = 0;
-			}
-			if (take < rem) {
-				memcpy(tail, buf + (size_t)full * 64 + take, rem - take);
-				tail_len = rem - take;
-			}
-		}
+		gh_sha256_ctx_update(&ctx, buf, (uint64_t)got);
 	}
 	free(buf);
+	BY_HANDLE_FILE_INFORMATION afterInfo;
+	int haveAfter = GetFileInformationByHandle(h, &afterInfo) != 0;
 	CloseHandle(h);
 	if (failed) {
 		return -1;
 	}
-	gh_sha256_finish(state, tail, tail_len, total);
-	gh_digest_hex(state, out);
+	// A digest of a file that was rewritten mid-read is not a digest of any
+	// version of that file. Report it instead of storing it as this file's
+	// identity.
+	if (haveBefore && haveAfter) {
+		int changed = beforeInfo.nFileSizeHigh != afterInfo.nFileSizeHigh ||
+			beforeInfo.nFileSizeLow != afterInfo.nFileSizeLow ||
+			beforeInfo.ftLastWriteTime.dwLowDateTime != afterInfo.ftLastWriteTime.dwLowDateTime ||
+			beforeInfo.ftLastWriteTime.dwHighDateTime != afterInfo.ftLastWriteTime.dwHighDateTime;
+		if (changed) {
+			return -2;
+		}
+	}
+	gh_sha256_ctx_final(&ctx, out);
 	return 0;
 }
 */
@@ -408,6 +471,7 @@ import "C"
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -438,11 +502,19 @@ var nativeSHAUsable bool
 // runtime dispatch, so on a CPU without the SHA extensions calling it is an
 // illegal instruction, not a slow path.
 func nativeSHAAvailable() bool {
+	if override := nativeSHAOverride; override != nil {
+		return *override
+	}
 	nativeSHAOnce.Do(func() {
 		nativeSHAUsable = C.gh_sha256_available() != 0
 	})
 	return nativeSHAUsable
 }
+
+// nativeSHAOverride forces the capability answer. Only tests set it: the
+// fallback has to be provable on a machine that does have SHA-NI, because the
+// machines that do not are exactly the ones nobody runs the suite on.
+var nativeSHAOverride *bool
 
 // sha256FileHex hashes the file at path with the native SHA-NI
 // implementation using Windows sequential-scan reads. ok reports whether the
@@ -458,11 +530,19 @@ func sha256FileHex(path string) (sum string, ok bool, err error) {
 	var out [65]C.char
 	var errout C.uint32_t
 	rc := C.gh_sha256_file_hex(cPath, &out[0], &errout)
+	if rc == -2 {
+		return "", true, &fs.PathError{Op: "hash", Path: path, Err: errFileChangedWhileHashing}
+	}
 	if rc != 0 {
 		return "", true, nativeFileHashError(path, uint32(errout))
 	}
 	return C.GoString(&out[0]), true, nil
 }
+
+// errFileChangedWhileHashing reports a file rewritten between the first and
+// last read of one hash. The caller can retry; storing the digest would record
+// an identity no version of the file ever had.
+var errFileChangedWhileHashing = errors.New("file changed while it was being hashed")
 
 // nativeFileHashError keeps the Win32 status code and maps the two codes
 // callers actually test for onto the standard filesystem errors.
@@ -498,6 +578,27 @@ func nativeHashBytesEmpty() string {
 	var out [65]C.char
 	C.gh_sha256_bytes_hex(nil, 0, &out[0])
 	return C.GoString(&out[0])
+}
+
+// nativeSHA256Chunked drives the streaming path over caller-chosen chunk
+// boundaries. Real reads rarely produce a partial block that is not the last
+// one, so the ordering bug this exists to catch cannot be reached reliably
+// through the filesystem; the tests feed the boundaries directly.
+func nativeSHA256Chunked(chunks [][]byte) (string, bool) {
+	if !nativeSHAAvailable() {
+		return "", false
+	}
+	var ctx C.gh_sha_ctx
+	C.gh_sha256_ctx_init(&ctx)
+	for _, chunk := range chunks {
+		if len(chunk) == 0 {
+			continue
+		}
+		C.gh_sha256_ctx_update(&ctx, (*C.uint8_t)(unsafe.Pointer(&chunk[0])), C.uint64_t(len(chunk)))
+	}
+	var out [65]C.char
+	C.gh_sha256_ctx_final(&ctx, &out[0])
+	return C.GoString(&out[0]), true
 }
 
 // goSHA256FileHex is the fallback for CPUs without the SHA extensions. It is

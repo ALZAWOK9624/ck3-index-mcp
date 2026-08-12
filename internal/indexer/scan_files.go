@@ -441,8 +441,18 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 		return ScanStats{}, err
 	}
 	stats.TimingsMillis["semantic_fts"] = time.Since(stageStart).Milliseconds()
-	if err := bumpScanGeneration(ctx, tx); err != nil {
-		return ScanStats{}, err
+	// A refresh where every file hashed the same and the FTS was already
+	// current published nothing: the semantic snapshot callers can observe is
+	// byte for byte the one they already have. Bumping the generation anyway
+	// told every client the opposite -- it invalidates the MCP read cache and
+	// makes a no-op look like a new publication. Metadata-only updates
+	// (mtime, size) still commit; they are not part of that snapshot.
+	if !noSemanticChange || !ftsCurrent {
+		if err := bumpScanGeneration(ctx, tx); err != nil {
+			return ScanStats{}, err
+		}
+	} else {
+		stats.Noop = true
 	}
 	if err := refreshScanStatsTotals(ctx, tx, &stats); err != nil {
 		return ScanStats{}, err

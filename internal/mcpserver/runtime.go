@@ -87,22 +87,27 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 			map[string]any{"scan_status": before.Status, "reason": before.StaleReason, "required_action": before.RequiredAction},
 			map[string]any{"operation": "full", "guidance": "Run ck3_refresh with operation=full to rebuild the index before using any index-backed tool."}), runtime), nil
 	}
-	// In-process result cache for pure index reads. A hit is only served when
-	// the current generation still matches the cached one, which is the same
-	// stability guarantee the post-execution check below enforces for fresh
-	// executions.
-	if definition.Annotations.ReadOnlyHint && cacheableReadTools[definition.Name] && beforeErr == nil && before.Ready() {
-		key := toolCacheKey(definition.Name, runtime.DBPath, runtime.DatabaseEpoch, before.Generation, call.Arguments)
+	// In-process result cache for pure index reads. The key and the hit check
+	// both carry the full published identity, not just the generation: a clean
+	// reset rebuilds meta and can restart numbering at 1, so generation alone
+	// cannot tell "unchanged" from "replaced by a different database that
+	// happens to be on generation 1 again".
+	if definition.Annotations.ReadOnlyHint && cacheableReadRequest(definition.Name, handlerArguments) && beforeErr == nil && before.Ready() && before.Revision != "" {
+		key := toolCacheKey(definition.Name, runtime.DBPath, runtime.DatabaseEpoch, before.Generation, before.Revision, call.Arguments)
 		if cached, ok := mcpReadToolCache.get(key); ok {
 			afterState, stateErr := db.IndexState(ctx)
-			if stateErr == nil && afterState.Ready() && afterState.Generation == before.Generation && !indexStatePublishing(afterState) {
-				var cachedResult map[string]any
-				if err := json.Unmarshal(cached, &cachedResult); err == nil {
-					return cachedResult, nil
+			if stateErr == nil && afterState.Ready() && !indexStateChanged(before, afterState) && !indexStatePublishing(afterState) {
+				var payload map[string]any
+				if err := json.Unmarshal(cached, &payload); err == nil {
+					finalized, finalizeErr := finalizeToolResult(payload, runtime, definition, argumentNotices,
+						afterState, true, responseControl.MaxResponseBytes)
+					if finalizeErr == nil {
+						return finalized, nil
+					}
 				}
 			}
-			// The generation moved between the key and the hit; fall through
-			// and execute normally.
+			// The published state moved between the key and the hit; fall
+			// through and execute normally.
 		}
 	}
 	output, err := definition.Handler(ctx, runtime, definition, handlerArguments)
@@ -160,6 +165,37 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 	if err != nil {
 		return encodeToolError(err, runtime), nil
 	}
+	// Snapshot the handler payload before the per-call envelope goes on. The
+	// envelope carries this caller's argument notices and this moment's index
+	// state; caching it would hand a later caller a repair notice for arguments
+	// it never sent, and hide the notice from the caller that earned it.
+	var cachePayload []byte
+	cacheEligible := definition.Annotations.ReadOnlyHint &&
+		cacheableReadRequest(definition.Name, handlerArguments) &&
+		afterErr == nil && after.Ready() && after.Revision != ""
+	if cacheEligible {
+		if data, marshalErr := json.Marshal(result); marshalErr == nil {
+			cachePayload = data
+		}
+	}
+	boundedResult, err := finalizeToolResult(result, runtime, definition, argumentNotices,
+		after, beforeErr == nil && afterErr == nil && after.Ready(), responseControl.MaxResponseBytes)
+	if err != nil {
+		return encodeToolError(err, runtime), nil
+	}
+	if cachePayload != nil {
+		mcpReadToolCache.put(toolCacheKey(definition.Name, runtime.DBPath, runtime.DatabaseEpoch, after.Generation, after.Revision, call.Arguments), cachePayload)
+	}
+	return boundedResult, nil
+}
+
+// finalizeToolResult attaches everything that belongs to this call rather than
+// to the handler's payload: the caller's argument notices, the database
+// identity, the index state the answer was produced under, and the caller's
+// response budget. A cache hit runs the same steps over the stored payload, so
+// a reused answer never carries another call's envelope.
+func finalizeToolResult(result map[string]any, runtime *Runtime, definition *ToolDefinition, argumentNotices []string,
+	state indexer.IndexState, stateVerified bool, maxResponseBytes int) (map[string]any, error) {
 	result = attachArgumentNotices(result, argumentNotices)
 	identity := runtime.databaseIdentity()
 	if definition.Name == "ck3_database" && runtime.DatabaseController != nil {
@@ -170,12 +206,12 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 		// A switch is executed through a lease on the previous database. Its
 		// handler already returns the new target's health/generation, so attaching
 		// the old lease's index state here would make one response contradict itself.
-	} else if beforeErr == nil && afterErr == nil && after.Ready() {
+	} else if stateVerified {
 		result["indexState"] = map[string]any{
-			"scan_generation":   after.Generation,
-			"scan_revision":     after.Revision,
-			"scan_committed_at": after.CommittedAt,
-			"scan_status":       after.Status,
+			"scan_generation":   state.Generation,
+			"scan_revision":     state.Revision,
+			"scan_committed_at": state.CommittedAt,
+			"scan_status":       state.Status,
 		}
 	} else {
 		result["indexState"] = map[string]any{
@@ -188,16 +224,7 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 	// Index-state metadata is attached afterwards, so verify
 	// the final wire object as well rather than letting those common envelopes
 	// silently exceed the caller's declared response budget.
-	boundedResult, err := enforceResponseBudget(result, responseControl.MaxResponseBytes, definition.TrimmableFields...)
-	if err != nil {
-		return encodeToolError(err, runtime), nil
-	}
-	if definition.Annotations.ReadOnlyHint && cacheableReadTools[definition.Name] && afterErr == nil && after.Ready() {
-		if data, marshalErr := json.Marshal(boundedResult); marshalErr == nil {
-			mcpReadToolCache.put(toolCacheKey(definition.Name, runtime.DBPath, runtime.DatabaseEpoch, after.Generation, call.Arguments), data)
-		}
-	}
-	return boundedResult, nil
+	return enforceResponseBudget(result, maxResponseBytes, definition.TrimmableFields...)
 }
 
 func indexStateChanged(before, after indexer.IndexState) bool {

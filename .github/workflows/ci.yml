@@ -1,0 +1,85 @@
+name: ci
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The default build is pure Go and is what ships unless a plugin is built
+  # with the native tags, so it gets the full suite plus vet.
+  default:
+    name: default build (windows/amd64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go vet ./...
+      - run: go test ./...
+
+  # Concurrency lives in the scan workers, the batch search and the MCP result
+  # cache. None of those are exercised by a plain run.
+  race:
+    name: race detector
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test -race ./internal/indexer ./internal/mcpserver
+
+  # The native backends cannot be proven anywhere else: SHA-NI needs a real
+  # amd64 CPU with the extensions, the file hash uses Win32 ReadFile, mattn's
+  # SQLite needs cgo and a working MinGW toolchain, and the C relief's
+  # byte-for-byte agreement with the Go implementation depends on the actual
+  # compiler.
+  native:
+    name: native backends (ck3_native, windows/amd64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: report the C toolchain
+        shell: bash
+        run: gcc --version
+      - name: build every tag combination
+        shell: bash
+        run: |
+          set -e
+          go build ./...
+          CGO_ENABLED=0 go build -tags ck3_native ./...
+          go build -tags ck3_native ./...
+          go build -tags "ck3_native sqlite_fts5" ./...
+      - run: go test -tags "ck3_native sqlite_fts5" ./...
+
+  # Run on Linux: the working tree there is checked out with LF endings, so
+  # gofmt reports formatting rather than line endings.
+  format:
+    name: gofmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: gofmt -l
+        run: |
+          unformatted="$(gofmt -l . | grep -v '\.gen\.go$' || true)"
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi

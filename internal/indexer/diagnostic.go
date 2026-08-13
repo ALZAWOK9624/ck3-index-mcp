@@ -13,6 +13,7 @@ type DiagnosticFilter struct {
 	Source     string
 	PathPrefix string
 	Confidence string
+	Baseline   string
 	Page       int
 }
 
@@ -22,6 +23,10 @@ func (db *DB) ExplainDiagnostic(ctx context.Context, code string) ([]Diagnostic,
 
 func (db *DB) ExplainDiagnosticFiltered(ctx context.Context, f DiagnosticFilter) ([]Diagnostic, error) {
 	projectSource, err := db.projectSourceName(ctx)
+	if err != nil {
+		return nil, err
+	}
+	baseline, err := db.diagnosticBaselineSet(ctx, f.Baseline)
 	if err != nil {
 		return nil, err
 	}
@@ -54,6 +59,7 @@ func (db *DB) ExplainDiagnosticFiltered(ctx context.Context, f DiagnosticFilter)
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	out = filterDiagnosticsAgainstBaseline(out, baseline)
 	return prioritizeProjectDiagnostics(aggregateDiagnostics(out), projectSource), nil
 }
 
@@ -195,6 +201,24 @@ func diagnosticHint(code, message string) (string, string) {
 		return "Move this trigger/effect into a block with the required scope, or use a scope transition/iterator that provides that scope before calling it.", "ck3-index:scope_rules"
 	case "missing_localization":
 		return "Add the referenced localization key under localization/<language>/, or change the script to reference an existing key. Do not use localization text as mechanism evidence.", "ck3-index:localization_refs"
+	case "trigger_always_false":
+		return "The AND block requires a condition and its negation together, so nothing satisfies it. Decide which of the two you meant and remove the other.", "ck3-index:trigger_algebra"
+	case "trigger_always_true":
+		return "The OR block accepts a condition and its negation, so it admits everything and filters nothing. Decide which of the two you meant and remove the other.", "ck3-index:trigger_algebra"
+	case "trigger_duplicate_condition":
+		return "Delete the repeated condition. This is reported only inside explicit AND/OR/NOT blocks, where a second identical check cannot change the answer.", "ck3-index:trigger_algebra"
+	case "trigger_double_negation":
+		return "Collapse the two negations: NOT{NOT{X}} is X, NOT{NOR{...}} is a single OR, and NOT{NAND{...}} is a single AND.", "ck3-index:trigger_algebra"
+	case "trigger_nested_same_operator":
+		return "Move the nested block's members up into the parent. Nesting AND in AND, or OR in OR, adds a level of reading without changing the result.", "ck3-index:trigger_algebra"
+	case "trigger_common_condition":
+		return "Lift the shared condition above the OR so it is checked once. Every branch already requires it, so the OR is only choosing between what differs.", "ck3-index:trigger_algebra"
+	case "trigger_absorbed_branch":
+		return "Remove the branch: X OR (X AND Y) is X, and X AND (X OR Y) is X. The branch repeats a condition the enclosing block already decides.", "ck3-index:trigger_algebra"
+	case "hidden_scope_dependency":
+		return "Calling a scripted effect does not push a scope, so prev at the top of the body names whatever the caller had entered. Take that scope as a parameter, or name the requirement in the macro's own name.", "ck3-index:scope_rules"
+	case "unread_script_folder":
+		return "Move this content into the dispatch folder named in the message. CK3 routes script by directory, so a renamed or misspelled folder parses cleanly and is then loaded by nobody; there is no runtime log for it.", "ck3-index:folder_schema"
 	case "localization_invalid_character":
 		return "Remove the replacement character or control byte from the localization source and save it as valid UTF-8. Comments are checked too because CK3 still reads the whole localization file.", "ck3-index:localization_syntax"
 	case "localization_entry_syntax":

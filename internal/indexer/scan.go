@@ -712,6 +712,9 @@ parsedFilesComplete:
 		if err := refreshCourtTypeDefaultDiagnostics(ctx, tx); err != nil {
 			return ScanStats{}, err
 		}
+		if err := refreshFolderSchemaDiagnostics(ctx, tx, project.Rank); err != nil {
+			return ScanStats{}, err
+		}
 		if err := refreshErrorLogContractDiagnostics(ctx, tx, project.Rank); err != nil {
 			return ScanStats{}, err
 		}
@@ -768,6 +771,9 @@ parsedFilesComplete:
 			return ScanStats{}, err
 		}
 		if err := refreshCourtTypeDefaultDiagnostics(ctx, tx); err != nil {
+			return ScanStats{}, err
+		}
+		if err := refreshFolderSchemaDiagnostics(ctx, tx, project.Rank); err != nil {
 			return ScanStats{}, err
 		}
 		if err := refreshErrorLogContractDiagnostics(ctx, tx, project.Rank); err != nil {

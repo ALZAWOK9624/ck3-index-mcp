@@ -167,7 +167,16 @@ type ck3DiagnosticsArgs struct {
 	Source     string `json:"source,omitempty"`
 	PathPrefix string `json:"path_prefix,omitempty"`
 	Confidence string `json:"confidence,omitempty"`
+	Baseline   string `json:"baseline,omitempty"`
 	Page       int    `json:"page,omitempty"`
+}
+
+type ck3CoatOfArmsArgs struct {
+	visibilityArgs
+	Operation string `json:"operation,omitempty"`
+	ID        string `json:"id,omitempty"`
+	Size      int    `json:"size,omitempty"`
+	Filter    string `json:"filter,omitempty"`
 }
 
 type ck3ScriptReferenceArgs struct {

@@ -18,10 +18,11 @@ import (
 //
 // Two more are excluded for the same reason even though they are read-only:
 // ck3_workspace operation=on_action_evidence hashes engine logs and vanilla
-// files off disk, and map_province_mapping decodes province rasters off disk.
-// The cache key can only see the index generation, which does not move when a
-// file outside the index changes, so caching either one would keep answering
-// from a superseded on-disk state.
+// files off disk, map_province_mapping decodes province rasters off disk, and
+// ck3_coat_of_arms reads the definition, the named_colors files and every
+// texture off disk. The cache key can only see the index generation, which does
+// not move when a file outside the index changes, so caching any of them would
+// keep answering from a superseded on-disk state.
 var cacheableReadTools = map[string]bool{
 	"ck3_search":              true,
 	"ck3_inspect":             true,

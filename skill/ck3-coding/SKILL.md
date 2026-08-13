@@ -30,7 +30,7 @@ The same tools serve two jobs with different limits. Decide which one you are in
 When a question turns into an edit, restate the mode change before the first write; do not drift from one into the other.
 
 <!-- BEGIN GENERATED MCP TOOLS -->
-## MCP Tools (36 canonical tools)
+## MCP Tools (37 canonical tools)
 
 ck3-index exposes one canonical MCP tool surface. Each tool uses bounded operations rather than legacy specialist aliases.
 
@@ -54,6 +54,7 @@ ck3-index exposes one canonical MCP tool surface. Each tool uses bounded operati
 | `ck3_database` | Use when the running MCP service has multiple configured SQLite indexes and the task needs a different evidence base. |
 | `ck3_package` | Use when a validated set of Mod files must be packaged into a portable installation artifact. |
 | `ck3_gui` | Use when inspecting indexed GUI structure, dependencies, or a bounded static preview. |
+| `ck3_coat_of_arms` | Use when a coat of arms must be read as resolved colours and textures, or seen rather than described. |
 
 ### Map Tools
 
@@ -211,13 +212,24 @@ Their evidence is authoritative about themselves and about nothing else.
 
 3. File override semantics: CK3 loads files by `rel_path`; same-path files from higher-priority sources replace lower ones entirely. `ck3-index` detects overridden files and excludes them from active queries.
 
-4. Source boundary semantics: only source-root-relative CK3 load roots (`common`, `events`, `history`, `gui`, `localization`, `gfx`, `map_data`, and `sound`) are indexed. Root-level backups, tools, docs, caches, and temporary folders are intentionally ignored even when they contain nested CK3-looking paths.
+4. Know what an override costs before writing one. Replacement is by file, but what that destroys depends on the folder:
 
-5. Never use localization text alone as proof of mechanics. Confirm in scripts, history, GUI, or indexed definitions.
+   | Folder | Policy | Replacing a file at the same path |
+   |---|---|---|
+   | most of `common/`, `events/` | `override` | The replaced file is not read at all; every definition it held is gone unless you declare it again. |
+   | `common/on_action/` | `container_merge` | List containers (`events`, `on_actions`, `random_events`, `first_valid`, ...) accumulate across files, but `trigger`, `effect`, `weight_multiplier` and `fallback` take the last writer. Append behaviour by adding a list entry pointing at your own on_action; never edit a vanilla on_action's `effect` in place. |
+   | `common/defines/`, `history/`, `localization/` | `per_key_override` | Files combine key by key, so a key you omit falls back to another loaded file or the engine default. |
+   | `gui/` | `first_in_wins` | The first definition read is kept. An override has to load *earlier*: lead with `00_`, not the trailing `zzz_` that works in override folders. |
 
-6. During the edit loop, prefer canonical `ck3_preflight` operations and `scan --files` over repeated full `scan`; follow every scan with `diag_stats`. Before final release or a large handoff, run `ck3-index scan`, `ck3-index validate`, and `ck3-index diag_stats`.
+   Filename prefixes carry load-order intent: a numeric prefix loads first, a `z`/`zz`/`zzz` prefix loads last. The override drift audit reports `merge_policy`, `policy_consequence` and `load_order_note` on every finding, so read a `base_only_definition` against the policy rather than assuming it is harmless.
 
-7. Keep generated code conservative:
+5. Source boundary semantics: only source-root-relative CK3 load roots (`common`, `events`, `history`, `gui`, `localization`, `gfx`, `map_data`, and `sound`) are indexed. Root-level backups, tools, docs, caches, and temporary folders are intentionally ignored even when they contain nested CK3-looking paths.
+
+6. Never use localization text alone as proof of mechanics. Confirm in scripts, history, GUI, or indexed definitions.
+
+7. During the edit loop, prefer canonical `ck3_preflight` operations and `scan --files` over repeated full `scan`; follow every scan with `diag_stats`. Before final release or a large handoff, run `ck3-index scan`, `ck3-index validate`, and `ck3-index diag_stats`.
+
+8. Keep generated code conservative:
    - Match nearby file style.
    - Prefer existing scripted triggers/effects/values.
    - Add new localization keys with clear prefixes.
@@ -266,11 +278,32 @@ Inspect before imitating.
 - Treat `tooltipwidget` descendants as hover-only overlay evidence, not permanent parent content. The PNG omits them from ordinary layout, while the inspector retains them in the tree and opens the resolved overlay next to its owner on hover. When no overlay exists, resolved tooltip text and bounded tooltip plans use a fixed text-only hover panel; `textContent` keeps runtime values inert. Exact engine tooltip templates, timing, pointer shapes, animation, and multi-monitor placement remain in-game validation items.
 - Review the inspector in its default `Visual` mode first: embedded textures and resolved text are shown without diagnostic container chrome, a known-hidden parent suppresses its whole flattened preview subtree, allowlisted `modify_texture` blends are alpha-masked to the parent icon, and `Replay clicks` makes supported buttons react directly on the canvas. Disable `Replay clicks` when selecting nodes without changing state. Turn `Visual` off to inspect colored kind boxes, approximate geometry, missing-texture placeholders, and hidden nodes. Visual mode improves artifact fidelity but does not manufacture unresolved engine templates or assets.
 
+### Coat of arms
+
+`ck3_coat_of_arms` reads and draws heraldry. `inspect` resolves a definition's pattern, its three colours and every emblem against the active `named_colors` and the indexed textures, and reports which references no source supplies; `render` returns the field as a PNG; `assets` lists the pattern and emblem names a definition may refer to.
+
+- Only `common/coat_of_arms/coat_of_arms/` holds heraldry. Its sibling folders (`options/`, `template_lists/`, `dynamic_definitions/`) index under the same object type but describe other things, and the tool deliberately does not serve them.
+- An emblem's own `color1`/`color2`/`color3` override the definition's for that emblem; a slot it omits falls back. A colour name no active `named_colors` file defines renders as **black in game** and is reported as a warning rather than substituted.
+- `render` is the field CK3 composites *before* the frame, material and dirt overlays, so the shield outline is absent by design.
+- Texture names carry no directory: CK3 supplies it. `assets` lists the winning source per name, so a mod emblem shadowing a vanilla one shows as the mod's.
+- `visibility=public` withholds both the definition and the render for a coat of arms defined in a private source, and says so via `redacted`. A render is the content made legible, so it does not bypass the evidence boundary.
+
 ## Diagnostics Reference
+
+This project sits on top of an upstream mod, so a bare `ck3_diagnostics` summary reports the upstream's findings alongside yours. Record what is already there once with `operation=baseline_save`, then pass the same `baseline` name to `summary` and `explain` to see only what appeared since. The baseline survives `ck3_refresh operation=full`; re-record it after deliberately accepting new upstream findings, and use `baseline_list` / `baseline_clear` to manage them.
 
 | Code | Severity | Meaning |
 |---|---|---|
 | `parse_error` | error | CK3 script syntax error |
+| `unread_script_folder` | error | Project content sits in a folder CK3 does not dispatch, next to a near-identical folder it does; the message names the folder the game layer actually reads |
+| `trigger_always_false` | error | An explicit AND block requires a condition and its own negation, so nothing satisfies it |
+| `trigger_always_true` | error | An explicit OR block accepts a condition and its own negation, so it filters nothing |
+| `trigger_duplicate_condition` | warning | The same condition is checked twice in one AND/OR/NOT block |
+| `trigger_double_negation` | warning | NOT wraps a NOT/NOR/NAND, negating twice |
+| `hidden_scope_dependency` | warning | A scripted effect or trigger uses `prev` before entering any scope of its own, so it reads a scope opened by the caller |
+| `trigger_nested_same_operator` | info | AND nested directly in AND, or OR in OR; the members can move up |
+| `trigger_common_condition` | info | Every branch of an OR checks the same condition; lift it out |
+| `trigger_absorbed_branch` | info | A branch repeats a condition the enclosing block already decides |
 | `effect_in_trigger` | error | Effect used inside a trigger block |
 | `scope_mismatch` | warning | Proven trigger/effect scope conflict with a root/current scope trace |
 | `trigger_in_effect` | warning | Trigger used inside an effect block |

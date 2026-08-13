@@ -673,6 +673,27 @@ func (db *DB) CachedValidationForSource(ctx context.Context, source string) (Val
 	return db.cachedValidation(ctx, source)
 }
 
+// CachedValidationSinceBaseline reports only the findings absent from the named
+// baseline. The severity counts are recomputed from the surviving diagnostics
+// rather than reused from the unfiltered query, so the headline number and the
+// listed evidence describe the same set.
+func (db *DB) CachedValidationSinceBaseline(ctx context.Context, source, baseline string) (ValidationReport, error) {
+	rep, err := db.cachedValidation(ctx, source)
+	if err != nil {
+		return rep, err
+	}
+	set, err := db.diagnosticBaselineSet(ctx, baseline)
+	if err != nil {
+		return ValidationReport{}, err
+	}
+	if len(set) == 0 {
+		return rep, nil
+	}
+	rep.Diagnostics = filterDiagnosticsAgainstBaseline(rep.Diagnostics, set)
+	rep.Counts = countDiagnosticsBySeverity(rep.Diagnostics)
+	return rep, nil
+}
+
 func (db *DB) cachedValidation(ctx context.Context, source string) (ValidationReport, error) {
 	rep := ValidationReport{Counts: map[string]int{}}
 	countRows, err := db.sql.QueryContext(ctx, `SELECT d.severity,COUNT(*)

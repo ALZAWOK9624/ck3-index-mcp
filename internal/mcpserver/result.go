@@ -54,6 +54,25 @@ func encodeToolResultWithBudget(value any, visibility string, responseBudget int
 		}
 		return enforceResponseBudget(result, responseBudget, trimmableFields...)
 	}
+	if rendered, ok := value.(indexer.CoatOfArmsResult); ok && len(rendered.PNG) > 0 {
+		pngData := rendered.PNG
+		rendered.PNG = nil
+		data, structured, err := encodeStructuredValue(rendered)
+		if err != nil {
+			return nil, err
+		}
+		result := map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": string(data)},
+				{
+					"type": "image", "data": base64.StdEncoding.EncodeToString(pngData), "mimeType": "image/png",
+					"annotations": map[string]any{"audience": []string{"user"}},
+				},
+			},
+			"structuredContent": structured,
+		}
+		return enforceResponseBudget(result, responseBudget, trimmableFields...)
+	}
 	if rendered, ok := value.(indexer.MapRenderResult); ok {
 		pngData := rendered.PNG
 		hitData := rendered.HitPNG

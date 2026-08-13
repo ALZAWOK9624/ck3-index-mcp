@@ -535,6 +535,17 @@ func (db *DB) ensureSchemaNoIndexes(ctx context.Context) error {
 			fingerprint TEXT NOT NULL DEFAULT '',
 			occurrences INTEGER NOT NULL DEFAULT 1
 		)`,
+		// Kept out of semanticIndexTableCatalog on purpose: a baseline records
+		// which findings the caller has already accepted, and a full rebuild
+		// that reproduces those same findings must not erase that decision.
+		`CREATE TABLE IF NOT EXISTS diagnostic_baselines (
+			name TEXT NOT NULL,
+			fingerprint TEXT NOT NULL,
+			code TEXT NOT NULL DEFAULT '',
+			severity TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (name, fingerprint)
+		)`,
 		`CREATE TABLE IF NOT EXISTS saved_scopes (
 			id INTEGER PRIMARY KEY,
 			file_id INTEGER NOT NULL,

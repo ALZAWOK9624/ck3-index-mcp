@@ -42,10 +42,29 @@ func TestSemanticIndexTableCatalogMatchesCreatedSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	expected := append([]string(nil), semanticIndexTableCatalog[:]...)
+	expected := schemaTableNames()
 	sort.Strings(expected)
 	if !reflect.DeepEqual(actual, expected) {
 		t.Fatalf("schema table catalog mismatch:\nactual:   %v\nexpected: %v", actual, expected)
+	}
+}
+
+// A preserved table must be excluded from both of the catalog's jobs. If one
+// ever appears in the catalog it would be dropped by reset and copied by
+// publication, which is the failure this separation exists to prevent.
+func TestRebuildPreservedTablesAreOutsideTheIndexCatalog(t *testing.T) {
+	if len(rebuildPreservedTables) == 0 {
+		t.Fatal("no preserved tables are declared; remove the mechanism instead of leaving it empty")
+	}
+	for _, table := range semanticIndexTableCatalog {
+		if rebuildPreservedTables[table] {
+			t.Fatalf("%q is both an index catalog table and a preserved table; reset would drop it", table)
+		}
+	}
+	for _, table := range publishedIndexTables {
+		if rebuildPreservedTables[table] {
+			t.Fatalf("%q is preserved across rebuilds but is still published, which would overwrite it", table)
+		}
 	}
 }
 

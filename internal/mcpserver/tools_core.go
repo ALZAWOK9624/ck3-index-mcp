@@ -335,15 +335,57 @@ func handleDiagnostics(ctx context.Context, runtime *Runtime, definition *ToolDe
 		if args.Page > 0 {
 			return toolOutput{}, invalidArgument("page", "page is only valid with operation=explain")
 		}
-		value, err = runtime.DB.LLMValidate(ctx, opts)
+		value, err = runtime.DB.LLMValidateSinceBaseline(ctx, args.Baseline, opts)
 	case "explain":
 		if strings.TrimSpace(args.Code) == "" {
 			return toolOutput{}, missingArgument("code")
 		}
-		value, err = runtime.DB.LLMExplainDiagnosticFiltered(ctx, indexer.DiagnosticFilter{Code: args.Code, Source: args.Source, PathPrefix: args.PathPrefix, Confidence: args.Confidence, Page: args.Page}, opts)
+		value, err = runtime.DB.LLMExplainDiagnosticFiltered(ctx, indexer.DiagnosticFilter{Code: args.Code, Source: args.Source, PathPrefix: args.PathPrefix, Confidence: args.Confidence, Baseline: args.Baseline, Page: args.Page}, opts)
+	case "baseline_save":
+		var saved indexer.DiagnosticBaseline
+		saved, err = runtime.DB.SaveDiagnosticBaseline(ctx, args.Baseline)
+		value = map[string]any{
+			"operation": operation,
+			"baseline":  saved,
+			"guidance": []string{
+				"Findings recorded here are hidden from later summary and explain calls that pass the same baseline name.",
+				"The baseline survives ck3_refresh operation=full; re-record it after deliberately accepting new upstream findings.",
+			},
+		}
+	case "baseline_list":
+		var baselines []indexer.DiagnosticBaseline
+		baselines, err = runtime.DB.ListDiagnosticBaselines(ctx)
+		if baselines == nil {
+			baselines = []indexer.DiagnosticBaseline{}
+		}
+		value = map[string]any{"operation": operation, "baselines": baselines}
+	case "baseline_clear":
+		var cleared indexer.DiagnosticBaseline
+		cleared, err = runtime.DB.ClearDiagnosticBaseline(ctx, args.Baseline)
+		value = map[string]any{"operation": operation, "baseline": cleared}
 	default:
 		return toolOutput{}, unknownOperation(operation)
 	}
+	return toolOutput{Value: value, Visibility: visibility}, err
+}
+
+func handleCoatOfArms(ctx context.Context, runtime *Runtime, definition *ToolDefinition, raw json.RawMessage) (toolOutput, error) {
+	var args ck3CoatOfArmsArgs
+	if err := decodeToolArgs(raw, definition.InputSchema, definition.CompatibilityProperties, &args); err != nil {
+		return toolOutput{}, err
+	}
+	opts, visibility, err := args.options(0)
+	if err != nil {
+		return toolOutput{}, err
+	}
+	opts = configureRuntimeOptions(runtime, opts)
+	value, err := runtime.DB.LLMCoatOfArms(ctx, indexer.CoatOfArmsSpec{
+		Operation: args.Operation,
+		ID:        args.ID,
+		Size:      args.Size,
+		Filter:    args.Filter,
+		Limit:     opts.Limit,
+	}, opts)
 	return toolOutput{Value: value, Visibility: visibility}, err
 }
 

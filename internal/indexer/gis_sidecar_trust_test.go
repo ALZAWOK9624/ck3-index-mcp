@@ -70,7 +70,7 @@ func writePinnedGISSidecar(t *testing.T, content string) (Config, string) {
 		t.Fatal(err)
 	}
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
-	return Config{
+	cfg := Config{
 		GISEnabled:        true,
 		GISAnalysis:       "full",
 		GISCacheRoot:      filepath.Join(dir, "cache"),
@@ -78,7 +78,14 @@ func writePinnedGISSidecar(t *testing.T, content string) (Config, string) {
 		GISSidecarPath:    source,
 		GISSidecarSHA256:  hash,
 		GISCacheMaxGiB:    1,
-	}, source
+	}
+	// Production publications deliberately make the content-addressed
+	// directory read-only. Restore it before testing.TempDir removes the
+	// fixture; otherwise non-root Unix runners cannot unlink its executable.
+	t.Cleanup(func() {
+		cleanupGISPublishDirectory(filepath.Join(cfg.GISCacheRoot, "gis-bin", hash))
+	})
+	return cfg, source
 }
 
 func TestWhiteboxExecutionUsesPublishedBytesAfterSourceReplacement(t *testing.T) {
@@ -289,6 +296,9 @@ func TestGISSidecarStatusRevalidatesMemoizedPublishedExecutable(t *testing.T) {
 		}},
 		{name: "deleted", mutate: func(t *testing.T, destination string) {
 			if err := os.Chmod(destination, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(filepath.Dir(destination), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.Remove(destination); err != nil {

@@ -355,3 +355,29 @@ func abs(v int) int {
 	}
 	return v
 }
+
+// A coat of arms mask carries region membership in its colour channels, so a
+// channel that stops short of full scale is not a faint tint difference: it
+// shifts every threshold the renderer reads off that channel. Each of the three
+// expansions has to be the same bit replication, checked over the whole domain
+// rather than at the endpoints, where a wrong formula can still agree.
+func TestRGB565ExpandsEveryChannelToFullScale(t *testing.T) {
+	for value := uint32(0); value < 32; value++ {
+		want := uint8(value<<3 | value>>2)
+		if got := rgb565(uint16(value << 11)).R; got != want {
+			t.Fatalf("red %d expanded to %d, want %d", value, got, want)
+		}
+		if got := rgb565(uint16(value)).B; got != want {
+			t.Fatalf("blue %d expanded to %d, want %d", value, got, want)
+		}
+	}
+	for value := uint32(0); value < 64; value++ {
+		want := uint8(value<<2 | value>>4)
+		if got := rgb565(uint16(value << 5)).G; got != want {
+			t.Fatalf("green %d expanded to %d, want %d", value, got, want)
+		}
+	}
+	if white := rgb565(0xffff); white.R != 255 || white.G != 255 || white.B != 255 {
+		t.Fatalf("full-scale RGB565 decoded to %+v, want opaque white", white)
+	}
+}

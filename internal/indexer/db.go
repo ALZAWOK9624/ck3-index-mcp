@@ -316,6 +316,13 @@ func (db *DB) ensureSchemaWithRepair(ctx context.Context) (bool, error) {
 			return false, err
 		}
 	}
+	// Caches written before the snapshot table existed carry their baselines
+	// only as entry rows. Adopting them here keeps a recorded name working
+	// across the upgrade instead of reporting it as never created.
+	if _, err := db.sql.ExecContext(ctx, `INSERT OR IGNORE INTO diagnostic_baseline_snapshots(name,created_at)
+		SELECT name,COALESCE(MAX(created_at),'') FROM diagnostic_baselines GROUP BY name`); err != nil {
+		return false, fmt.Errorf("adopt pre-existing diagnostic baselines: %w", err)
+	}
 	if err := db.ensureScriptTextTriggers(ctx); err != nil {
 		return false, err
 	}
@@ -545,6 +552,15 @@ func (db *DB) ensureSchemaNoIndexes(ctx context.Context) error {
 			severity TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY (name, fingerprint)
+		)`,
+		// The snapshot exists separately from the findings it holds, because a
+		// baseline recorded on a clean project holds none. Deriving existence
+		// from the entry rows made exactly that case -- "there is nothing wrong
+		// here right now, tell me about the first thing that appears" -- report
+		// a successful save and then deny the name was ever recorded.
+		`CREATE TABLE IF NOT EXISTS diagnostic_baseline_snapshots (
+			name TEXT PRIMARY KEY,
+			created_at TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE TABLE IF NOT EXISTS saved_scopes (
 			id INTEGER PRIMARY KEY,

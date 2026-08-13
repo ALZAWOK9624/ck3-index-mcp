@@ -243,7 +243,7 @@ func rgb565(value uint16) color.NRGBA {
 	return color.NRGBA{
 		R: uint8(r<<3 | r>>2),
 		G: uint8(g<<2 | g>>4),
-		B: uint8(b<<3 | b>>1&0x3 | b>>4),
+		B: uint8(b<<3 | b>>2),
 		A: 255,
 	}
 }

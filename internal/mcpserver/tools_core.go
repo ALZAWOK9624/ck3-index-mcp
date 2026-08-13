@@ -341,32 +341,74 @@ func handleDiagnostics(ctx context.Context, runtime *Runtime, definition *ToolDe
 			return toolOutput{}, missingArgument("code")
 		}
 		value, err = runtime.DB.LLMExplainDiagnosticFiltered(ctx, indexer.DiagnosticFilter{Code: args.Code, Source: args.Source, PathPrefix: args.PathPrefix, Confidence: args.Confidence, Baseline: args.Baseline, Page: args.Page}, opts)
-	case "baseline_save":
-		var saved indexer.DiagnosticBaseline
-		saved, err = runtime.DB.SaveDiagnosticBaseline(ctx, args.Baseline)
-		value = map[string]any{
-			"operation": operation,
-			"baseline":  saved,
-			"guidance": []string{
-				"Findings recorded here are hidden from later summary and explain calls that pass the same baseline name.",
-				"The baseline survives ck3_refresh operation=full; re-record it after deliberately accepting new upstream findings.",
-			},
-		}
-	case "baseline_list":
-		var baselines []indexer.DiagnosticBaseline
-		baselines, err = runtime.DB.ListDiagnosticBaselines(ctx)
-		if baselines == nil {
-			baselines = []indexer.DiagnosticBaseline{}
-		}
-		value = map[string]any{"operation": operation, "baselines": baselines}
-	case "baseline_clear":
-		var cleared indexer.DiagnosticBaseline
-		cleared, err = runtime.DB.ClearDiagnosticBaseline(ctx, args.Baseline)
-		value = map[string]any{"operation": operation, "baseline": cleared}
+	// The baseline operations moved to ck3_diagnostic_baseline when they
+	// stopped being read-only. No redirect branch for the old names: the
+	// operation enum rejects them at decode time and names the two that remain,
+	// so the branch would never run.
 	default:
 		return toolOutput{}, unknownOperation(operation)
 	}
 	return toolOutput{Value: value, Visibility: visibility}, err
+}
+
+// handleDiagnosticBaseline records, lists and forgets diagnostic baselines.
+//
+// save and clear write, so this tool is advertised non-read-only and never
+// enters the read cache. They also invalidate the cached ck3_diagnostics
+// responses: the cache key carries the index generation, and recording a
+// baseline changes which findings a summary reports without moving it.
+func handleDiagnosticBaseline(ctx context.Context, runtime *Runtime, definition *ToolDefinition, raw json.RawMessage) (toolOutput, error) {
+	var args ck3DiagnosticBaselineArgs
+	if err := decodeToolArgs(raw, definition.InputSchema, definition.CompatibilityProperties, &args); err != nil {
+		return toolOutput{}, err
+	}
+	operation := strings.ToLower(strings.TrimSpace(args.Operation))
+	if operation == "" {
+		return toolOutput{}, missingArgument("operation")
+	}
+	switch operation {
+	case "save":
+		saved, err := runtime.DB.SaveDiagnosticBaseline(ctx, args.Baseline)
+		if err != nil {
+			return toolOutput{}, err
+		}
+		mcpReadToolCache.invalidateTool(indexer.ToolDiagnostics)
+		return toolOutput{Value: map[string]any{
+			"operation": operation,
+			"baseline":  saved,
+			"guidance": []string{
+				"Findings recorded here are hidden from later ck3_diagnostics summary and explain calls that pass the same baseline name.",
+				"The baseline survives ck3_refresh operation=full; re-record it after deliberately accepting new upstream findings.",
+			},
+		}, Visibility: "private", Committed: true}, nil
+	case "list":
+		baselines, err := runtime.DB.ListDiagnosticBaselines(ctx)
+		if err != nil {
+			return toolOutput{}, err
+		}
+		if baselines == nil {
+			baselines = []indexer.DiagnosticBaseline{}
+		}
+		return toolOutput{Value: map[string]any{
+			"operation": operation,
+			"baselines": baselines,
+		}, Visibility: "private"}, nil
+	case "clear":
+		cleared, err := runtime.DB.ClearDiagnosticBaseline(ctx, args.Baseline)
+		if err != nil {
+			return toolOutput{}, err
+		}
+		mcpReadToolCache.invalidateTool(indexer.ToolDiagnostics)
+		value := map[string]any{"operation": operation, "baseline": cleared}
+		if !cleared.Existed {
+			value["guidance"] = []string{
+				"No baseline was recorded under this name; nothing was forgotten. Use operation=list to see the recorded names.",
+			}
+		}
+		return toolOutput{Value: value, Visibility: "private", Committed: cleared.Existed}, nil
+	default:
+		return toolOutput{}, unknownOperation(operation)
+	}
 }
 
 func handleCoatOfArms(ctx context.Context, runtime *Runtime, definition *ToolDefinition, raw json.RawMessage) (toolOutput, error) {

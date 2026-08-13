@@ -43,11 +43,40 @@ func (s folderSchema) known(dir string) bool { return s.dirs[dir] }
 // must not have its own folders declared wrong by an absent authority.
 func (s folderSchema) empty() bool { return len(s.dirs) == 0 }
 
-func loadFolderSchema(ctx context.Context, tx *sql.Tx) (folderSchema, error) {
-	schema := folderSchema{
+func newFolderSchema() folderSchema {
+	return folderSchema{
 		dirs:     map[string]bool{},
 		children: map[string]map[string]bool{},
 	}
+}
+
+// record files one indexed path under every directory level above it, up to and
+// including the source root.
+//
+// The root is a real dispatch level: common/, events/ and localization/ are
+// siblings under it exactly as religion_types/ and holy_site_types/ are
+// siblings under common/. Recording it as the empty-string parent is what lets
+// a top-level name be compared against its neighbours; without it the check
+// began one level too deep, and event/ or commmon/ -- whose content the loader
+// never reaches at all -- were the only folders it could not see.
+func (s folderSchema) record(rel string) {
+	dir := normalizeSchemaDir(rel)
+	if dir == "" {
+		return
+	}
+	for d := dir; d != ""; d = parentSchemaDir(d) {
+		parent := parentSchemaDir(d)
+		s.dirs[d] = true
+		s.dirs[parent] = true
+		if s.children[parent] == nil {
+			s.children[parent] = map[string]bool{}
+		}
+		s.children[parent][path.Base(d)] = true
+	}
+}
+
+func loadFolderSchema(ctx context.Context, tx *sql.Tx) (folderSchema, error) {
+	schema := newFolderSchema()
 	// The game role is the authority. Dependency mods are peers that can carry
 	// the very mistake this check looks for, so they never widen the schema.
 	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT f.rel_path FROM files f
@@ -62,21 +91,7 @@ func loadFolderSchema(ctx context.Context, tx *sql.Tx) (folderSchema, error) {
 		if err := rows.Scan(&rel); err != nil {
 			return folderSchema{}, err
 		}
-		dir := normalizeSchemaDir(rel)
-		if dir == "" {
-			continue
-		}
-		for d := dir; d != ""; d = parentSchemaDir(d) {
-			schema.dirs[d] = true
-			parent := parentSchemaDir(d)
-			if parent == "" {
-				continue
-			}
-			if schema.children[parent] == nil {
-				schema.children[parent] = map[string]bool{}
-			}
-			schema.children[parent][path.Base(d)] = true
-		}
+		schema.record(rel)
 	}
 	return schema, rows.Err()
 }
@@ -113,8 +128,11 @@ func (s folderSchema) evaluate(dir string) (folderSchemaVerdict, bool) {
 	if s.empty() || dir == "" || s.known(dir) {
 		return folderSchemaVerdict{}, false
 	}
+	// The empty parent is the source root, which loadFolderSchema records like
+	// any other level, so a top-level name is judged against its real siblings
+	// instead of being waved through for having no directory above it.
 	parent := parentSchemaDir(dir)
-	if parent == "" || !s.known(parent) {
+	if !s.known(parent) {
 		return folderSchemaVerdict{}, false
 	}
 	name := path.Base(dir)

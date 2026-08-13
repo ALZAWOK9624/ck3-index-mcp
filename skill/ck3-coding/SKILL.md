@@ -30,7 +30,7 @@ The same tools serve two jobs with different limits. Decide which one you are in
 When a question turns into an edit, restate the mode change before the first write; do not drift from one into the other.
 
 <!-- BEGIN GENERATED MCP TOOLS -->
-## MCP Tools (37 canonical tools)
+## MCP Tools (38 canonical tools)
 
 ck3-index exposes one canonical MCP tool surface. Each tool uses bounded operations rather than legacy specialist aliases.
 
@@ -47,6 +47,7 @@ ck3-index exposes one canonical MCP tool surface. Each tool uses bounded operati
 | `ck3_preflight` | Use when a final pass/fail gate is needed before accepting, applying, packaging, or publishing a change. |
 | `ck3_impact` | Use when deleting, renaming, replacing, or substantially changing an existing object. |
 | `ck3_diagnostics` | Use when reading diagnostics already produced by the current index generation. |
+| `ck3_diagnostic_baseline` | Use when the findings already present must be recorded so later diagnostic reports cover only what appeared since. |
 | `ck3_save` | Use when a CK3 save file must be identified, its declared content listed, its ids checked against the Mod, or one character profiled. |
 | `ck3_refresh` | Use when configured project source files changed and the index must reflect them. |
 | `ck3_script_reference` | Use when a local CK3 engine or script-rule fact needs authoritative indexed evidence. |
@@ -290,7 +291,7 @@ Inspect before imitating.
 
 ## Diagnostics Reference
 
-This project sits on top of an upstream mod, so a bare `ck3_diagnostics` summary reports the upstream's findings alongside yours. Record what is already there once with `operation=baseline_save`, then pass the same `baseline` name to `summary` and `explain` to see only what appeared since. The baseline survives `ck3_refresh operation=full`; re-record it after deliberately accepting new upstream findings, and use `baseline_list` / `baseline_clear` to manage them.
+This project sits on top of an upstream mod, so a bare `ck3_diagnostics` summary reports the upstream's findings alongside yours. Record what is already there once with `ck3_diagnostic_baseline operation=save`, then pass the same `baseline` name to `ck3_diagnostics` `summary` and `explain` to see only what appeared since. Recording a baseline on a tree with no findings is legitimate and useful: everything that appears afterwards is new. The baseline survives `ck3_refresh operation=full`; re-record it after deliberately accepting new upstream findings, and use `operation=list` / `operation=clear` to manage them.
 
 | Code | Severity | Meaning |
 |---|---|---|

@@ -125,20 +125,35 @@ func buildCanonicalTools() []ToolDefinition {
 		{
 			Name:        "ck3_diagnostics",
 			Title:       "Inspect CK3 Diagnostics",
-			Description: "Inspect cached project diagnostics without rescanning. Defaults to summary; explain filters one diagnostic code and optional provenance fields. A baseline records the findings already present so later calls report only what appeared since: baseline_save records, baseline_list reports what exists, baseline_clear forgets one, and passing baseline to summary or explain hides everything it recorded.",
+			Description: "Inspect cached project diagnostics without rescanning. Defaults to summary; explain filters one diagnostic code and optional provenance fields. Passing baseline hides every finding that baseline already recorded, so the report covers only what appeared since; record one with ck3_diagnostic_baseline.",
 			InputSchema: objectSchema(map[string]any{
-				"operation":   stringProperty("Diagnostic view.", "summary", "explain", "baseline_save", "baseline_list", "baseline_clear"),
+				"operation":   stringProperty("Diagnostic view.", "summary", "explain"),
 				"code":        stringProperty("Required for operation=explain."),
 				"source":      stringProperty("Optional diagnostic source."),
 				"path_prefix": stringProperty("Optional source-root-relative path prefix."),
 				"confidence":  stringProperty("Optional confidence filter."),
-				"baseline":    stringProperty("Baseline name. Records or selects a recorded finding set; defaults to \"default\". On summary and explain it hides every finding the baseline already held."),
+				"baseline":    stringProperty("Name of a baseline recorded by ck3_diagnostic_baseline. Hides every finding that baseline already held. An unrecorded name is an error rather than an empty filter."),
 				"limit":       limitProperty(),
 				"page":        pageProperty(),
 				"visibility":  visibilityProperty(),
 			}),
 			OutputSchema: output, Annotations: annotations, Handler: handleDiagnostics,
 			CompatibilityProperties: legacyPrivacyProperties,
+		},
+		{
+			// Separate from ck3_diagnostics because save and clear write to the
+			// index. A tool is advertised read-only or it is not, and the read
+			// cache keys on the index generation, which a baseline write does not
+			// move -- so as one tool the write could be answered out of an earlier
+			// call's cached response and never run at all.
+			Name:        "ck3_diagnostic_baseline",
+			Title:       "Record CK3 Diagnostic Baselines",
+			Description: "Record which diagnostics are already present so ck3_diagnostics reports only what appeared since. save records the findings the index currently holds under a name, replacing any earlier snapshot of that name; list reports the recorded names; clear forgets one. A baseline recorded on a project with no findings is still a baseline, and the most useful one: every finding that appears afterwards is new. Baselines survive ck3_refresh operation=full, because a rebuild reproduces exactly the findings they were taken against.",
+			InputSchema: objectSchema(map[string]any{
+				"operation": stringProperty("Baseline operation.", "save", "list", "clear"),
+				"baseline":  stringProperty("Baseline name; defaults to \"default\". Not required by list."),
+			}, "operation"),
+			OutputSchema: output, Annotations: artifactAnnotations(), Handler: handleDiagnosticBaseline,
 		},
 		{
 			Name:        "ck3_save",
@@ -226,7 +241,7 @@ func buildCanonicalTools() []ToolDefinition {
 		{
 			Name:        "ck3_coat_of_arms",
 			Title:       "Read and Render a CK3 Coat of Arms",
-			Description: "Read one active coat of arms and draw it. inspect resolves its pattern, its three colours and every emblem against the active named_colors and indexed textures, reporting which references no source supplies. render composites the field CK3 builds before framing and returns it as a PNG. assets lists the pattern and emblem texture names a definition may refer to. Colours and textures follow the configured load order, so the result is what the game would load rather than what any one source declares.",
+			Description: "Read one active coat of arms and draw it. inspect resolves its pattern, its three colours and every emblem against the active named_colors and indexed textures, reporting which references no source supplies. A definition that declares a parent is resolved against it first, so what comes back is the design that draws rather than the fields the child happens to restate. render composites the field CK3 builds before framing and returns it as a PNG. assets lists the pattern and emblem texture names a definition may refer to. Colours and textures follow the configured load order, so the result is what the game would load rather than what any one source declares; under visibility=public they follow the public load order alone, which the response reports.",
 			InputSchema: objectSchema(map[string]any{
 				"operation":  stringProperty("Coat of arms view.", "inspect", "render", "assets"),
 				"id":         stringProperty("Exact coat of arms id, required for inspect and render."),
@@ -408,6 +423,11 @@ func standardizeCanonicalToolDescriptions(definitions []ToolDefinition) []ToolDe
 			When:     "reading diagnostics already produced by the current index generation",
 			DoNotUse: "project source files changed since the last scan; use ck3_refresh first",
 			Unlike:   "ck3_review, it does not parse new proposed content",
+		},
+		"ck3_diagnostic_baseline": {
+			When:     "the findings already present must be recorded so later diagnostic reports cover only what appeared since",
+			DoNotUse: "reading the findings themselves; use ck3_diagnostics",
+			Unlike:   "ck3_diagnostics, it writes the caller's decision into the index instead of reading findings out of it",
 		},
 		"ck3_coat_of_arms": {
 			When:     "a coat of arms must be read as resolved colours and textures, or seen rather than described",

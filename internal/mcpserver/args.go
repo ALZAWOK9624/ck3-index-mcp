@@ -171,6 +171,11 @@ type ck3DiagnosticsArgs struct {
 	Page       int    `json:"page,omitempty"`
 }
 
+type ck3DiagnosticBaselineArgs struct {
+	Operation string `json:"operation,omitempty"`
+	Baseline  string `json:"baseline,omitempty"`
+}
+
 type ck3CoatOfArmsArgs struct {
 	visibilityArgs
 	Operation string `json:"operation,omitempty"`

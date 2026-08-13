@@ -3,6 +3,7 @@ package indexer
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -26,6 +27,11 @@ type DiagnosticBaseline struct {
 	Name      string `json:"name"`
 	Count     int    `json:"count"`
 	CreatedAt string `json:"created_at"`
+	// Existed answers the question a count of zero cannot: whether the name
+	// was recorded at all. It is always serialized, because on clear its false
+	// value is the whole answer and an omitted field would leave the caller
+	// reading a successful deletion of nothing.
+	Existed bool `json:"existed"`
 }
 
 const defaultDiagnosticBaselineName = "default"
@@ -85,6 +91,14 @@ func (db *DB) SaveDiagnosticBaseline(ctx context.Context, name string) (Diagnost
 	if _, err := tx.ExecContext(ctx, `DELETE FROM diagnostic_baselines WHERE name=?`, key); err != nil {
 		return DiagnosticBaseline{}, err
 	}
+	// The snapshot row is what makes the name exist. Recording it independently
+	// of the entries is what lets a clean project record "nothing is wrong here
+	// yet" and have that decision survive as a real baseline holding zero
+	// findings.
+	if _, err := tx.ExecContext(ctx, `INSERT INTO diagnostic_baseline_snapshots(name,created_at) VALUES(?,?)
+		ON CONFLICT(name) DO UPDATE SET created_at=excluded.created_at`, key, recorded); err != nil {
+		return DiagnosticBaseline{}, err
+	}
 	stmt, err := tx.PrepareContext(ctx, `INSERT OR IGNORE INTO diagnostic_baselines(name,fingerprint,code,severity,created_at) VALUES(?,?,?,?,?)`)
 	if err != nil {
 		return DiagnosticBaseline{}, err
@@ -104,20 +118,24 @@ func (db *DB) SaveDiagnosticBaseline(ctx context.Context, name string) (Diagnost
 	if err := tx.Commit(); err != nil {
 		return DiagnosticBaseline{}, err
 	}
-	return DiagnosticBaseline{Name: key, Count: len(unique), CreatedAt: recorded}, nil
+	return DiagnosticBaseline{Name: key, Count: len(unique), CreatedAt: recorded, Existed: true}, nil
 }
 
-// ListDiagnosticBaselines reports every recorded snapshot, newest first.
+// ListDiagnosticBaselines reports every recorded snapshot, newest first. The
+// listing is driven by the snapshot rows rather than by the findings, so a
+// baseline that recorded zero findings is still listed as the record it is.
 func (db *DB) ListDiagnosticBaselines(ctx context.Context) ([]DiagnosticBaseline, error) {
-	rows, err := db.sql.QueryContext(ctx, `SELECT name,COUNT(*),MAX(created_at)
-		FROM diagnostic_baselines GROUP BY name`)
+	rows, err := db.sql.QueryContext(ctx, `SELECT s.name,
+			(SELECT COUNT(*) FROM diagnostic_baselines e WHERE e.name=s.name),
+			s.created_at
+		FROM diagnostic_baseline_snapshots s`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []DiagnosticBaseline
 	for rows.Next() {
-		var b DiagnosticBaseline
+		b := DiagnosticBaseline{Existed: true}
 		if err := rows.Scan(&b.Name, &b.Count, &b.CreatedAt); err != nil {
 			return nil, err
 		}
@@ -136,28 +154,60 @@ func (db *DB) ListDiagnosticBaselines(ctx context.Context) ([]DiagnosticBaseline
 }
 
 // ClearDiagnosticBaseline forgets one snapshot and reports how many findings it
-// held, so a caller can tell a real deletion from a name that never existed.
+// held. Existed is what distinguishes a real deletion from a name that was
+// never recorded, which the count cannot: a baseline taken on a clean project
+// legitimately holds nothing.
 func (db *DB) ClearDiagnosticBaseline(ctx context.Context, name string) (DiagnosticBaseline, error) {
 	key := normalizeBaselineName(name)
-	var count int
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return DiagnosticBaseline{}, err
+	}
+	defer tx.Rollback()
 	var created sql.NullString
-	if err := db.sql.QueryRowContext(ctx, `SELECT COUNT(*),MAX(created_at) FROM diagnostic_baselines WHERE name=?`, key).Scan(&count, &created); err != nil {
+	existed := true
+	switch err := tx.QueryRowContext(ctx, `SELECT created_at FROM diagnostic_baseline_snapshots WHERE name=?`, key).Scan(&created); {
+	case errors.Is(err, sql.ErrNoRows):
+		existed = false
+	case err != nil:
 		return DiagnosticBaseline{}, err
 	}
-	if _, err := db.sql.ExecContext(ctx, `DELETE FROM diagnostic_baselines WHERE name=?`, key); err != nil {
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM diagnostic_baselines WHERE name=?`, key).Scan(&count); err != nil {
 		return DiagnosticBaseline{}, err
 	}
-	return DiagnosticBaseline{Name: key, Count: count, CreatedAt: created.String}, nil
+	if _, err := tx.ExecContext(ctx, `DELETE FROM diagnostic_baselines WHERE name=?`, key); err != nil {
+		return DiagnosticBaseline{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM diagnostic_baseline_snapshots WHERE name=?`, key); err != nil {
+		return DiagnosticBaseline{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return DiagnosticBaseline{}, err
+	}
+	return DiagnosticBaseline{Name: key, Count: count, CreatedAt: created.String, Existed: existed}, nil
 }
 
 // diagnosticBaselineSet loads one snapshot for filtering. An unknown name is an
 // error rather than an empty set: silently reporting every finding when the
 // caller asked for only the new ones would read as "nothing regressed".
+//
+// Existence is decided by the snapshot row. A baseline recorded on a clean
+// project holds no fingerprints and still exists -- and it is the most useful
+// one there is, because every finding that appears afterwards is new by
+// construction.
 func (db *DB) diagnosticBaselineSet(ctx context.Context, name string) (map[string]bool, error) {
 	if strings.TrimSpace(name) == "" {
 		return nil, nil
 	}
 	key := normalizeBaselineName(name)
+	var recorded string
+	switch err := db.sql.QueryRowContext(ctx, `SELECT created_at FROM diagnostic_baseline_snapshots WHERE name=?`, key).Scan(&recorded); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, fmt.Errorf("diagnostic baseline %q does not exist; record it first with operation=baseline_save", key)
+	case err != nil:
+		return nil, err
+	}
 	rows, err := db.sql.QueryContext(ctx, `SELECT fingerprint FROM diagnostic_baselines WHERE name=?`, key)
 	if err != nil {
 		return nil, err
@@ -173,9 +223,6 @@ func (db *DB) diagnosticBaselineSet(ctx context.Context, name string) (map[strin
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
-	}
-	if len(set) == 0 {
-		return nil, fmt.Errorf("diagnostic baseline %q does not exist; record it first with operation=baseline_save", key)
 	}
 	return set, nil
 }

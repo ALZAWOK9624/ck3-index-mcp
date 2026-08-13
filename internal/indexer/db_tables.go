@@ -76,7 +76,8 @@ var contentlessDerivedTables = map[string]bool{
 // Named here rather than left out silently so the schema-catalog test can tell
 // a deliberate exclusion from a table someone forgot to register.
 var rebuildPreservedTables = map[string]bool{
-	"diagnostic_baselines": true,
+	"diagnostic_baselines":          true,
+	"diagnostic_baseline_snapshots": true,
 }
 
 // schemaTableNames is every table ensureSchema creates: the published index

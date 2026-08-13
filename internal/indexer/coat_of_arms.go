@@ -34,6 +34,10 @@ const (
 	// share the indexed object type but describe atlases, template lists and
 	// dynamic definitions instead.
 	coatOfArmsDefinitionDir = "common/coat_of_arms/coat_of_arms/"
+	// A parent chain this deep is already a mistake; the bound exists so a
+	// malformed tree cannot make the walk unbounded even if cycle detection is
+	// ever weakened.
+	coatOfArmsMaxInheritanceDepth = 16
 )
 
 // CoatOfArmsSpec selects what to do. It never accepts a filesystem path: an id
@@ -79,8 +83,15 @@ type CoatOfArmsResult struct {
 	AssetTotal int                      `json:"asset_total,omitempty"`
 	Truncated  bool                     `json:"truncated,omitempty"`
 	Redacted   bool                     `json:"redacted,omitempty"`
-	Guidance   []string                 `json:"guidance,omitempty"`
-	PNG        []byte                   `json:"-"`
+	// PublicAssetsOnly reports that colours and textures were resolved from
+	// public sources alone, and RedactedTextures names the referenced textures
+	// whose winning source was private and was therefore skipped. A public
+	// render is the public view of the design, not necessarily what the game
+	// loads, and it has to say so rather than pass for the live answer.
+	PublicAssetsOnly bool     `json:"public_assets_only,omitempty"`
+	RedactedTextures []string `json:"redacted_textures,omitempty"`
+	Guidance         []string `json:"guidance,omitempty"`
+	PNG              []byte   `json:"-"`
 }
 
 // LLMCoatOfArms runs one coat-of-arms operation.
@@ -96,7 +107,7 @@ func (db *DB) LLMCoatOfArms(ctx context.Context, spec CoatOfArmsSpec, opts LLMOp
 		}
 		return db.coatOfArmsForID(ctx, operation, spec, opts)
 	case "assets":
-		return db.coatOfArmsAssetList(ctx, spec)
+		return db.coatOfArmsAssetList(ctx, spec, opts)
 	default:
 		return CoatOfArmsResult{}, fmt.Errorf("unknown coat of arms operation %q; use inspect, render or assets", operation)
 	}
@@ -132,29 +143,37 @@ func (db *DB) coatOfArmsForID(ctx context.Context, operation string, spec CoatOf
 		return result, nil
 	}
 	result.Source, result.Path = location.source, location.rel
+	result.PublicAssetsOnly = opts.publicMode()
 
-	palette, err := db.coatOfArmsPalette(ctx)
+	palette, paletteWithheld, err := db.coatOfArmsPalette(ctx, opts)
 	if err != nil {
 		return result, err
 	}
-	data, err := os.ReadFile(location.path)
+	declared, err := db.readCoatOfArmsDefinition(location, id, palette)
 	if err != nil {
-		return result, fmt.Errorf("read coat of arms file %q: %w", location.rel, err)
+		return result, err
 	}
-	var definition *coatofarms.Definition
-	for _, candidate := range coatofarms.Parse(script.ParseBytes(data).Nodes, palette) {
-		if strings.EqualFold(candidate.ID, id) {
-			found := candidate
-			definition = &found
-			break
+	resolved, chain, err := db.resolveCoatOfArmsParents(ctx, *declared, palette, opts)
+	if err != nil {
+		return result, err
+	}
+	// An inherited design is its parent's script with a few fields changed, so
+	// resolving a public child against a private parent would hand back the
+	// private definition under the child's name -- and render it. The boundary
+	// is the same one the requested definition already answers to.
+	if chain.privateParent != "" {
+		result.Redacted = true
+		result.Summary = fmt.Sprintf("%q inherits from %q, which is defined in a private source; public visibility withholds the resolved definition and its render.",
+			id, chain.privateParent)
+		result.Guidance = []string{
+			"Call again with visibility=private to resolve a coat of arms whose parent is defined in the project layer.",
 		}
+		return result, nil
 	}
-	if definition == nil {
-		return result, fmt.Errorf("the index locates %q in %s but the file no longer defines it; run ck3_refresh", id, location.rel)
-	}
+	definition := &resolved
 	result.Definition = definition
 
-	textures, resolution, err := db.coatOfArmsTextures(ctx)
+	textures, resolution, withheldTextures, err := db.coatOfArmsTextures(ctx, opts)
 	if err != nil {
 		return result, err
 	}
@@ -163,8 +182,12 @@ func (db *DB) coatOfArmsForID(ctx context.Context, operation string, spec CoatOf
 		if found, ok := resolution[strings.ToLower(name)]; ok {
 			ref.Resolved, ref.Source, ref.Kind = true, found.source, found.kind
 		}
+		if withheldTextures[strings.ToLower(name)] {
+			result.RedactedTextures = append(result.RedactedTextures, name)
+		}
 		result.Textures = append(result.Textures, ref)
 	}
+	publicAssetNotes := coatOfArmsPublicAssetNotes(opts, paletteWithheld, result.RedactedTextures)
 
 	if operation == "inspect" {
 		result.Summary = coatOfArmsInspectSummary(*definition, result.Textures)
@@ -172,6 +195,11 @@ func (db *DB) coatOfArmsForID(ctx context.Context, operation string, spec CoatOf
 			"Colours are resolved against the active named_colors files; an unresolved name renders as black in game and is reported in definition.warnings rather than substituted.",
 			"Call this tool again with operation=render to see the design rather than read it.",
 		}
+		if len(definition.Inherited) > 0 {
+			result.Guidance = append(result.Guidance,
+				"This is the resolved design: definition.inherited lists the parents folded in, nearest first, and every field shown is the one that draws.")
+		}
+		result.Guidance = append(result.Guidance, publicAssetNotes...)
 		return result, nil
 	}
 
@@ -199,7 +227,109 @@ func (db *DB) coatOfArmsForID(ctx context.Context, operation string, spec CoatOf
 		"This is the field render CK3 composites before it applies the frame, material and dirt overlays, so the shape of the shield and its border are absent by design.",
 		"A texture the index does not hold is named in render.missing_textures and skipped; the rest of the design is still drawn.",
 	}
+	result.Guidance = append(result.Guidance, publicAssetNotes...)
 	return result, nil
+}
+
+// coatOfArmsPublicAssetNotes says what public visibility left out. A render
+// drawn from public assets alone is a legitimate answer, but it is not the one
+// the game composites when a private layer supplies the winning texture or the
+// colour name, and the difference is invisible in the picture.
+func coatOfArmsPublicAssetNotes(opts LLMOptions, paletteWithheld int, redactedTextures []string) []string {
+	if !opts.publicMode() {
+		return nil
+	}
+	var out []string
+	if len(redactedTextures) > 0 {
+		out = append(out, fmt.Sprintf("%d referenced texture(s) are supplied by a private source and were withheld: the highest-priority public texture was used instead, so this is not necessarily what the game draws.", len(redactedTextures)))
+	}
+	if paletteWithheld > 0 {
+		out = append(out, "Colours were resolved from public named_colors files only; a name defined solely in a private source reads here as unresolved rather than being read out of that source.")
+	}
+	return out
+}
+
+// readCoatOfArmsDefinition parses one located file and returns the definition
+// it was located for.
+func (db *DB) readCoatOfArmsDefinition(location coatOfArmsLocation, id string, palette coatofarms.Palette) (*coatofarms.Definition, error) {
+	data, err := os.ReadFile(location.path)
+	if err != nil {
+		return nil, fmt.Errorf("read coat of arms file %q: %w", location.rel, err)
+	}
+	for _, candidate := range coatofarms.Parse(script.ParseBytes(data).Nodes, palette) {
+		if strings.EqualFold(candidate.ID, id) {
+			found := candidate
+			return &found, nil
+		}
+	}
+	return nil, fmt.Errorf("the index locates %q in %s but the file no longer defines it; run ck3_refresh", id, location.rel)
+}
+
+// coatOfArmsChain records what the parent walk found beyond the folded design.
+type coatOfArmsChain struct {
+	// privateParent names the first ancestor public visibility withholds. It is
+	// the child's own declared text, so naming it discloses nothing the child
+	// does not already say.
+	privateParent string
+	warnings      []string
+}
+
+// resolveCoatOfArmsParents folds the parent chain into definition.
+//
+// A definition that declares a parent is not the design that draws: read alone
+// it has no pattern, renders as a flat color1 field, and reports itself as a
+// finished answer. Each link is resolved through the same index lookup as the
+// requested id, so load order, overridden files and the evidence boundary apply
+// to an inherited definition exactly as they do to a directly requested one.
+func (db *DB) resolveCoatOfArmsParents(ctx context.Context, definition coatofarms.Definition, palette coatofarms.Palette, opts LLMOptions) (coatofarms.Definition, coatOfArmsChain, error) {
+	var chain coatOfArmsChain
+	visited := map[string]bool{strings.ToLower(strings.TrimSpace(definition.ID)): true}
+	var ancestors []coatofarms.Definition
+	current := definition
+	for depth := 0; strings.TrimSpace(current.Parent) != ""; depth++ {
+		parentID := strings.TrimSpace(current.Parent)
+		if depth >= coatOfArmsMaxInheritanceDepth {
+			chain.warnings = append(chain.warnings, fmt.Sprintf("the parent chain is more than %d definitions deep; the rest was not resolved", coatOfArmsMaxInheritanceDepth))
+			break
+		}
+		if visited[strings.ToLower(parentID)] {
+			chain.warnings = append(chain.warnings, fmt.Sprintf("the parent chain returns to %q, so the inheritance is circular; it was cut there and the fields above it are missing", parentID))
+			break
+		}
+		visited[strings.ToLower(parentID)] = true
+		location, err := db.coatOfArmsLocation(ctx, parentID)
+		if err != nil {
+			return definition, chain, err
+		}
+		if location.path == "" {
+			chain.warnings = append(chain.warnings, fmt.Sprintf("parent %q is not defined by any active source; the pattern, colours and emblems it would supply are missing", parentID))
+			break
+		}
+		if opts.publicMode() && opts.sourceIsPrivate(location.source) {
+			chain.privateParent = parentID
+			return definition, chain, nil
+		}
+		parent, err := db.readCoatOfArmsDefinition(location, parentID, palette)
+		if err != nil {
+			return definition, chain, err
+		}
+		ancestors = append(ancestors, *parent)
+		current = *parent
+	}
+	resolved := definition
+	if len(ancestors) > 0 {
+		// Fold from the furthest ancestor down, so each level overrides the one
+		// above it and the requested definition overrides them all.
+		folded := ancestors[len(ancestors)-1]
+		for i := len(ancestors) - 2; i >= 0; i-- {
+			folded = ancestors[i].InheritFrom(folded)
+		}
+		resolved = definition.InheritFrom(folded)
+	}
+	for _, warning := range chain.warnings {
+		resolved.AppendWarning(warning)
+	}
+	return resolved, chain, nil
 }
 
 func coatOfArmsInspectSummary(definition coatofarms.Definition, textures []CoatOfArmsTextureRef) string {
@@ -265,19 +395,30 @@ func (db *DB) coatOfArmsLocation(ctx context.Context, id string) (coatOfArmsLoca
 // colors = {} blocks across files, so all of them are read rather than only the
 // highest-priority one, and a lower-priority file still supplies names the
 // others never mention.
-func (db *DB) coatOfArmsPalette(ctx context.Context) (coatofarms.Palette, error) {
-	rows, err := db.sql.QueryContext(ctx, `SELECT path FROM files
+//
+// Public visibility reads only the public files and reports how many it left
+// out. A named colour is script content from its source layer like any other,
+// and resolving it into a hex value -- let alone into pixels -- would carry that
+// content past the boundary in a form no redaction downstream can recognise.
+func (db *DB) coatOfArmsPalette(ctx context.Context, opts LLMOptions) (coatofarms.Palette, int, error) {
+	rows, err := db.sql.QueryContext(ctx, `SELECT path,source_name FROM files
 		WHERE kind='script' AND overridden=0 AND rel_path LIKE ?
 		ORDER BY source_rank DESC`, coatOfArmsNamedColorsD+"%")
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
+	publicOnly := opts.publicMode()
+	withheld := 0
 	palette := coatofarms.Palette{}
 	for rows.Next() {
-		var path string
-		if err := rows.Scan(&path); err != nil {
-			return nil, err
+		var path, source string
+		if err := rows.Scan(&path, &source); err != nil {
+			return nil, 0, err
+		}
+		if publicOnly && opts.sourceIsPrivate(source) {
+			withheld++
+			continue
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -285,7 +426,7 @@ func (db *DB) coatOfArmsPalette(ctx context.Context) (coatofarms.Palette, error)
 		}
 		palette.ParseNamedColors(script.ParseBytes(data).Nodes)
 	}
-	return palette, rows.Err()
+	return palette, withheld, rows.Err()
 }
 
 type coatOfArmsTextureOrigin struct {
@@ -296,19 +437,27 @@ type coatOfArmsTextureOrigin struct {
 // coatOfArmsTextures builds the texture library from the indexed resources.
 // Lower source rank wins, which is the same precedence the index applies to
 // script files, so a mod's replacement emblem is the one that draws.
-func (db *DB) coatOfArmsTextures(ctx context.Context) (*coatofarms.PathTextures, map[string]coatOfArmsTextureOrigin, error) {
+//
+// Public visibility skips private sources and re-resolves each name to the
+// highest-priority public texture, returning the names whose real winner it
+// withheld. A texture is artwork from its source layer, and a render encodes it
+// into pixels: drawing with the private winner would put private content into a
+// public answer in the one form the structured redaction cannot see.
+func (db *DB) coatOfArmsTextures(ctx context.Context, opts LLMOptions) (*coatofarms.PathTextures, map[string]coatOfArmsTextureOrigin, map[string]bool, error) {
 	rows, err := db.sql.QueryContext(ctx, `SELECT resource_path,source_name,path FROM resources
 		WHERE resource_path LIKE ? ORDER BY source_rank`, coatOfArmsTextureRoot+"%")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer rows.Close()
+	publicOnly := opts.publicMode()
 	paths := map[string]string{}
 	origins := map[string]coatOfArmsTextureOrigin{}
+	withheld := map[string]bool{}
 	for rows.Next() {
 		var resourcePath, source, path string
 		if err := rows.Scan(&resourcePath, &source, &path); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if !strings.HasSuffix(strings.ToLower(resourcePath), ".dds") {
 			continue
@@ -317,13 +466,21 @@ func (db *DB) coatOfArmsTextures(ctx context.Context) (*coatofarms.PathTextures,
 		if _, taken := paths[name]; taken {
 			continue
 		}
+		if publicOnly && opts.sourceIsPrivate(source) {
+			// Rows arrive in load order, so reaching one before any public
+			// texture of that name means the private layer is the winner.
+			// Keep scanning: a public source further down still supplies
+			// something to draw with, and that is the public view of the design.
+			withheld[name] = true
+			continue
+		}
 		paths[name] = path
 		origins[name] = coatOfArmsTextureOrigin{source: source, kind: coatOfArmsTextureKind(resourcePath)}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return coatofarms.NewPathTextures(paths), origins, nil
+	return coatofarms.NewPathTextures(paths), origins, withheld, nil
 }
 
 func coatOfArmsTextureKind(resourcePath string) string {
@@ -340,9 +497,16 @@ func coatOfArmsTextureKind(resourcePath string) string {
 	}
 }
 
-func (db *DB) coatOfArmsAssetList(ctx context.Context, spec CoatOfArmsSpec) (CoatOfArmsResult, error) {
-	result := CoatOfArmsResult{Intent: "coat_of_arms_assets", Operation: "assets"}
-	_, origins, err := db.coatOfArmsTextures(ctx)
+// coatOfArmsAssetList enumerates the textures a definition may reference.
+//
+// It takes the caller's options for the same reason every other view does: the
+// listing names files and the sources that supply them, so under public
+// visibility it must enumerate the public layers alone. Listing them without
+// the options was a way to read a private layer's contents through a tool that
+// never asks for an id.
+func (db *DB) coatOfArmsAssetList(ctx context.Context, spec CoatOfArmsSpec, opts LLMOptions) (CoatOfArmsResult, error) {
+	result := CoatOfArmsResult{Intent: "coat_of_arms_assets", Operation: "assets", PublicAssetsOnly: opts.publicMode()}
+	_, origins, withheld, err := db.coatOfArmsTextures(ctx, opts)
 	if err != nil {
 		return result, err
 	}
@@ -378,6 +542,10 @@ func (db *DB) coatOfArmsAssetList(ctx context.Context, spec CoatOfArmsSpec) (Coa
 	result.Guidance = []string{
 		"A name listed here is what a definition writes in pattern or texture; the leading directory is supplied by CK3 and is never written in script.",
 		"Only the highest-priority source for each file name is listed, because that is the one the game loads.",
+	}
+	if opts.publicMode() && len(withheld) > 0 {
+		result.Guidance = append(result.Guidance,
+			fmt.Sprintf("%d texture name(s) whose winning source is private were withheld or listed from a lower-priority public source; call again with visibility=private for the set the game actually loads.", len(withheld)))
 	}
 	return result, nil
 }

@@ -49,9 +49,13 @@ var chineseToolTexts = map[string]chineseToolText{
 		Title:       "检查 CK3 诊断",
 		Description: "无需重新扫描即可检查已缓存的工程诊断。默认返回摘要；explain 可按诊断代码和可选来源字段筛选。",
 	},
+	"ck3_diagnostic_baseline": {
+		Title:       "记录 CK3 诊断基线",
+		Description: "记录当前已经存在的诊断，使后续 ck3_diagnostics 只报告此后新出现的问题。save 把索引当前持有的诊断记在一个名字下，覆盖同名的旧快照；list 列出已记录的名字；clear 忘掉一个。在没有任何诊断的工程上记录的基线同样是基线，而且是最有用的那种：此后出现的每一条都是新的。基线不会被 ck3_refresh operation=full 清除，因为重建会原样复现它当初对照的那些诊断。",
+	},
 	"ck3_coat_of_arms": {
 		Title:       "读取并渲染 CK3 纹章",
-		Description: "读取一个生效的纹章并把它画出来。inspect 将纹章的底纹、三种颜色与每个纹饰对照生效的 named_colors 和已索引贴图逐一解析，并报告哪些引用没有任何来源提供；render 合成 CK3 在加框之前构建的纹章本体并返回 PNG；assets 列出纹章定义可以引用的底纹与纹饰贴图名。颜色与贴图均按已配置的载入顺序解析，因此结果是游戏实际会载入的那一份，而不是某一个来源单独声明的内容。",
+		Description: "读取一个生效的纹章并把它画出来。inspect 将纹章的底纹、三种颜色与每个纹饰对照生效的 named_colors 和已索引贴图逐一解析，并报告哪些引用没有任何来源提供；声明了 parent 的定义会先逐层合并父定义，因此返回的是真正会画出来的那份设计；render 合成 CK3 在加框之前构建的纹章本体并返回 PNG；assets 列出纹章定义可以引用的底纹与纹饰贴图名。颜色与贴图均按已配置的载入顺序解析，因此结果是游戏实际会载入的那一份，而不是某一个来源单独声明的内容；visibility=public 下只按公开层的载入顺序解析，响应会明确报告这一点。",
 	},
 	"ck3_save": {
 		Title:       "读取 CK3 存档",
@@ -261,7 +265,9 @@ var chineseFieldDescriptions = map[string]string{
 	"Object id, object type, or type:term.": "对象标识符、对象类型或 type:term。",
 	"Optional bounded regular expression for exact namespace filtering, e.g. ^c_c[0-9]+$.": "可选的受限正则表达式，用于准确筛选命名空间，例如 ^c_c[0-9]+$。",
 	"Optional confidence filter.": "可选的置信度筛选器。",
-	"Baseline name. Records or selects a recorded finding set; defaults to \"default\". On summary and explain it hides every finding the baseline already held.": "基线名称。用于记录或选定一组已收录的发现，默认为 \"default\"。在 summary 与 explain 上会隐藏该基线已收录的全部发现。",
+	"Name of a baseline recorded by ck3_diagnostic_baseline. Hides every finding that baseline already held. An unrecorded name is an error rather than an empty filter.": "由 ck3_diagnostic_baseline 记录的基线名称。会隐藏该基线已收录的全部发现。未记录的名称会报错，而不是当作空筛选器。",
+	"Baseline operation.": "基线操作。",
+	"Baseline name; defaults to \"default\". Not required by list.": "基线名称，默认为 \"default\"。list 不需要。",
 	"Coat of arms view.": "纹章视图。",
 	"Exact coat of arms id, required for inspect and render.":                                                          "准确的纹章 ID，inspect 与 render 必填。",
 	"Square render edge in pixels for operation=render.":                                                               "operation=render 时的方形渲染边长（像素）。",

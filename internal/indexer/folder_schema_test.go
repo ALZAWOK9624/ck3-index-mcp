@@ -1,41 +1,20 @@
 package indexer
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
-// schemaFromRelPaths builds the engine-layer view the same way loadFolderSchema
-// does, so these tests exercise the real directory bookkeeping rather than a
-// hand-written fixture that could drift from it.
+// schemaFromRelPaths builds the engine-layer view through the same recorder
+// loadFolderSchema uses, so these tests exercise the real directory bookkeeping
+// rather than a hand-written copy of it that could drift -- the copy this
+// helper used to carry is what let the missing root level go unnoticed.
 func schemaFromRelPaths(relPaths ...string) folderSchema {
-	schema := folderSchema{
-		dirs:     map[string]bool{},
-		children: map[string]map[string]bool{},
-	}
+	schema := newFolderSchema()
 	for _, rel := range relPaths {
-		dir := normalizeSchemaDir(rel)
-		if dir == "" {
-			continue
-		}
-		for d := dir; d != ""; d = parentSchemaDir(d) {
-			schema.dirs[d] = true
-			parent := parentSchemaDir(d)
-			if parent == "" {
-				continue
-			}
-			if schema.children[parent] == nil {
-				schema.children[parent] = map[string]bool{}
-			}
-			schema.children[parent][baseSchemaDir(d)] = true
-		}
+		schema.record(rel)
 	}
 	return schema
-}
-
-func baseSchemaDir(dir string) string {
-	parent := parentSchemaDir(dir)
-	if parent == "" {
-		return dir
-	}
-	return dir[len(parent)+1:]
 }
 
 // The 1.19 rename is the case this check exists for: the old folder still holds
@@ -162,6 +141,51 @@ func TestFolderSchemaSuggestionIsStable(t *testing.T) {
 		next, _ := schema.evaluate("common/religion/religion")
 		if next.message != first.message {
 			t.Fatalf("suggestion changed between runs: %q then %q", first.message, next.message)
+		}
+	}
+}
+
+// A misspelled top-level folder is the same failure as a misspelled one under
+// common/, and the worse one: nothing below it reaches a parser either. The
+// check used to start one level too deep and let every one of these through.
+func TestFolderSchemaFlagsMisspelledTopLevelFolders(t *testing.T) {
+	schema := schemaFromRelPaths(
+		"common/traits/00_traits.txt",
+		"events/court_events.txt",
+		"localization/english/gui_l_english.yml",
+		"history/characters/00_characters.txt",
+	)
+	for typo, want := range map[string]string{
+		"event":        "events",
+		"commmon":      "common",
+		"localisation": "localization",
+	} {
+		verdict, offending := schema.evaluate(typo)
+		if !offending {
+			t.Fatalf("top-level folder %q was not reported", typo)
+		}
+		if verdict.code != folderSchemaRenameCode || verdict.severity != "error" {
+			t.Fatalf("%q got %q/%q, want %q/error", typo, verdict.code, verdict.severity, folderSchemaRenameCode)
+		}
+		if !strings.Contains(verdict.message, want+"/") {
+			t.Fatalf("%q was pointed at %q, want a suggestion of %q", typo, verdict.message, want)
+		}
+	}
+}
+
+// The root level must not become a source of guesses either: a mod is as free
+// to add its own top-level folder as its own subfolder, and the folders the
+// engine really reads stay silent.
+func TestFolderSchemaAcceptsRealAndModOwnedTopLevelFolders(t *testing.T) {
+	schema := schemaFromRelPaths(
+		"common/traits/00_traits.txt",
+		"events/court_events.txt",
+		"gfx/interface/icons/icon.dds",
+		"localization/english/gui_l_english.yml",
+	)
+	for _, dir := range []string{"common", "events", "localization", "tools", "jomini", "notes"} {
+		if _, offending := schema.evaluate(dir); offending {
+			t.Fatalf("top-level folder %q was reported as unread", dir)
 		}
 	}
 }

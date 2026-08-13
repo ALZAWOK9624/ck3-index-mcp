@@ -1,9 +1,11 @@
 package mcpserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"testing"
 
 	"ck3-index/internal/indexer"
@@ -185,11 +187,125 @@ func TestCacheableReadRequestExcludesExternalFileOperations(t *testing.T) {
 		{"workspace reads engine logs", "ck3_workspace", `{"operation":"overview"}`, false},
 		{"province mapping decodes rasters", "map_province_mapping", `{}`, false},
 		{"refresh is never cacheable", "ck3_refresh", `{"operation":"files"}`, false},
+		{"diagnostics summary stays cacheable", "ck3_diagnostics", `{"operation":"summary"}`, true},
+		{"baseline save writes", "ck3_diagnostic_baseline", `{"operation":"save"}`, false},
+		{"baseline list is never cacheable", "ck3_diagnostic_baseline", `{"operation":"list"}`, false},
+		{"baseline clear writes", "ck3_diagnostic_baseline", `{"operation":"clear"}`, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := cacheableReadRequest(test.tool, json.RawMessage(test.args)); got != test.want {
 				t.Fatalf("cacheableReadRequest(%s, %s)=%v, want %v", test.tool, test.args, got, test.want)
 			}
 		})
+	}
+}
+
+// A baseline write must never be answered out of the read cache. The cache key
+// carries the published index identity, which a baseline write does not move,
+// so an identical second save would have hit the first one's cached response,
+// skipped the handler entirely, and reported a success that wrote nothing.
+//
+// Driven through callMCPTool rather than the indexer, because the cache sits in
+// the runtime above the handler and is the whole subject of the test.
+func TestDiagnosticBaselineWritesAreNotServedFromTheReadCache(t *testing.T) {
+	dir := t.TempDir()
+	cfg := writeMCPMapFixture(t, dir)
+	if _, err := indexer.Scan(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	db, err := indexer.Open(filepath.Join(dir, "cache", "test.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	call := func(t *testing.T, name string, arguments map[string]any) map[string]any {
+		t.Helper()
+		raw, err := json.Marshal(map[string]any{"name": name, "arguments": arguments})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resultAny, err := callMCPTool(context.Background(), db, cfg, raw)
+		if err != nil {
+			t.Fatalf("%s returned a protocol error: %v", name, err)
+		}
+		result := resultAny.(map[string]any)
+		if result["isError"] == true {
+			t.Fatalf("%s returned a tool error: %+v", name, result)
+		}
+		structured, ok := result["structuredContent"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s returned no structuredContent: %+v", name, result)
+		}
+		return structured
+	}
+	names := func(t *testing.T) []string {
+		t.Helper()
+		listed := call(t, "ck3_diagnostic_baseline", map[string]any{"operation": "list"})
+		entries, ok := listed["baselines"].([]any)
+		if !ok {
+			t.Fatalf("list returned no baselines array: %+v", listed)
+		}
+		var out []string
+		for _, entry := range entries {
+			row, ok := entry.(map[string]any)
+			if !ok {
+				t.Fatalf("baseline entry is %T, want an object", entry)
+			}
+			name, _ := row["name"].(string)
+			out = append(out, name)
+		}
+		return out
+	}
+	holds := func(t *testing.T, want string) bool {
+		t.Helper()
+		for _, name := range names(t) {
+			if name == want {
+				return true
+			}
+		}
+		return false
+	}
+
+	// list -> save -> list. The first list is what would be cached and replayed.
+	if holds(t, "foo") {
+		t.Fatal("an unrecorded baseline was listed")
+	}
+	call(t, "ck3_diagnostic_baseline", map[string]any{"operation": "save", "baseline": "foo"})
+	if !holds(t, "foo") {
+		t.Fatal("a saved baseline was not listed; the list was answered from cache")
+	}
+
+	// save -> clear -> save. The second save repeats the first one's arguments
+	// exactly, which is the call a cache hit would swallow.
+	call(t, "ck3_diagnostic_baseline", map[string]any{"operation": "clear", "baseline": "foo"})
+	if holds(t, "foo") {
+		t.Fatal("a cleared baseline was still listed")
+	}
+	call(t, "ck3_diagnostic_baseline", map[string]any{"operation": "save", "baseline": "foo"})
+	if !holds(t, "foo") {
+		t.Fatal("re-saving a cleared baseline reported success without recording it")
+	}
+
+	// A recorded baseline changes what ck3_diagnostics reports without moving
+	// the scan generation, so the write has to drop the cached diagnostics too.
+	before := call(t, "ck3_diagnostics", map[string]any{"operation": "summary", "baseline": "foo"})
+	if before["intent"] == nil {
+		t.Fatalf("diagnostics summary against a baseline returned %+v", before)
+	}
+	call(t, "ck3_diagnostic_baseline", map[string]any{"operation": "clear", "baseline": "foo"})
+	rawCall, err := json.Marshal(map[string]any{
+		"name":      "ck3_diagnostics",
+		"arguments": map[string]any{"operation": "summary", "baseline": "foo"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterAny, err := callMCPTool(context.Background(), db, cfg, rawCall)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after := afterAny.(map[string]any); after["isError"] != true {
+		t.Fatalf("a summary against a cleared baseline still answered: %+v", after)
 	}
 }

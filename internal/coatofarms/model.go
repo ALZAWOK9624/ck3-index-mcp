@@ -13,13 +13,62 @@ import (
 // common/coat_of_arms/coat_of_arms/. The three top-level colours are the
 // palette every emblem draws from unless it names its own.
 type Definition struct {
-	ID       string   `json:"id"`
-	Pattern  string   `json:"pattern,omitempty"`
-	Colors   [3]Color `json:"colors"`
-	Emblems  []Emblem `json:"emblems,omitempty"`
-	Parent   string   `json:"parent,omitempty"`
-	Warnings []string `json:"warnings,omitempty"`
-	Line     int      `json:"line,omitempty"`
+	ID      string   `json:"id"`
+	Pattern string   `json:"pattern,omitempty"`
+	Colors  [3]Color `json:"colors"`
+	Emblems []Emblem `json:"emblems,omitempty"`
+	Parent  string   `json:"parent,omitempty"`
+	// Inherited names the ancestors folded into this definition, nearest
+	// first. Empty for a definition that declares no parent.
+	Inherited []string `json:"inherited,omitempty"`
+	Warnings  []string `json:"warnings,omitempty"`
+	Line      int      `json:"line,omitempty"`
+	// setColor records which slots the definition names itself, so inheritance
+	// can tell "declared black" from "never mentioned". The parse-time default
+	// for an unnamed slot is opaque black, which is indistinguishable from a
+	// declared one without this.
+	setColor [3]bool
+}
+
+// InheritFrom folds parent into d and returns the resolved definition. CK3
+// starts a child from its parent's design and then applies the child's own
+// declarations, so single-valued keys overwrite and the repeated emblem keys
+// append -- a child that adds a charge adds it to the parent's field rather
+// than replacing the field with it.
+//
+// The resolved warnings are recomputed, because they describe the design that
+// will actually draw: a child with no pattern of its own is not missing a field
+// once its parent has supplied one.
+func (d Definition) InheritFrom(parent Definition) Definition {
+	out := d
+	if out.Pattern == "" {
+		out.Pattern = parent.Pattern
+	}
+	for slot := 0; slot < 3; slot++ {
+		if !out.setColor[slot] {
+			out.Colors[slot] = parent.Colors[slot]
+			out.setColor[slot] = parent.setColor[slot]
+		}
+	}
+	// The parent's emblems are painted under the child's, which is the order
+	// they were declared in once the child is read as a continuation of the
+	// parent. Copied rather than appended in place: append would write into the
+	// parent's backing array and make one resolution visible in another.
+	if len(parent.Emblems) > 0 {
+		merged := make([]Emblem, 0, len(parent.Emblems)+len(out.Emblems))
+		merged = append(merged, parent.Emblems...)
+		merged = append(merged, out.Emblems...)
+		out.Emblems = merged
+	}
+	out.Inherited = append(append([]string(nil), parent.ID), parent.Inherited...)
+	out.Warnings = definitionWarnings(out)
+	return out
+}
+
+// AppendWarning records a resolution problem that the definition's own text
+// cannot show, such as a parent no active source defines.
+func (d *Definition) AppendWarning(warning string) {
+	d.Warnings = append(d.Warnings, warning)
 }
 
 // Emblem is one colored_emblem or textured_emblem entry. A textured emblem
@@ -85,6 +134,7 @@ func parseDefinition(node *script.Node, palette Palette) Definition {
 				continue
 			}
 			definition.Colors[slot] = resolved
+			definition.setColor[slot] = true
 			index += consumed
 		case key == "colored_emblem" || key == "textured_emblem":
 			if child.Kind != "block" {
@@ -232,6 +282,9 @@ func definitionWarnings(d Definition) []string {
 	var out []string
 	if d.Pattern == "" && d.Parent == "" {
 		out = append(out, "no pattern and no parent: CK3 has nothing to draw the field from")
+	}
+	if d.Pattern == "" && d.Parent != "" && len(d.Inherited) > 0 {
+		out = append(out, "neither this definition nor any parent declares a pattern: the field is filled with color1")
 	}
 	for _, emblem := range d.Emblems {
 		if emblem.Texture == "" {

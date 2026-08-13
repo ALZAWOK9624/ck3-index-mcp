@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "perf/**"]
   pull_request:
   workflow_dispatch:
 
@@ -23,6 +23,23 @@ jobs:
           cache: true
       - run: go vet ./...
       - run: go test ./...
+
+  # Linux is a supported native-relief platform. Run both SQLite backends here
+  # so the C implementation and the native online-backup loop cannot compile
+  # only on Windows CI while regressing on linux/amd64.
+  linux:
+    name: default and native backends (ubuntu/amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go vet ./...
+      - run: go test ./...
+      - run: go test -tags ck3_native ./...
+      - run: go test -tags "ck3_native sqlite_fts5" ./...
 
   # Concurrency lives in the scan workers, the batch search and the MCP result
   # cache. None of those are exercised by a plain run.
@@ -62,6 +79,7 @@ jobs:
           CGO_ENABLED=0 go build -tags ck3_native ./...
           go build -tags ck3_native ./...
           go build -tags "ck3_native sqlite_fts5" ./...
+      - run: go test -tags ck3_native ./...
       - run: go test -tags "ck3_native sqlite_fts5" ./...
 
   # Run on Linux: the working tree there is checked out with LF endings, so

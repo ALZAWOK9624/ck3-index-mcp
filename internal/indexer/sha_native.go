@@ -407,9 +407,9 @@ static int gh_sha256_file_hex(const char *path_utf8, char out[65], uint32_t *err
 	HANDLE h = CreateFileW(wpath, GENERIC_READ,
 		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
 		FILE_FLAG_SEQUENTIAL_SCAN, NULL);
-	free(wpath);
 	if (h == INVALID_HANDLE_VALUE) {
 		*errout = (uint32_t)GetLastError();
+		free(wpath);
 		return -1;
 	}
 	BY_HANDLE_FILE_INFORMATION beforeInfo;
@@ -421,6 +421,7 @@ static int gh_sha256_file_hex(const char *path_utf8, char out[65], uint32_t *err
 	uint8_t *buf = (uint8_t *)malloc(GH_SHA_READ_BUFFER);
 	if (!buf) {
 		CloseHandle(h);
+		free(wpath);
 		*errout = (uint32_t)ERROR_NOT_ENOUGH_MEMORY;
 		return -1;
 	}
@@ -446,6 +447,20 @@ static int gh_sha256_file_hex(const char *path_utf8, char out[65], uint32_t *err
 	free(buf);
 	BY_HANDLE_FILE_INFORMATION afterInfo;
 	int haveAfter = GetFileInformationByHandle(h, &afterInfo) != 0;
+	// Size and mtime on h only identify the object this handle kept open. An
+	// editor can atomically rename a replacement over path while that old
+	// object remains perfectly unchanged. Reopen the path after the read and
+	// compare stable Windows file identity so the digest is never attributed
+	// to the replacement.
+	HANDLE current = CreateFileW(wpath, GENERIC_READ,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+		FILE_ATTRIBUTE_NORMAL, NULL);
+	BY_HANDLE_FILE_INFORMATION currentInfo;
+	int haveCurrent = current != INVALID_HANDLE_VALUE && GetFileInformationByHandle(current, &currentInfo) != 0;
+	if (current != INVALID_HANDLE_VALUE) {
+		CloseHandle(current);
+	}
+	free(wpath);
 	CloseHandle(h);
 	if (failed) {
 		return -1;
@@ -453,11 +468,17 @@ static int gh_sha256_file_hex(const char *path_utf8, char out[65], uint32_t *err
 	// A digest of a file that was rewritten mid-read is not a digest of any
 	// version of that file. Report it instead of storing it as this file's
 	// identity.
-	if (haveBefore && haveAfter) {
+	if (!haveBefore || !haveAfter || !haveCurrent) {
+		return -2;
+	}
+	{
 		int changed = beforeInfo.nFileSizeHigh != afterInfo.nFileSizeHigh ||
 			beforeInfo.nFileSizeLow != afterInfo.nFileSizeLow ||
 			beforeInfo.ftLastWriteTime.dwLowDateTime != afterInfo.ftLastWriteTime.dwLowDateTime ||
-			beforeInfo.ftLastWriteTime.dwHighDateTime != afterInfo.ftLastWriteTime.dwHighDateTime;
+			beforeInfo.ftLastWriteTime.dwHighDateTime != afterInfo.ftLastWriteTime.dwHighDateTime ||
+			beforeInfo.dwVolumeSerialNumber != currentInfo.dwVolumeSerialNumber ||
+			beforeInfo.nFileIndexHigh != currentInfo.nFileIndexHigh ||
+			beforeInfo.nFileIndexLow != currentInfo.nFileIndexLow;
 		if (changed) {
 			return -2;
 		}

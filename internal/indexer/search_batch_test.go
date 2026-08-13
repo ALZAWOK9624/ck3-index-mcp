@@ -100,8 +100,11 @@ func TestBatchSearchReportsTermsThatMatchedNothing(t *testing.T) {
 		t.Fatalf("absent term row = %+v", absent)
 	}
 	joined := strings.Join(result.Guidance, " ")
-	if !strings.Contains(joined, "returned=0") {
+	if !strings.Contains(joined, "available=0") {
 		t.Fatalf("guidance does not explain an empty term: %q", joined)
+	}
+	if strings.Contains(joined, "returned=0") {
+		t.Fatalf("guidance confuses response truncation with absence: %q", joined)
 	}
 }
 
@@ -185,7 +188,8 @@ func TestBatchSearchRowsCountWhatTheResponseCarries(t *testing.T) {
 		t.Fatal(err)
 	}
 	var content strings.Builder
-	for _, family := range []string{"zzwidea", "zzwideb", "zzwidec"} {
+	families := []string{"zzwidea", "zzwideb", "zzwidec", "zzwided", "zzwidee", "zzwidef", "zzwideg", "zzwideh"}
+	for _, family := range families {
 		for i := 0; i < 40; i++ {
 			fmt.Fprintf(&content, "%s_%02d = { is_shown = { always = yes } }\n", family, i)
 		}
@@ -207,7 +211,7 @@ func TestBatchSearchRowsCountWhatTheResponseCarries(t *testing.T) {
 	}
 	defer db.Close()
 
-	result, err := db.LLMSearchBatch(ctx, []string{"zzwidea", "zzwideb", "zzwidec"}, SearchOptions{LLMOptions: LLMOptions{Limit: 20, AllowProject: true}})
+	result, err := db.LLMSearchBatch(ctx, families, SearchOptions{LLMOptions: LLMOptions{Limit: 20, AllowProject: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,6 +229,9 @@ func TestBatchSearchRowsCountWhatTheResponseCarries(t *testing.T) {
 		if row.Emitted < row.Available && !row.HasMore {
 			t.Fatalf("term %q was cut off at %d of %d without has_more", row.Query, row.Emitted, row.Available)
 		}
+		if row.Available == 0 || row.Emitted == 0 {
+			t.Fatalf("round-robin merge starved %q: available=%d emitted=%d", row.Query, row.Available, row.Emitted)
+		}
 		emitted += row.Emitted
 	}
 	if emitted != len(result.Evidence) {
@@ -232,5 +239,21 @@ func TestBatchSearchRowsCountWhatTheResponseCarries(t *testing.T) {
 	}
 	if !strings.Contains(result.Summary, "evidence item(s) emitted") {
 		t.Fatalf("summary does not report emitted items: %q", result.Summary)
+	}
+}
+
+func TestBatchSearchConcurrencyLeavesOrdinaryPoolCapacity(t *testing.T) {
+	for _, test := range []struct {
+		connections int
+		want        int
+	}{
+		{connections: 1, want: 1},
+		{connections: 4, want: 2},
+		{connections: 8, want: 4},
+		{connections: 32, want: 4},
+	} {
+		if got := batchSearchConcurrency(SQLiteReadOptions{Connections: test.connections}); got > test.want || got < 1 {
+			t.Fatalf("batchSearchConcurrency(%d)=%d, expected at most %d and at least 1", test.connections, got, test.want)
+		}
 	}
 }

@@ -74,6 +74,11 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 		return encodeToolError(err, runtime), nil
 	}
 	before, beforeErr := db.IndexState(ctx)
+	// cacheStart is the published state whose rows the current handler
+	// invocation reads. A generation-bound retry resets it below; an initial
+	// state-read failure remains disqualifying instead of letting a later
+	// successful read cache an answer with unknown provenance.
+	cacheStart, cacheStartErr := before, beforeErr
 	if beforeErr == nil && indexStatePublishing(before) && !indexStateIndependentRequest(definition.Name, handlerArguments) {
 		return encodeInternalToolError(runtime, ErrorIndexFinalizing, "ck3-index is rebuilding or finalizing a new scan generation; retry this query after the index reports ready."), nil
 	}
@@ -142,6 +147,7 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 			// database. Retry read-only tools once when a scan committed during the
 			// request so one response never mixes two index generations.
 			retryStart := after
+			cacheStart, cacheStartErr = retryStart, nil
 			output, err = definition.Handler(ctx, runtime, definition, handlerArguments)
 			if err != nil {
 				return encodeToolError(err, runtime), nil
@@ -172,7 +178,7 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 	var cachePayload []byte
 	cacheEligible := definition.Annotations.ReadOnlyHint &&
 		cacheableReadRequest(definition.Name, handlerArguments) &&
-		afterErr == nil && after.Ready() && after.Revision != ""
+		cacheablePublishedTransition(cacheStart, cacheStartErr, after, afterErr)
 	if cacheEligible {
 		if data, marshalErr := json.Marshal(result); marshalErr == nil {
 			cachePayload = data
@@ -229,6 +235,13 @@ func finalizeToolResult(result map[string]any, runtime *Runtime, definition *Too
 
 func indexStateChanged(before, after indexer.IndexState) bool {
 	return before.Generation != after.Generation || before.Revision != after.Revision || before.Status != after.Status
+}
+
+func cacheablePublishedTransition(before indexer.IndexState, beforeErr error, after indexer.IndexState, afterErr error) bool {
+	return beforeErr == nil && afterErr == nil &&
+		before.Ready() && after.Ready() &&
+		before.Revision != "" && after.Revision != "" &&
+		!indexStateChanged(before, after)
 }
 
 func indexStatePublishing(state indexer.IndexState) bool {

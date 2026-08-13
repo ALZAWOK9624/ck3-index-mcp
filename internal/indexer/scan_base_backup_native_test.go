@@ -9,22 +9,31 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
 // The copy loop used to live entirely inside one cgo call, which meant a
 // cancelled context could not stop it and a locked source retried forever.
-func TestNativeOnlineBackupHonoursCancellation(t *testing.T) {
+// Cancel after the first successful native step so this exercises cleanup of
+// a real, partially copied SQLite destination rather than only preflight.
+func TestNativeOnlineBackupHonoursMidCopyCancellation(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "source.sqlite")
-	writeBackupFixture(t, src, 20000)
+	writeBackupFixture(t, src, 100000)
 	dst := filepath.Join(dir, "snapshot.sqlite")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
 	start := time.Now()
-	err := onlineBackupDatabase(ctx, src, dst)
+	err := onlineBackupDatabaseWithOptionsAndHooks(ctx, src, dst, DefaultSQLiteReadOptions(), nativeBackupTestHooks{
+		afterStep: func(rc int) {
+			if rc == nativeSQLiteOK {
+				cancel()
+			}
+		},
+	})
+	cancel()
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled backup returned %v, want context.Canceled", err)
 	}
@@ -46,11 +55,15 @@ func TestNativeOnlineBackupDoesNotSleepOnProgress(t *testing.T) {
 	writeBackupFixture(t, src, 40000)
 	dst := filepath.Join(dir, "snapshot.sqlite")
 
-	start := time.Now()
-	if err := onlineBackupDatabase(context.Background(), src, dst); err != nil {
+	sleeps := 0
+	if err := onlineBackupDatabaseWithOptionsAndHooks(context.Background(), src, dst, DefaultSQLiteReadOptions(), nativeBackupTestHooks{
+		sleep: func(ctx context.Context, duration time.Duration) error {
+			sleeps++
+			return nil
+		},
+	}); err != nil {
 		t.Fatal(err)
 	}
-	elapsed := time.Since(start)
 	info, err := os.Stat(dst)
 	if err != nil {
 		t.Fatal(err)
@@ -58,11 +71,76 @@ func TestNativeOnlineBackupDoesNotSleepOnProgress(t *testing.T) {
 	if info.Size() == 0 {
 		t.Fatal("backup produced an empty snapshot")
 	}
-	// The fixture is several thousand pages. At 10ms per 256-page batch the
-	// old loop needed well over a second for it; a loop that only waits on
-	// contention finishes in a fraction of that.
-	if elapsed > time.Second {
-		t.Fatalf("backup of %d bytes took %s, which is the shape of a per-batch sleep", info.Size(), elapsed)
+	if sleeps != 0 {
+		t.Fatalf("healthy backup slept %d times while sqlite reported progress", sleeps)
+	}
+}
+
+func TestNativeBackupClosesHandlesBeforeCleanup(t *testing.T) {
+	var order []string
+	err := runNativeBackupLoop(context.Background(), nativeBackupOperations{
+		step:      func() int { return 999 },
+		finish:    func() (int, string) { return nativeSQLiteOK, "" },
+		remaining: func() int { return 0 },
+		pageCount: func() int { return 0 },
+		close:     func() { order = append(order, "close") },
+		cleanup:   func() { order = append(order, "cleanup") },
+		sleep:     sleepWithContext,
+		now:       time.Now,
+	})
+	if err == nil {
+		t.Fatal("invalid backup step unexpectedly succeeded")
+	}
+	if got := fmt.Sprint(order); got != "[close cleanup]" {
+		t.Fatalf("error cleanup order = %s, want handles closed before deletion", got)
+	}
+}
+
+func TestNativeBackupBusyCancellationClosesBeforeCleanup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var order []string
+	err := runNativeBackupLoop(ctx, nativeBackupOperations{
+		step:      func() int { return nativeSQLiteBusy },
+		finish:    func() (int, string) { return nativeSQLiteOK, "" },
+		remaining: func() int { return 1 },
+		pageCount: func() int { return 1 },
+		close:     func() { order = append(order, "close") },
+		cleanup:   func() { order = append(order, "cleanup") },
+		sleep: func(context.Context, time.Duration) error {
+			cancel()
+			return context.Canceled
+		},
+		now: time.Now,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("busy cancellation returned %v", err)
+	}
+	if got := fmt.Sprint(order); got != "[close cleanup]" {
+		t.Fatalf("busy cleanup order = %s, want handles closed before deletion", got)
+	}
+}
+
+func TestNativeBackupNoProgressWatchdog(t *testing.T) {
+	now := time.Unix(0, 0)
+	calls := 0
+	err := runNativeBackupLoop(context.Background(), nativeBackupOperations{
+		step:      func() int { return nativeSQLiteOK },
+		finish:    func() (int, string) { return nativeSQLiteOK, "" },
+		remaining: func() int { return 10 },
+		pageCount: func() int { return 10 },
+		close:     func() {},
+		cleanup:   func() {},
+		sleep:     sleepWithContext,
+		now: func() time.Time {
+			calls++
+			if calls > 2 {
+				return now.Add(backupMaxNoProgress + time.Second)
+			}
+			return now
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "no progress") {
+		t.Fatalf("stalled SQLITE_OK loop returned %v", err)
 	}
 }
 

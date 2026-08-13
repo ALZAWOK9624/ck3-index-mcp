@@ -89,6 +89,13 @@ func (db *DB) RefreshStatus(ctx context.Context, cfg Config) (RefreshStatus, err
 		if version != indexRuleVersion {
 			status.NeedsFullScan = true
 		}
+		inputCurrent, inputErr := db.indexedInputFingerprintCurrent(ctx, normalized)
+		if inputErr != nil {
+			return RefreshStatus{}, inputErr
+		}
+		if !inputCurrent {
+			status.NeedsFullScan = true
+		}
 		bundle, bundleErr := loadCachedEngineBundle(ctx, normalized.EngineLogs)
 		if bundleErr != nil {
 			status.EngineRules.Available = false

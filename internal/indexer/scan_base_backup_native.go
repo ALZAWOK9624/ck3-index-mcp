@@ -62,7 +62,10 @@ static int gh_backup_open(const char *src, const char *dst, gh_backup_handle *h,
 		}
 		return rc;
 	}
-	sqlite3_busy_timeout(h->src, 5000);
+	// The Go retry loop owns contention timing and cancellation. A native busy
+	// timeout would make one sqlite3_backup_step call uninterruptible for up to
+	// five seconds, defeating the context checks around it.
+	sqlite3_busy_timeout(h->src, 0);
 	rc = sqlite3_open_v2(dst, &h->dst, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_URI, 0);
 	if (rc != SQLITE_OK) {
 		if (h->dst) {
@@ -76,7 +79,7 @@ static int gh_backup_open(const char *src, const char *dst, gh_backup_handle *h,
 		h->src = 0;
 		return rc;
 	}
-	sqlite3_busy_timeout(h->dst, 5000);
+	sqlite3_busy_timeout(h->dst, 0);
 	h->backup = sqlite3_backup_init(h->dst, "main", h->src, "main");
 	if (!h->backup) {
 		rc = sqlite3_errcode(h->dst);
@@ -154,9 +157,37 @@ const (
 	// backupMaxBusyWait bounds a source that stays locked. Without it a writer
 	// that never lets go turns the copy into an infinite retry loop.
 	backupMaxBusyWait = 60 * time.Second
-	backupMinBackoff  = time.Millisecond
-	backupMaxBackoff  = 250 * time.Millisecond
+	// SQLITE_OK is not proof that the copy is converging: a source under
+	// continuous writes can repeatedly restart the backup. Bound time without
+	// a new high-water mark in copied pages as well as explicit BUSY waits.
+	backupMaxNoProgress = 60 * time.Second
+	backupMinBackoff    = time.Millisecond
+	backupMaxBackoff    = 250 * time.Millisecond
 )
+
+const (
+	nativeSQLiteOK     = 0
+	nativeSQLiteBusy   = 5
+	nativeSQLiteLocked = 6
+	nativeSQLiteDone   = 101
+)
+
+type nativeBackupOperations struct {
+	step      func() int
+	finish    func() (int, string)
+	remaining func() int
+	pageCount func() int
+	close     func()
+	cleanup   func()
+	sleep     func(context.Context, time.Duration) error
+	now       func() time.Time
+	afterStep func(int)
+}
+
+type nativeBackupTestHooks struct {
+	afterStep func(int)
+	sleep     func(context.Context, time.Duration) error
+}
 
 // onlineBackupDatabase copies one coherent SQLite snapshot, including pages
 // that are still resident in the source WAL. Under the native build the copy
@@ -166,6 +197,10 @@ func onlineBackupDatabase(ctx context.Context, src, dst string) error {
 }
 
 func onlineBackupDatabaseWithOptions(ctx context.Context, src, dst string, options SQLiteReadOptions) error {
+	return onlineBackupDatabaseWithOptionsAndHooks(ctx, src, dst, options, nativeBackupTestHooks{})
+}
+
+func onlineBackupDatabaseWithOptionsAndHooks(ctx context.Context, src, dst string, options SQLiteReadOptions, hooks nativeBackupTestHooks) error {
 	removeDatabaseSnapshot(dst)
 	if err := ctx.Err(); err != nil {
 		return err
@@ -181,45 +216,85 @@ func onlineBackupDatabaseWithOptions(ctx context.Context, src, dst string, optio
 		removeDatabaseSnapshot(dst)
 		return errors.New(C.GoString(&errBuf[0]))
 	}
-	defer C.gh_backup_close(&handle)
+	if hooks.sleep == nil {
+		hooks.sleep = sleepWithContext
+	}
+	return runNativeBackupLoop(ctx, nativeBackupOperations{
+		step: func() int {
+			return int(C.gh_backup_step(&handle, C.int(backupPagesPerStep)))
+		},
+		finish: func() (int, string) {
+			rc := C.gh_backup_finish(&handle, &errBuf[0], C.int(len(errBuf)))
+			return int(rc), C.GoString(&errBuf[0])
+		},
+		remaining: func() int { return int(C.gh_backup_remaining(&handle)) },
+		pageCount: func() int { return int(C.gh_backup_pagecount(&handle)) },
+		close:     func() { C.gh_backup_close(&handle) },
+		cleanup:   func() { removeDatabaseSnapshot(dst) },
+		sleep:     hooks.sleep,
+		now:       time.Now,
+		afterStep: hooks.afterStep,
+	})
+}
+
+func runNativeBackupLoop(ctx context.Context, operations nativeBackupOperations) (resultErr error) {
+	completed := false
+	// Keep close and cleanup in one defer so Windows always releases both
+	// sqlite handles before attempting to delete the incomplete destination.
+	defer func() {
+		operations.close()
+		if !completed {
+			operations.cleanup()
+		}
+	}()
 
 	backoff := backupMinBackoff
 	var busySince time.Time
+	progressAt := operations.now()
+	mostPagesCopied := -1
 	for {
 		if err := ctx.Err(); err != nil {
-			removeDatabaseSnapshot(dst)
 			return err
 		}
-		switch rc := C.gh_backup_step(&handle, C.int(backupPagesPerStep)); rc {
-		case C.SQLITE_OK:
+		rc := operations.step()
+		if operations.afterStep != nil {
+			operations.afterStep(rc)
+		}
+		switch rc {
+		case nativeSQLiteOK:
 			// A batch was copied and more remain. This is the healthy path and
 			// must not wait: at 256 pages a sleep here is paid once per MiB.
 			busySince = time.Time{}
 			backoff = backupMinBackoff
-		case C.SQLITE_DONE:
-			if frc := C.gh_backup_finish(&handle, &errBuf[0], C.int(len(errBuf))); frc != C.SQLITE_OK {
-				removeDatabaseSnapshot(dst)
-				return fmt.Errorf("backup finish failed (%d): %s", int(frc), C.GoString(&errBuf[0]))
+			pagesCopied := operations.pageCount() - operations.remaining()
+			if pagesCopied > mostPagesCopied {
+				mostPagesCopied = pagesCopied
+				progressAt = operations.now()
+			} else if stalled := operations.now().Sub(progressAt); stalled > backupMaxNoProgress {
+				return fmt.Errorf("backup made no progress for %s", stalled.Round(time.Second))
 			}
+		case nativeSQLiteDone:
+			if frc, message := operations.finish(); frc != nativeSQLiteOK {
+				return fmt.Errorf("backup finish failed (%d): %s", frc, message)
+			}
+			completed = true
 			return nil
-		case C.SQLITE_BUSY, C.SQLITE_LOCKED:
+		case nativeSQLiteBusy, nativeSQLiteLocked:
+			now := operations.now()
 			if busySince.IsZero() {
-				busySince = time.Now()
+				busySince = now
 			}
-			if waited := time.Since(busySince); waited > backupMaxBusyWait {
-				removeDatabaseSnapshot(dst)
+			if waited := now.Sub(busySince); waited > backupMaxBusyWait {
 				return fmt.Errorf("backup source stayed locked for %s", waited.Round(time.Second))
 			}
-			if err := sleepWithContext(ctx, backoff); err != nil {
-				removeDatabaseSnapshot(dst)
+			if err := operations.sleep(ctx, backoff); err != nil {
 				return err
 			}
 			if backoff *= 2; backoff > backupMaxBackoff {
 				backoff = backupMaxBackoff
 			}
 		default:
-			removeDatabaseSnapshot(dst)
-			return fmt.Errorf("backup step failed (%d)", int(rc))
+			return fmt.Errorf("backup step failed (%d)", rc)
 		}
 	}
 }

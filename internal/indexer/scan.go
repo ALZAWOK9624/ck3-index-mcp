@@ -150,7 +150,16 @@ func scanWithMode(ctx context.Context, cfg Config, forceClean bool) (stats ScanS
 }
 
 func scanWithModePublishing(ctx context.Context, cfg Config, forceClean, publishRules bool) (stats ScanStats, resultErr error) {
-	start := time.Now()
+	engineLoadStart := time.Now()
+	engineBundle, err := LoadEngineBundle(ctx, cfg.EngineLogs)
+	if err != nil {
+		return ScanStats{}, err
+	}
+	engineLoadElapsed := time.Since(engineLoadStart)
+	return scanWithPreparedEngineBundle(ctx, cfg, forceClean, publishRules, engineBundle, engineLoadElapsed, engineLoadStart)
+}
+
+func scanWithPreparedEngineBundle(ctx context.Context, cfg Config, forceClean, publishRules bool, engineBundle *EngineBundle, engineLoadElapsed time.Duration, start time.Time) (stats ScanStats, resultErr error) {
 	if err := validateSources(cfg.Sources); err != nil {
 		return ScanStats{}, err
 	}
@@ -161,12 +170,6 @@ func scanWithModePublishing(ctx context.Context, cfg Config, forceClean, publish
 	if err != nil {
 		return ScanStats{}, err
 	}
-	engineLoadStart := time.Now()
-	engineBundle, err := LoadEngineBundle(ctx, cfg.EngineLogs)
-	if err != nil {
-		return ScanStats{}, err
-	}
-	engineLoadMillis := time.Since(engineLoadStart).Milliseconds()
 	engineRules := engineRuleSetFromBundle(engineBundle)
 	dbPath, err := ConfiguredDatabasePath(cfg)
 	if err != nil {
@@ -202,12 +205,14 @@ func scanWithModePublishing(ctx context.Context, cfg Config, forceClean, publish
 	// presence so a repaired-but-empty table cannot be mistaken for a complete
 	// published semantic index later in this scan.
 	ftsPresentBeforeSchema := !forceClean && db.tableExists(ctx, "search_fts") && db.tableExists(ctx, "script_text_fts") && db.tableExists(ctx, "trigram_loc")
+	schemaRepaired := false
 	if forceClean {
 		if err := db.reset(ctx); err != nil {
 			return ScanStats{}, err
 		}
 	} else {
-		if err := db.ensureSchema(ctx); err != nil {
+		schemaRepaired, err = db.ensureSchemaWithRepair(ctx)
+		if err != nil {
 			return ScanStats{}, err
 		}
 		version, err := db.metaValue(ctx, "index_rule_version")
@@ -223,7 +228,7 @@ func scanWithModePublishing(ctx context.Context, cfg Config, forceClean, publish
 		}
 	}
 	stats = ScanStats{Database: dbPath, BySource: map[string]int{}, TimingsMillis: map[string]int64{}}
-	stats.TimingsMillis["load_engine_bundle"] = engineLoadMillis
+	stats.TimingsMillis["load_engine_bundle"] = engineLoadElapsed.Milliseconds()
 
 	existingLoadStart := time.Now()
 	existing := map[string]fileRecord{}
@@ -258,6 +263,7 @@ func scanWithModePublishing(ctx context.Context, cfg Config, forceClean, publish
 	publishedState := IndexState{}
 	cachedEngineFingerprint := ""
 	cachedRuleVersion := ""
+	cachedInputFingerprint := ""
 	if !forceClean {
 		publishedState, err = db.IndexState(ctx)
 		if err != nil {
@@ -272,10 +278,15 @@ func scanWithModePublishing(ctx context.Context, cfg Config, forceClean, publish
 			if err != nil {
 				return ScanStats{}, err
 			}
+			cachedInputFingerprint, err = db.metaValue(ctx, indexedInputFingerprintMetaKey)
+			if err != nil {
+				return ScanStats{}, err
+			}
 		}
 	}
 	engineFingerprint := engineBundle.Fingerprint
 	engineDataDirty := forceClean || !publishedState.Ready() || engineFingerprint != cachedEngineFingerprint
+	inputIdentityDirty := forceClean || !publishedState.Ready() || cachedInputFingerprint != IndexedInputFingerprint(cfg)
 
 	writerConn, err := db.scanWriteConnection(ctx)
 	if err != nil {
@@ -304,8 +315,11 @@ func scanWithModePublishing(ctx context.Context, cfg Config, forceClean, publish
 	oldFileIDs := map[int64]bool{}
 	newFileIDs := map[int64]bool{}
 	affected := map[string]bool{}
-	fileChanges := forceClean
-	scopedFinalizerCandidate := !forceClean && !engineDataDirty
+	fileChanges := forceClean || inputIdentityDirty
+	// A source-role/privacy/root policy change can alter project-scoped
+	// validation even when every file hash is identical, so it requires the
+	// global finalizer rather than an empty changed-file scope.
+	scopedFinalizerCandidate := !forceClean && !engineDataDirty && !inputIdentityDirty
 	trackOldFile := func(fileID int64) error {
 		if fileID == 0 {
 			return nil
@@ -587,12 +601,14 @@ parsedFilesComplete:
 	// that the semantic snapshot is still current. The proof has to include
 	// inputs outside ordinary script jobs (map CSV/.map files and engine logs),
 	// otherwise an apparently no-op scan could leave a derived cache stale.
+	var plannedMapManifest *mapInputManifest
 	if !fileChanges && !engineDataDirty && publishedState.Ready() && cachedRuleVersion == indexRuleVersion && ftsCurrent {
 		stageStart := time.Now()
 		manifest, err := collectMapInputManifest(ctx, cfg)
 		if err != nil {
 			return ScanStats{}, err
 		}
+		plannedMapManifest = &manifest
 		mapCurrent, err := mapCacheMatchesInput(ctx, tx, manifest.Fingerprint, manifest.Reusable, manifest.Active)
 		if err != nil {
 			return ScanStats{}, err
@@ -610,7 +626,7 @@ parsedFilesComplete:
 			if err := tx.Commit(); err != nil {
 				return ScanStats{}, err
 			}
-			stats.Noop = true
+			stats.Noop = !schemaRepaired
 			stats.TimingsMillis["reuse_published_index"] = time.Since(stageStart).Milliseconds()
 			stats.ElapsedMillis = time.Since(start).Milliseconds()
 			fmt.Fprintln(os.Stderr, "[scan] no input changes; reused published index")
@@ -762,11 +778,14 @@ parsedFilesComplete:
 
 	fmt.Fprintln(os.Stderr, "[scan] checking map context cache inputs")
 	stageStart = time.Now()
-	mapManifest, err := collectMapInputManifest(ctx, cfg)
-	if err != nil {
-		return ScanStats{}, err
+	if plannedMapManifest == nil {
+		manifest, err := collectMapInputManifest(ctx, cfg)
+		if err != nil {
+			return ScanStats{}, err
+		}
+		plannedMapManifest = &manifest
 	}
-	mapCurrent, err := mapCacheMatchesInput(ctx, tx, mapManifest.Fingerprint, mapManifest.Reusable, mapManifest.Active)
+	mapCurrent, err := mapCacheMatchesInput(ctx, tx, plannedMapManifest.Fingerprint, plannedMapManifest.Reusable, plannedMapManifest.Active)
 	if err != nil {
 		return ScanStats{}, err
 	}
@@ -775,7 +794,7 @@ parsedFilesComplete:
 		stats.TimingsMillis["map_context_reused"] = time.Since(stageStart).Milliseconds()
 	} else {
 		fmt.Fprintln(os.Stderr, "[scan] rebuilding map context cache")
-		if err := rebuildMapCache(ctx, tx, cfg, mapManifest); err != nil {
+		if err := rebuildMapCache(ctx, tx, cfg, *plannedMapManifest); err != nil {
 			return ScanStats{}, err
 		}
 		stats.TimingsMillis["map_context_rebuild"] = time.Since(stageStart).Milliseconds()
@@ -838,6 +857,9 @@ parsedFilesComplete:
 	// a filename.
 	if _, err := tx.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('upstream_source_fingerprint',?)
 		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, UpstreamSourceFingerprint(cfg)); err != nil {
+		return ScanStats{}, err
+	}
+	if err := storeIndexedInputFingerprint(ctx, tx, cfg); err != nil {
 		return ScanStats{}, err
 	}
 	if err := bumpScanGeneration(ctx, tx); err != nil {

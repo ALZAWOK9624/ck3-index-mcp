@@ -211,6 +211,29 @@ func TestNativeSHA256RandomChunkingMatchesGo(t *testing.T) {
 	}
 }
 
+var benchmarkSHASink string
+
+func BenchmarkSHA256BytesBackends(b *testing.B) {
+	payload := make([]byte, 16<<20)
+	rand.New(rand.NewSource(2026)).Read(payload)
+	b.Run("go", func(b *testing.B) {
+		b.SetBytes(int64(len(payload)))
+		for i := 0; i < b.N; i++ {
+			digest := sha256.Sum256(payload)
+			benchmarkSHASink = hex.EncodeToString(digest[:])
+		}
+	})
+	b.Run("native", func(b *testing.B) {
+		if !nativeSHAAvailable() {
+			b.Skip("CPU has no SHA-NI")
+		}
+		b.SetBytes(int64(len(payload)))
+		for i := 0; i < b.N; i++ {
+			benchmarkSHASink, _ = sha256BytesHex(payload)
+		}
+	})
+}
+
 // On a CPU without the SHA extensions the native entry points must answer
 // from crypto/sha256 and say so, rather than executing an instruction the CPU
 // does not have. That path is unreachable on the machines this suite normally

@@ -149,12 +149,14 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 	}
 	defer removeStagedDatabase(stagePath)
 
+	engineLoadStart := time.Now()
 	engineBundle, err := LoadEngineBundle(ctx, normalized.EngineLogs)
 	if err != nil {
 		err = sanitizeStagedFullScanFailure(err, scanRedactionPaths(normalized, dbPath, stagePath))
 		recordStagedFullScanFailure(normalized, err)
 		return ScanStats{}, err
 	}
+	engineLoadElapsed := time.Since(engineLoadStart)
 	seeded, seedRejection := seedStagedScanFromBase(ctx, normalized, stagePath, engineBundle.Fingerprint)
 	seedResult := &BaseSeedResult{
 		Configured: strings.TrimSpace(normalized.BaseDatabase) != "",
@@ -169,7 +171,11 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 	// there to supply. Without a base the stage starts empty and a clean scan is
 	// both correct and marginally cheaper.
 	stageConfig.ForceClean = !seeded
-	stats, err := scanWithModePublishing(ctx, stageConfig, !seeded, false)
+	// Reuse the exact bundle whose fingerprint admitted the optional base.
+	// Reloading here doubles log parsing and creates a TOCTOU window where the
+	// stage can be seeded against one bundle and scanned against another.
+	scanStart := time.Now().Add(-engineLoadElapsed)
+	stats, err := scanWithPreparedEngineBundle(ctx, stageConfig, !seeded, false, engineBundle, engineLoadElapsed, scanStart)
 	if err != nil {
 		err = sanitizeStagedFullScanFailure(err, scanRedactionPaths(normalized, dbPath, stagePath))
 		recordStagedFullScanFailure(normalized, err)

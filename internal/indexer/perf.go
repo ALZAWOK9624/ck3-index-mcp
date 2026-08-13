@@ -231,8 +231,9 @@ func timeQuery(name, sample string, fn func() (int, error)) BenchQuery {
 
 // HealthDepth selects how much of the database a health report is allowed to
 // re-derive. quick answers from what the scanner already recorded; deep
-// re-counts every table and re-verifies the sidecar. Both reach the same
-// status: the deep counts are informational, and no verdict depends on them.
+// re-counts every table, verifies trigram row/trigger consistency, and
+// re-verifies the sidecar. Counts remain informational; the explicit deep
+// consistency checks can make a report stricter than quick health.
 type HealthDepth string
 
 const (
@@ -459,11 +460,21 @@ func (db *DB) health(ctx context.Context, configuredPath string, depth HealthDep
 	}
 	semanticFTSReady := db.tableExists(ctx, "search_fts") && db.sql.QueryRowContext(ctx, `SELECT count(*) FROM search_fts WHERE search_fts MATCH 'ck3indexhealthtoken'`).Scan(new(int)) == nil
 	scriptFTSReady := db.tableExists(ctx, "script_text_fts") && db.sql.QueryRowContext(ctx, `SELECT count(*) FROM script_text_fts WHERE script_text_fts MATCH 'ck3indexhealthtoken'`).Scan(new(int)) == nil
-	if semanticFTSReady && scriptFTSReady {
+	trigramFTSReady := db.tableExists(ctx, "trigram_loc") && db.sql.QueryRowContext(ctx, `SELECT count(*) FROM trigram_loc WHERE trigram_loc MATCH 'ck3indexhealthtoken'`).Scan(new(int)) == nil
+	if semanticFTSReady && scriptFTSReady && trigramFTSReady {
 		report.FTS5Available = true
 	} else {
 		report.Status = "error"
 		report.Guidance = append(report.Guidance, "FTS5 is unavailable or the semantic index is missing; rebuild with a SQLite build that includes FTS5.")
+	}
+	if depth == HealthDeep && trigramFTSReady {
+		trigramMatches, trigramErr := trigramLocMatches(ctx, db.sql)
+		trigramSchemaDamaged, schemaErr := db.trigramLocNeedsRepair(ctx)
+		if trigramErr != nil || schemaErr != nil || !trigramMatches || trigramSchemaDamaged {
+			report.Status = "error"
+			report.FTS5Available = false
+			report.Guidance = append(report.Guidance, "The localization substring index or its maintenance triggers are stale; open the cache writable or run ck3-index scan to repair it.")
+		}
 	}
 	if len(missing) > 0 {
 		if report.Status != "error" {
@@ -507,7 +518,7 @@ func walHealthDegraded(databaseMB, walMB float64) bool {
 // because counting one means walking the whole shadow table.
 var countedHealthTables = []string{"source_layers", "files", "engine_datatypes", "engine_scope_rules"}
 
-var deepOnlyHealthTables = []string{"search_fts", "script_text_fts"}
+var deepOnlyHealthTables = []string{"search_fts", "script_text_fts", "trigram_loc"}
 
 // tableCounts is reporting only: no health verdict is derived from it. That is
 // what makes the quick form honest -- the same status is reached either way,

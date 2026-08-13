@@ -23,9 +23,9 @@ const (
 // still maps one-to-one to the published active script files. It deliberately
 // avoids comparing other current semantic row counts: a small edit is expected
 // to change those before the scoped FTS refresh runs.
-func searchFTSCacheMatches(ctx context.Context, tx *sql.Tx) (bool, error) {
+func searchFTSCacheMatches(ctx context.Context, queryer contextRowQueryer) (bool, error) {
 	var raw string
-	err := tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key=?`, searchFTSRowCountMetaKey).Scan(&raw)
+	err := queryer.QueryRowContext(ctx, `SELECT value FROM meta WHERE key=?`, searchFTSRowCountMetaKey).Scan(&raw)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
@@ -37,7 +37,7 @@ func searchFTSCacheMatches(ctx context.Context, tx *sql.Tx) (bool, error) {
 		return false, nil
 	}
 	var actual int64
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM search_fts`).Scan(&actual); err != nil {
+	if err := queryer.QueryRowContext(ctx, `SELECT COUNT(*) FROM search_fts`).Scan(&actual); err != nil {
 		return false, err
 	}
 	if actual != expected {
@@ -47,7 +47,7 @@ func searchFTSCacheMatches(ctx context.Context, tx *sql.Tx) (bool, error) {
 	// The dedicated contentless full-text index has exactly one rowid for every
 	// active script. The source text remains only in files.search_text.
 	var activeScripts, scriptTextRows, matchedScripts int64
-	if err := tx.QueryRowContext(ctx, `
+	if err := queryer.QueryRowContext(ctx, `
 		SELECT
 			(SELECT COUNT(*) FROM files WHERE overridden=0 AND kind='script'),
 			COUNT(*),
@@ -62,7 +62,7 @@ func searchFTSCacheMatches(ctx context.Context, tx *sql.Tx) (bool, error) {
 	if activeScripts != scriptTextRows || activeScripts != matchedScripts {
 		return false, nil
 	}
-	return trigramLocMatches(ctx, tx)
+	return trigramLocMatches(ctx, queryer)
 }
 
 // trigramLocMatches verifies the substring index still covers localization
@@ -72,9 +72,13 @@ func searchFTSCacheMatches(ctx context.Context, tx *sql.Tx) (bool, error) {
 // dangerous case, because ensureSchema creates one on any writable open --
 // without this check a dropped index is "repaired" into a table that exists,
 // reports healthy, and returns nothing.
-func trigramLocMatches(ctx context.Context, tx *sql.Tx) (bool, error) {
+type contextRowQueryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func trigramLocMatches(ctx context.Context, queryer contextRowQueryer) (bool, error) {
 	var localizationRows, trigramRows, missing, orphans int64
-	if err := tx.QueryRowContext(ctx, `
+	if err := queryer.QueryRowContext(ctx, `
 		SELECT
 			(SELECT COUNT(*) FROM localization),
 			(SELECT COUNT(*) FROM trigram_loc),

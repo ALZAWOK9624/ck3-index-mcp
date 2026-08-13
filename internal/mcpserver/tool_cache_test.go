@@ -2,8 +2,11 @@ package mcpserver
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
+
+	"ck3-index/internal/indexer"
 )
 
 func TestCanonicalToolArgsNormalizesKeyOrder(t *testing.T) {
@@ -128,6 +131,38 @@ func TestToolCacheKeySeparatesRevisionsAtTheSameGeneration(t *testing.T) {
 	}
 	if _, ok := cache.get(first); !ok {
 		t.Fatal("the original entry should still be cached")
+	}
+}
+
+func TestCacheWriteRequiresOneVerifiedPublishedState(t *testing.T) {
+	ready := indexer.IndexState{Generation: 7, Revision: "revision-seven", Status: indexer.IndexStatusReady}
+	changed := ready
+	changed.Generation++
+	missingRevision := ready
+	missingRevision.Revision = ""
+	initializing := ready
+	initializing.Status = indexer.IndexStatusInitializing
+	readErr := errors.New("state unavailable")
+
+	tests := []struct {
+		name                string
+		before, after       indexer.IndexState
+		beforeErr, afterErr error
+		want                bool
+	}{
+		{name: "stable ready generation", before: ready, after: ready, want: true},
+		{name: "before read failed", before: ready, after: ready, beforeErr: readErr},
+		{name: "after read failed", before: ready, after: ready, afterErr: readErr},
+		{name: "generation changed", before: ready, after: changed},
+		{name: "missing revision", before: missingRevision, after: missingRevision},
+		{name: "not published", before: initializing, after: initializing},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := cacheablePublishedTransition(test.before, test.beforeErr, test.after, test.afterErr); got != test.want {
+				t.Fatalf("cacheablePublishedTransition()=%v, want %v", got, test.want)
+			}
+		})
 	}
 }
 

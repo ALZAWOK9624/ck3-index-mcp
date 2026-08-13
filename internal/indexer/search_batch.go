@@ -40,7 +40,7 @@ type LLMBatchQuery struct {
 	Emitted   int  `json:"emitted,omitempty"`
 	HasMore   bool `json:"has_more,omitempty"`
 	// Suggested counts low-confidence candidates. Without it a row reading
-	// returned=0 alongside a recovered spelling looks like a contradiction,
+	// available=0 alongside a recovered spelling looks like a contradiction,
 	// when it means "nothing matched, but here is something to look at".
 	Suggested int    `json:"suggested,omitempty"`
 	Spelling  string `json:"recovered_spelling,omitempty"`
@@ -76,8 +76,9 @@ func normalizeBatchQueries(queries []string) ([]string, error) {
 // Terms run concurrently so an eight-term batch costs the slowest term, not
 // the sum. The real-world telemetry this fixes: batch calls with near-miss
 // terms serialized at ~0.7s each (p90 6.1s), and contended sessions at up to
-// 36s. The concurrency is bounded by the SQLite read pool (8 connections), so
-// a batch can never open more readers than the pool already allows.
+// 36s. Concurrency is bounded across all batch calls on this DB, leaving pool
+// capacity for ordinary reads even when several clients submit batches at
+// once.
 func (db *DB) LLMSearchBatch(ctx context.Context, queries []string, opts SearchOptions) (LLMResult, error) {
 	terms, err := normalizeBatchQueries(queries)
 	if err != nil {
@@ -97,7 +98,6 @@ func (db *DB) LLMSearchBatch(ctx context.Context, queries []string, opts SearchO
 		index int
 	}
 	outcomes := make([]batchOutcome, len(terms))
-	sem := make(chan struct{}, maxBatchSearchQueries)
 	var wg sync.WaitGroup
 	for i, term := range terms {
 		single := opts
@@ -107,16 +107,17 @@ func (db *DB) LLMSearchBatch(ctx context.Context, queries []string, opts SearchO
 		single.Page = 0
 		single.Limit = perQuery
 
-		sem <- struct{}{}
 		wg.Add(1)
 		go func(index int, term string, single SearchOptions) {
 			defer wg.Done()
-			defer func() { <-sem }()
-			outcomes[index].index = index
-			if ctx.Err() != nil {
+			select {
+			case db.batchSearchSem <- struct{}{}:
+				defer func() { <-db.batchSearchSem }()
+			case <-ctx.Done():
 				outcomes[index].err = ctx.Err()
 				return
 			}
+			outcomes[index].index = index
 			one, searchErr := db.LLMSearch(ctx, single)
 			if searchErr != nil {
 				outcomes[index].err = searchErr
@@ -132,6 +133,7 @@ func (db *DB) LLMSearchBatch(ctx context.Context, queries []string, opts SearchO
 		}(i, term, single)
 	}
 	wg.Wait()
+	result.Batch = make([]LLMBatchQuery, len(outcomes))
 	for i := range outcomes {
 		if outcomes[i].err != nil {
 			return LLMResult{}, outcomes[i].err
@@ -144,30 +146,39 @@ func (db *DB) LLMSearchBatch(ctx context.Context, queries []string, opts SearchO
 		for kind, count := range one.Counts {
 			result.Counts[kind] += count
 		}
-		emitted := 0
-		for _, item := range one.Evidence {
+		row.Available = len(one.Evidence)
+		result.Batch[i] = row
+	}
+
+	// Merge one item per term per round. Sequential concatenation lets the
+	// first six wide terms consume all 48 slots and gives the final two no
+	// evidence despite successful searches.
+	for evidenceIndex := 0; len(result.Evidence) < batchSearchEvidenceCeil; evidenceIndex++ {
+		emittedThisRound := false
+		for termIndex := range outcomes {
+			if evidenceIndex >= len(outcomes[termIndex].one.Evidence) {
+				continue
+			}
+			item := outcomes[termIndex].one.Evidence[evidenceIndex]
+			item.Query = terms[termIndex]
+			result.Evidence = append(result.Evidence, item)
+			result.Batch[termIndex].Emitted++
+			emittedThisRound = true
 			if len(result.Evidence) >= batchSearchEvidenceCeil {
-				result.Truncated = true
 				break
 			}
-			// The term is carried on the item because the evidence lists are
-			// concatenated: without it a caller cannot tell which of eight
-			// questions a row answers.
-			item.Query = terms[i]
-			result.Evidence = append(result.Evidence, item)
-			emitted++
 		}
-		// The shared ceiling is applied while merging, so a term's own row must
-		// separate what the search found from what this response carries. A row
-		// claiming eight items when the ceiling let none through reads as
-		// evidence the caller never received.
-		row.Available = len(one.Evidence)
-		row.Emitted = emitted
-		row.Returned = emitted
-		if emitted < len(one.Evidence) {
+		if !emittedThisRound {
+			break
+		}
+	}
+	for index := range result.Batch {
+		row := &result.Batch[index]
+		row.Returned = row.Emitted
+		if row.Emitted < row.Available {
 			row.HasMore = true
+			result.Truncated = true
 		}
-		result.Batch = append(result.Batch, row)
 	}
 
 	result.Summary = fmt.Sprintf("Batch search over %d term(s); %d matched; %d evidence item(s) emitted.",
@@ -178,7 +189,7 @@ func (db *DB) LLMSearchBatch(ctx context.Context, queries []string, opts SearchO
 	}
 	if matched < len(terms) {
 		result.Guidance = append(result.Guidance,
-			"A term with returned=0 is absent from the index under that spelling; search it alone to see the recovery guidance for it.")
+			"A term with available=0 is absent from the index under that spelling; search it alone to see the recovery guidance for it.")
 	}
 	if result.Truncated {
 		result.Guidance = append(result.Guidance,

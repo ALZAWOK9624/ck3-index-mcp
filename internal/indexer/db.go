@@ -22,6 +22,10 @@ type DB struct {
 	guiResolutionMu     sync.Mutex
 	guiResolutionCache  map[string]GUIResolution
 	guiResolutionOrder  []string
+	// batchSearchSem is shared by every batch call using this database. A
+	// per-call semaphore lets several simultaneous eight-term calls exhaust the
+	// whole SQLite pool and starve ordinary reads.
+	batchSearchSem chan struct{}
 }
 
 const (
@@ -134,7 +138,24 @@ func openSQLite(path string, readOnly bool, options SQLiteReadOptions) (*DB, err
 		db.Close()
 		return nil, err
 	}
-	return &DB{sql: db, path: path, readOptions: options}, nil
+	return &DB{
+		sql: db, path: path, readOptions: options,
+		batchSearchSem: make(chan struct{}, batchSearchConcurrency(options)),
+	}, nil
+}
+
+func batchSearchConcurrency(options SQLiteReadOptions) int {
+	limit := options.Connections / 2
+	if limit < 1 {
+		limit = 1
+	}
+	if limit > 4 {
+		limit = 4
+	}
+	if processors := runtime.GOMAXPROCS(0); limit > processors {
+		limit = processors
+	}
+	return limit
 }
 
 const (
@@ -242,8 +263,21 @@ func (db *DB) reset(ctx context.Context) error {
 
 // ensureSchema creates tables and indexes if they do not exist. Idempotent.
 func (db *DB) ensureSchema(ctx context.Context) error {
+	_, err := db.ensureSchemaWithRepair(ctx)
+	return err
+}
+
+// ensureSchemaWithRepair returns whether it repaired the published trigram
+// index. Merely recreating a missing maintenance trigger is unsafe: updates
+// made while the trigger was absent can leave valid rowids carrying stale
+// tokens, which a row-count check cannot detect on a contentless FTS table.
+func (db *DB) ensureSchemaWithRepair(ctx context.Context) (bool, error) {
+	trigramNeedsRepair, err := db.trigramLocNeedsRepair(ctx)
+	if err != nil {
+		return false, err
+	}
 	if err := db.ensureSchemaNoIndexes(ctx); err != nil {
-		return err
+		return false, err
 	}
 	// Migrate older caches deliberately. Checking table_info first lets us
 	// ignore only the expected "already exists" case while surfacing locks,
@@ -279,16 +313,62 @@ func (db *DB) ensureSchema(ctx context.Context) error {
 	}
 	for _, migration := range migrations {
 		if err := db.ensureColumn(ctx, migration.table, migration.column, migration.definition); err != nil {
-			return err
+			return false, err
 		}
 	}
 	if err := db.ensureScriptTextTriggers(ctx); err != nil {
-		return err
+		return false, err
 	}
-	if err := db.ensureTrigramLocTriggers(ctx); err != nil {
-		return err
+	if trigramNeedsRepair {
+		tx, err := db.sql.BeginTx(ctx, nil)
+		if err != nil {
+			return false, err
+		}
+		defer tx.Rollback()
+		if err := rebuildTrigramLoc(ctx, tx); err != nil {
+			return false, err
+		}
+		if err := createTrigramLocTriggers(ctx, tx); err != nil {
+			return false, err
+		}
+		state, err := readIndexState(ctx, tx)
+		if err != nil {
+			return false, err
+		}
+		// Repair changes observable search results. Advance the published
+		// generation in the same transaction so MCP caches cannot retain the
+		// stale answer. A fresh/unpublished database has nothing to invalidate.
+		if state.Ready() {
+			if err := bumpScanGeneration(ctx, tx); err != nil {
+				return false, err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return false, err
+		}
+	} else if err := db.ensureTrigramLocTriggers(ctx); err != nil {
+		return false, err
 	}
-	return db.CreateIndexes(ctx)
+	if err := db.CreateIndexes(ctx); err != nil {
+		return false, err
+	}
+	return trigramNeedsRepair, nil
+}
+
+// trigramLocNeedsRepair must run before CREATE ... IF NOT EXISTS statements,
+// otherwise a missing table or trigger is indistinguishable from a healthy
+// schema and any tokens missed before that recreation remain stale forever.
+func (db *DB) trigramLocNeedsRepair(ctx context.Context) (bool, error) {
+	var tableCount, triggerCount int
+	err := db.sql.QueryRowContext(ctx, `
+		SELECT
+			(SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='trigram_loc'),
+			(SELECT COUNT(*) FROM sqlite_master
+				WHERE type='trigger' AND name IN ('trigram_loc_ai','trigram_loc_ad','trigram_loc_au'))`).Scan(&tableCount, &triggerCount)
+	if err != nil {
+		return false, fmt.Errorf("inspect trigram localization schema: %w", err)
+	}
+	return tableCount != 1 || triggerCount != len(trigramLocTriggerNames), nil
 }
 
 func (db *DB) ensureColumn(ctx context.Context, table, column, definition string) error {

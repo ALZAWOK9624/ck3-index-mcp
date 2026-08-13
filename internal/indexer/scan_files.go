@@ -94,7 +94,15 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 			resultErr = publishEngineBundleMatchingDB(context.Background(), db, engineBundle)
 		}
 	}()
-	if err := db.ensureSchema(ctx); err != nil {
+	inputCurrent, err := db.indexedInputFingerprintCurrent(ctx, cfg)
+	if err != nil {
+		return ScanStats{}, err
+	}
+	if !inputCurrent {
+		return ScanStats{}, &FullScanRequiredError{Reason: "the configured index input roots changed"}
+	}
+	schemaRepaired, err := db.ensureSchemaWithRepair(ctx)
+	if err != nil {
 		return ScanStats{}, err
 	}
 	version, err := db.metaValue(ctx, "index_rule_version")
@@ -190,7 +198,53 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 	}
 	sort.Strings(stats.MissingFiles)
 	if len(jobs) == 0 && len(removed) == 0 && !mapRefresh {
+		stats.Noop = !schemaRepaired
 		stats.PathOutcomes = sortedRefreshPathOutcomes(pathOutcomes)
+		stats.ElapsedMillis = time.Since(start).Milliseconds()
+		return stats, nil
+	}
+
+	// Do the read/hash work before opening the write connection. When every
+	// requested file has identical content and unchanged metadata, the
+	// published cache needs no write transaction, source-layer sync, diagnostic
+	// snapshot, stats rewrite, or WAL checkpoint at all.
+	results := make([]fileResult, len(jobs))
+	allJobsUnchanged := len(jobs) > 0
+	allMetadataCurrent := true
+	var workTotals fileWorkTotals
+	for index, job := range jobs {
+		res := parseOneFile(job)
+		results[index] = res
+		workTotals.add(&stats, res.work)
+		stats.Files++
+		stats.BySource[src.Name]++
+		if res.err != nil {
+			return ScanStats{}, fmt.Errorf("read source file %s: %w", job.rel, res.err)
+		}
+		if res.info == nil {
+			return ScanStats{}, fmt.Errorf("could not read %s", job.rel)
+		}
+		if !res.skip {
+			allJobsUnchanged = false
+			continue
+		}
+		pathOutcomes[job.rel] = RefreshPathOutcome{Path: job.rel, Status: "unchanged"}
+		if job.prev.MTime != res.info.ModTime().UnixNano() || job.prev.Size != res.info.Size() {
+			allMetadataCurrent = false
+		}
+	}
+	if len(jobs) > 0 {
+		stats.PeakQueuedResults = 1
+	}
+	workTotals.applyTimings(&stats)
+	ftsCurrent, err := searchFTSCacheMatches(ctx, db.sql)
+	if err != nil {
+		return ScanStats{}, err
+	}
+	if allJobsUnchanged && allMetadataCurrent && len(removed) == 0 && !mapRefresh && ftsCurrent {
+		stats.Noop = !schemaRepaired
+		stats.PathOutcomes = sortedRefreshPathOutcomes(pathOutcomes)
+		stats.ElapsedMillis = time.Since(start).Milliseconds()
 		return stats, nil
 	}
 	beforeDiagnostics, err := db.diagnosticFingerprintSet(ctx)
@@ -214,10 +268,6 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 	if err := syncSourceLayers(ctx, tx, cfg.Sources); err != nil {
 		return ScanStats{}, err
 	}
-	ftsCurrent, err := searchFTSCacheMatches(ctx, tx)
-	if err != nil {
-		return ScanStats{}, err
-	}
 	writer, closeWriter, err := prepareScanWriter(ctx, tx)
 	if err != nil {
 		return ScanStats{}, err
@@ -227,7 +277,6 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 	resources := map[string]bool{}
 	newFileIDs := map[int64]bool{}
 	changedSymbols := map[string]bool{}
-	var workTotals fileWorkTotals
 	var sqliteWriteTotal time.Duration
 	if len(removed) > 0 {
 		writeStart := time.Now()
@@ -243,17 +292,8 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 		}
 		sqliteWriteTotal += time.Since(writeStart)
 	}
-	for _, job := range jobs {
-		res := parseOneFile(job)
-		workTotals.add(&stats, res.work)
-		stats.Files++
-		stats.BySource[src.Name]++
-		if res.err != nil {
-			return ScanStats{}, fmt.Errorf("read source file %s: %w", job.rel, res.err)
-		}
-		if res.info == nil {
-			return ScanStats{}, fmt.Errorf("could not read %s", job.rel)
-		}
+	for index, job := range jobs {
+		res := results[index]
 		if res.skip {
 			pathOutcomes[job.rel] = RefreshPathOutcome{Path: job.rel, Status: "unchanged"}
 			writeStart := time.Now()
@@ -304,10 +344,6 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 		}
 		sqliteWriteTotal += time.Since(writeStart)
 	}
-	if len(jobs) > 0 {
-		stats.PeakQueuedResults = 1
-	}
-	workTotals.applyTimings(&stats)
 	stats.TimingsMillis["sqlite_write"] = sqliteWriteTotal.Milliseconds()
 	// A refresh where every job came back unchanged changed nothing semantic:
 	// only mtime/size metadata can have moved (refreshSkippedFileMetadata never
@@ -452,7 +488,7 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 			return ScanStats{}, err
 		}
 	} else {
-		stats.Noop = true
+		stats.Noop = !schemaRepaired
 	}
 	if err := refreshScanStatsTotals(ctx, tx, &stats); err != nil {
 		return ScanStats{}, err

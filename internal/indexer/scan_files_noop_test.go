@@ -49,6 +49,12 @@ func TestScanFilesNoOpKeepsTheGeneration(t *testing.T) {
 	if !stats.Noop {
 		t.Fatal("a refresh that changed nothing did not report itself as a no-op")
 	}
+	if stats.WALCheckpoint != nil {
+		t.Fatal("a true no-op opened the write path and checkpointed the WAL")
+	}
+	if _, wrote := stats.TimingsMillis["sqlite_write"]; wrote {
+		t.Fatalf("a true no-op reported sqlite write timing: %+v", stats.TimingsMillis)
+	}
 	if after := generation(t); after != before {
 		t.Fatalf("no-op refresh moved the generation %d -> %d", before, after)
 	}

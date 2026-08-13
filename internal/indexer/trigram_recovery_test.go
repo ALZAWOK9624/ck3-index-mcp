@@ -77,6 +77,99 @@ func TestTrigramIndexRecoversFromDamage(t *testing.T) {
 	}
 }
 
+func TestMissingTrigramUpdateTriggerRebuildsStaleTokens(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	writeProjectFile(t, dir, "localization/english/zz_trigger_gap_l_english.yml",
+		"l_english:\n zz_trigger_gap:0 \"Before Trigger Gap\"\n")
+	cfg := Config{
+		ConfigPath: filepath.Join(dir, "ck3-index.toml"),
+		Database:   "cache/test.sqlite",
+		Sources:    []Source{{Name: "project", Path: filepath.Join(dir, "project"), Rank: 1}},
+	}
+	if _, err := Scan(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(dir, "cache", "test.sqlite")
+	raw, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.ExecContext(ctx, `DROP TRIGGER trigram_loc_au`); err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if _, err := raw.ExecContext(ctx, `UPDATE localization SET value='After Trigger Gap' WHERE key='zz_trigger_gap'`); err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reader, err := OpenReadOnly(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quick, err := reader.HealthConfiguredDepth(ctx, cfg, HealthQuick)
+	if err != nil {
+		reader.Close()
+		t.Fatal(err)
+	}
+	deep, err := reader.HealthConfiguredDepth(ctx, cfg, HealthDeep)
+	if err != nil {
+		reader.Close()
+		t.Fatal(err)
+	}
+	before, err := reader.IndexState(ctx)
+	if err != nil {
+		reader.Close()
+		t.Fatal(err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !quick.FTS5Available {
+		t.Fatal("quick health rejected an available FTS implementation without doing a deep consistency scan")
+	}
+	if deep.FTS5Available || deep.Status != "error" {
+		t.Fatalf("deep health accepted a trigram index with a missing update trigger: %+v", deep)
+	}
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repaired, err := db.ensureSchemaWithRepair(ctx)
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if !repaired {
+		db.Close()
+		t.Fatal("ensureSchema did not report the missing trigram trigger repair")
+	}
+	after, err := db.IndexState(ctx)
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	hits, err := db.searchLocalizationValues(ctx, "After Trigger Gap", SearchOptions{}, 20)
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 {
+		t.Fatal("trigram repair did not index the value updated while its trigger was absent")
+	}
+	if after.Generation <= before.Generation {
+		t.Fatalf("trigram repair did not advance the published generation: before=%+v after=%+v", before, after)
+	}
+}
+
 // reset() drops localization and with it the trigram triggers. A generation
 // published without them would stop maintaining its own substring index on the
 // next incremental edit.

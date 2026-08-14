@@ -215,7 +215,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | 参数 | 必填 | 类型 | 约束 | 说明 |
 |---|---:|---|---|---|
 | `action_effects` | 否 | 数组 | 最多项数=32 | 可选的调用方点击后置事实；只匹配未受内置支持的精确 onclick，表达式本身绝不执行，类型化事实更新明确标记为 provided。 |
-| `format` | 否 | 字符串 | 可选值=[png html both] | 预览表示形式：png 保持旧响应；html 返回独立文档；both 同时返回二者。 |
+| `format` | 否 | 字符串 | 可选值=[png visual html both] | 预览表示形式：png 是诊断布局光栅；visual 用真实贴图与文本近似实机观感；html 返回独立文档；both 同时返回 png 与 html。 |
 | `height` | 否 | 整数 | 最小值=64; 最大值=2160 | 可选的 GUI 预览高度（像素）。 |
 | `html_mode` | 否 | 字符串 | 可选值=[static inspector] | HTML 行为模式：static 完全无脚本；inspector 使用固定 CSP 哈希脚本提供控件树、缩放、搜索、裁剪滚动视口、属性检查和视觉状态模拟。仅适用于 format=html 或 both。 |
 | `language` | 否 | 字符串 | 可选值=[raw english simp_chinese bilingual] | 初始 GUI 本地化视图：raw 保留脚本 key；英文、简体中文和双语值只来自当前生效的本地化索引。检查器可离线切换已嵌入的语言变体。 |

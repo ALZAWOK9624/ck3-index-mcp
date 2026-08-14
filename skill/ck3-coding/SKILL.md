@@ -247,6 +247,11 @@ When generating events, decisions, traits, modifiers, men-at-arms, traditions, o
 
 Inspect before imitating.
 
+- Before designing a new mechanic -- not scripting one, designing one -- load
+  `references/design-methodology.md`. It is a position rather than a survey: what
+  makes something a mechanic instead of upkeep with a UI, why a zero-sum shape asks
+  what the player becomes while an additive one only asks how much they have, and a
+  seven-question review to run in order, stopping at the first failure.
 - Before writing or reviewing a decision, load `references/decisions.md`. It carries
   the vanilla field-frequency table, which reads as a specification: a field on 86%
   of 431 vanilla decisions is close to mandatory, one on 1% is a privilege. It also

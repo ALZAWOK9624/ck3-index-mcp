@@ -247,6 +247,13 @@ When generating events, decisions, traits, modifiers, men-at-arms, traditions, o
 
 Inspect before imitating.
 
+- To judge how a GUI **looks** rather than what it resolves to, call `ck3_gui` with
+  `operation=preview` and `format=visual`, then read the PNG and iterate. Load
+  `references/gui-visual-design.md` first: it covers the render loop, the five CSS
+  reflexes that are wrong in jomini, and why a vanilla template's contrast does not
+  travel with it. The bullets below describe the diagnostic and HTML outputs, which
+  answer what is provable, not what is well composed.
+
 - Call `ck3_gui` with `operation=summary`, then narrow with `file`, `type`, or `template` instead of treating raw GUI text as a flat format.
 - After changing a named widget or custom type, call `ck3_gui` with `operation=preview`, `format=both`, `html_mode=inspector`, and the appropriate `language` (`raw`, `english`, `simp_chinese`, or `bilingual`). Use the PNG for immediate visual review and the self-contained inspector for tree browsing, zoom, search, localization switching, property inspection, and controlled visual-state simulation. Use `html_mode=static` only when a script-free artifact is required.
 - Read `preview.nodes`, `semantics`, `textures`, `approximate`, and `warnings` before claiming fidelity. Runtime `visible`, `enabled`, numeric `value`, `down`, `selected`, `datacontext`, repeated `onclick`, localization, effects, and dynamic textures are preserved as expressions. The bounded preview evaluator may compose `And`, `Or`, `Not`, and typed comparisons from explicit `runtime_facts`; direct numeric facts or literals may drive bounded progress values. It never executes arbitrary Jomini code or invents missing facts.

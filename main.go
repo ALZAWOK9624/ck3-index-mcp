@@ -262,7 +262,7 @@ func run(ctx context.Context, args []string) error {
 		return printJSON(result)
 	case "gui":
 		if len(args) < 1 {
-			return errors.New("usage: ck3-index gui <summary|file|type|template|preview> [path-or-symbol] [path-prefix] [--format png|html|both] [--html-mode static|inspector] [--language raw|english|simp_chinese|bilingual] [--width px] [--height px] [--limit nodes] [--scenario samples.json] [--out file] [--html-out file.html]")
+			return errors.New("usage: ck3-index gui <summary|file|type|template|preview> [path-or-symbol] [path-prefix] [--format png|visual|html|both] [--html-mode static|inspector] [--language raw|english|simp_chinese|bilingual] [--width px] [--height px] [--limit nodes] [--scenario samples.json] [--out file] [--html-out file.html]")
 		}
 		options := indexer.GUIQueryOptions{Operation: args[0], AllowProject: true}
 		previewOutput := ""
@@ -287,13 +287,13 @@ func run(ctx context.Context, args []string) error {
 			}
 		case "preview":
 			if len(args) < 2 {
-				return errors.New("usage: ck3-index gui preview <type-template-or-element> [gui/path-prefix] [--format png|html|both] [--html-mode static|inspector] [--language raw|english|simp_chinese|bilingual] [--width px] [--height px] [--limit nodes] [--scenario samples.json] [--out file] [--html-out file.html]")
+				return errors.New("usage: ck3-index gui preview <type-template-or-element> [gui/path-prefix] [--format png|visual|html|both] [--html-mode static|inspector] [--language raw|english|simp_chinese|bilingual] [--width px] [--height px] [--limit nodes] [--scenario samples.json] [--out file] [--html-out file.html]")
 			}
 			options.Symbol = args[1]
 			for index := 2; index < len(args); index++ {
 				if args[index] == "--out" {
 					if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
-						return errors.New("usage: ck3-index gui preview <type-template-or-element> [gui/path-prefix] [--format png|html|both] [--html-mode static|inspector] [--language raw|english|simp_chinese|bilingual] [--out file] [--html-out file.html]")
+						return errors.New("usage: ck3-index gui preview <type-template-or-element> [gui/path-prefix] [--format png|visual|html|both] [--html-mode static|inspector] [--language raw|english|simp_chinese|bilingual] [--out file] [--html-out file.html]")
 					}
 					previewOutput = args[index+1]
 					index++
@@ -301,7 +301,7 @@ func run(ctx context.Context, args []string) error {
 				}
 				if args[index] == "--html-out" {
 					if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
-						return errors.New("usage: ck3-index gui preview <type-template-or-element> [gui/path-prefix] [--format png|html|both] [--html-mode static|inspector] [--language raw|english|simp_chinese|bilingual] [--out file] [--html-out file.html]")
+						return errors.New("usage: ck3-index gui preview <type-template-or-element> [gui/path-prefix] [--format png|visual|html|both] [--html-mode static|inspector] [--language raw|english|simp_chinese|bilingual] [--out file] [--html-out file.html]")
 					}
 					htmlOutput = args[index+1]
 					index++
@@ -352,8 +352,8 @@ func run(ctx context.Context, args []string) error {
 						}
 						options.Height = value
 					case "--limit":
-						if value < 1 || value > 500 {
-							return errors.New("GUI preview --limit must be between 1 and 500")
+						if value < 1 || value > indexer.GUIPreviewMaxNodes {
+							return fmt.Errorf("GUI preview --limit must be between 1 and %d", indexer.GUIPreviewMaxNodes)
 						}
 						options.Limit = value
 					}
@@ -398,7 +398,7 @@ func run(ctx context.Context, args []string) error {
 				options.Format = "both"
 			}
 		default:
-			return errors.New("usage: ck3-index gui <summary|file|type|template|preview> [path-or-symbol] [path-prefix] [--format png|html|both] [--html-mode static|inspector] [--language raw|english|simp_chinese|bilingual] [--width px] [--height px] [--limit nodes] [--scenario samples.json] [--out file] [--html-out file.html]")
+			return errors.New("usage: ck3-index gui <summary|file|type|template|preview> [path-or-symbol] [path-prefix] [--format png|visual|html|both] [--html-mode static|inspector] [--language raw|english|simp_chinese|bilingual] [--width px] [--height px] [--limit nodes] [--scenario samples.json] [--out file] [--html-out file.html]")
 		}
 		db, err := openReadOnlyDB(cfgPath)
 		if err != nil {

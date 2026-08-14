@@ -209,7 +209,7 @@ func buildCanonicalTools() []ToolDefinition {
 				"symbol":         stringProperty("Exact custom type, template, or named GUI element for preview; type/template operations keep their narrower meaning."),
 				"width":          integerProperty("Optional preview width in pixels.", 64, indexer.GUIPreviewMaxWidth, 0),
 				"height":         integerProperty("Optional preview height in pixels.", 64, indexer.GUIPreviewMaxHeight, 0),
-				"format":         stringProperty("Preview representation. png preserves the legacy response; html returns a standalone document; both returns both.", "png", "html", "both"),
+				"format":         stringProperty("Preview representation. png is the diagnostic layout raster; visual approximates the in-game appearance with real textures and text; html returns a standalone document; both returns png and html.", "png", "visual", "html", "both"),
 				"html_mode":      stringProperty("HTML behavior. static is script-free; inspector adds a fixed CSP-hashed tree, zoom, search, clipped scrollbox navigation, property inspector, and visual-state simulator. Only valid with format=html or both.", indexer.GUIHTMLModeStatic, indexer.GUIHTMLModeInspector),
 				"language":       stringProperty("Initial GUI localization view. raw preserves script keys; English, Simplified Chinese, and bilingual values come only from the active localization index. The inspector can switch among embedded variants without network access.", indexer.GUIPreviewLanguageRaw, indexer.GUIPreviewLanguageEnglish, indexer.GUIPreviewLanguageSimpChinese, indexer.GUIPreviewLanguageBilingual),
 				"sample_values":  guiScenarioSamplesProperty(),

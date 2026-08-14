@@ -756,12 +756,13 @@ var nodes=Array.prototype.slice.call(root.querySelectorAll('[data-ck3-stage-node
 var treeItems=Array.prototype.slice.call(root.querySelectorAll('[data-ck3-tree-index]'));
 var runtimeFactControls=Array.prototype.slice.call(root.querySelectorAll('[data-ck3-runtime-fact]'));
 var scrollControls=Array.prototype.slice.call(root.querySelectorAll('[data-ck3-scroll-control]'));
+function ck3B64JSON(value){return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(value),function(c){return c.charCodeAt(0);})));}
 var runtimePlans={};
 var runtimeTextPlans={};
 var runtimeActions={};
-Array.prototype.slice.call(root.querySelectorAll('[data-ck3-runtime-plan]')).forEach(function(element){try{runtimePlans[element.dataset.ck3RuntimePlan]={supported:element.dataset.ck3RuntimeSupported==='true',tokens:JSON.parse(atob(element.dataset.ck3RuntimeTokens))};}catch(ignore){runtimePlans[element.dataset.ck3RuntimePlan]={supported:false,tokens:[]};}});
-Array.prototype.slice.call(root.querySelectorAll('[data-ck3-runtime-text-plan]')).forEach(function(element){try{runtimeTextPlans[element.dataset.ck3RuntimeTextPlan]={supported:element.dataset.ck3RuntimeSupported==='true',tokens:JSON.parse(atob(element.dataset.ck3RuntimeTokens))};}catch(ignore){runtimeTextPlans[element.dataset.ck3RuntimeTextPlan]={supported:false,tokens:[]};}});
-Array.prototype.slice.call(root.querySelectorAll('[data-ck3-runtime-action]')).forEach(function(element){var updates=[];try{updates=element.dataset.ck3RuntimeUpdates?JSON.parse(atob(element.dataset.ck3RuntimeUpdates)):[];}catch(ignore){updates=[];}runtimeActions[element.dataset.ck3RuntimeAction]={operation:element.dataset.ck3RuntimeOperation,fact:Number(element.dataset.ck3RuntimeFactIndex),argument:element.dataset.ck3RuntimeArgument||'',dataExpression:element.dataset.ck3RuntimeDataExpression||'',source:element.dataset.ck3RuntimeSource||'',updates:updates};});
+Array.prototype.slice.call(root.querySelectorAll('[data-ck3-runtime-plan]')).forEach(function(element){try{runtimePlans[element.dataset.ck3RuntimePlan]={supported:element.dataset.ck3RuntimeSupported==='true',tokens:ck3B64JSON(element.dataset.ck3RuntimeTokens)};}catch(ignore){runtimePlans[element.dataset.ck3RuntimePlan]={supported:false,tokens:[]};}});
+Array.prototype.slice.call(root.querySelectorAll('[data-ck3-runtime-text-plan]')).forEach(function(element){try{runtimeTextPlans[element.dataset.ck3RuntimeTextPlan]={supported:element.dataset.ck3RuntimeSupported==='true',tokens:ck3B64JSON(element.dataset.ck3RuntimeTokens)};}catch(ignore){runtimeTextPlans[element.dataset.ck3RuntimeTextPlan]={supported:false,tokens:[]};}});
+Array.prototype.slice.call(root.querySelectorAll('[data-ck3-runtime-action]')).forEach(function(element){var updates=[];try{updates=element.dataset.ck3RuntimeUpdates?ck3B64JSON(element.dataset.ck3RuntimeUpdates):[];}catch(ignore){updates=[];}runtimeActions[element.dataset.ck3RuntimeAction]={operation:element.dataset.ck3RuntimeOperation,fact:Number(element.dataset.ck3RuntimeFactIndex),argument:element.dataset.ck3RuntimeArgument||'',dataExpression:element.dataset.ck3RuntimeDataExpression||'',source:element.dataset.ck3RuntimeSource||'',updates:updates};});
 var selected=null;
 var width=Number(root.dataset.ck3Width)||1280;
 var height=Number(root.dataset.ck3Height)||720;

@@ -22,6 +22,12 @@ const (
 	GUIPreviewMaxWidth      = 3840
 	GUIPreviewMaxHeight     = 2160
 	guiPreviewMaxDepth      = 64
+	// GUIPreviewMaxNodes bounds scene construction. A window's own widgets
+	// are a small share of its node count -- vanilla tooltip subtrees pulled
+	// in by tooltip= dominate it -- so a ceiling tuned to the HTML document
+	// budget truncated real content long before the picture was full. The
+	// HTML path keeps its own hard byte check, which fails loudly.
+	GUIPreviewMaxNodes = 6000
 )
 
 // GUIPreviewResult is a deterministic, renderer-neutral CK3 GUI scene plus a
@@ -100,6 +106,8 @@ type GUIPreviewNode struct {
 	Mirror                          string                  `json:"mirror,omitempty"`
 	FitType                         string                  `json:"fit_type,omitempty"`
 	Align                           string                  `json:"align,omitempty"`
+	FontSize                        int                     `json:"font_size,omitempty"`
+	Font                            string                  `json:"font,omitempty"`
 	Text                            string                  `json:"text,omitempty"`
 	TextLocalization                *GUILocalizedText       `json:"text_localization,omitempty"`
 	TooltipLocalization             *GUILocalizedText       `json:"tooltip_localization,omitempty"`
@@ -236,6 +244,7 @@ type GUISemantics struct {
 	Color                 string   `json:"color,omitempty"`
 	TintColor             string   `json:"tint_color,omitempty"`
 	FontTintColor         string   `json:"font_tint_color,omitempty"`
+	FontColor             string   `json:"font_color,omitempty"`
 	DataContext           string   `json:"data_context,omitempty"`
 	DataModel             string   `json:"data_model,omitempty"`
 	OnClick               string   `json:"on_click,omitempty"`
@@ -320,6 +329,7 @@ type guiPreviewLayout struct {
 	warningSeen   map[string]bool
 	truncated     bool
 	approximate   bool
+	skipOverlays  bool
 }
 
 type guiPreviewSize struct {
@@ -339,7 +349,18 @@ type guiPreviewMargins struct {
 // runtime facts, scenario values, and model rows are all applied after layout
 // and all change what a rendered frame would contain, so encoding here would
 // produce a PNG that is thrown away or immediately re-encoded.
+// BuildGUIPreviewScene lays out a GUI symbol, keeping tooltip subtrees.
 func BuildGUIPreviewScene(symbol, symbolKind, source string, element GUIElement, width, height, nodeLimit int) (GUIPreviewResult, error) {
+	return buildGUIPreviewScene(symbol, symbolKind, source, element, width, height, nodeLimit, false)
+}
+
+// BuildGUIPreviewSceneWithoutOverlays lays out a GUI symbol and omits tooltip
+// subtrees, so the node budget is spent on what a picture can actually show.
+func BuildGUIPreviewSceneWithoutOverlays(symbol, symbolKind, source string, element GUIElement, width, height, nodeLimit int) (GUIPreviewResult, error) {
+	return buildGUIPreviewScene(symbol, symbolKind, source, element, width, height, nodeLimit, true)
+}
+
+func buildGUIPreviewScene(symbol, symbolKind, source string, element GUIElement, width, height, nodeLimit int, skipOverlays bool) (GUIPreviewResult, error) {
 	if width <= 0 {
 		width = GUIPreviewDefaultWidth
 	}
@@ -355,11 +376,12 @@ func BuildGUIPreviewScene(symbol, symbolKind, source string, element GUIElement,
 	if nodeLimit <= 0 {
 		nodeLimit = 100
 	}
-	if nodeLimit > 500 {
-		nodeLimit = 500
+	if nodeLimit > GUIPreviewMaxNodes {
+		nodeLimit = GUIPreviewMaxNodes
 	}
 	layout := &guiPreviewLayout{
 		width: width, height: height, limit: nodeLimit, warningSeen: map[string]bool{},
+		skipOverlays: skipOverlays,
 	}
 	viewport := GUIPreviewRect{Width: width, Height: height}
 	layout.layoutElement(element, viewport, nil, 0, -1)
@@ -504,6 +526,14 @@ func guiPreviewScaleLayoutValue(value int, scale float64) int {
 }
 
 func (layout *guiPreviewLayout) layoutElement(element GUIElement, parent GUIPreviewRect, forced *GUIPreviewRect, depth, parentIndex int) {
+	// A tooltip subtree is hover-only chrome that a still picture never shows,
+	// yet vanilla templates make it enormous: one card in a four-card window
+	// dragged in over a thousand cooltip nodes and exhausted the budget before
+	// the later cards were ever laid out. Skipping it costs the visual raster
+	// nothing and is what lets the whole window fit.
+	if layout.skipOverlays && isGUIPreviewOverlayElement(element) {
+		return
+	}
 	if depth > guiPreviewMaxDepth {
 		layout.truncated = true
 		layout.warn("depth", fmt.Sprintf("GUI preview expansion stopped after %d layout levels", guiPreviewMaxDepth))
@@ -575,6 +605,7 @@ func (layout *guiPreviewLayout) layoutElement(element GUIElement, parent GUIPrev
 		DeclaredPosition: cloneGUIVector(element.Position), DeclaredSize: cloneGUIVector(element.Size),
 		TextureFrames: textureFrames, TextureSlice: textureSlice,
 		TextureBlendMode: textureBlendMode, TextureBlendSupported: textureBlendSupported, Mirror: guiPreviewMirror(element), FitType: fitType, Align: align,
+		FontSize: guiPreviewFontSize(element), Font: guiPreviewFont(element),
 		Text: text, Semantics: guiPreviewSemantics(element), StateDefinition: guiPreviewStateDefinition(element),
 		Layout:       guiPreviewElementLayout(element),
 		BehaviorOnly: behaviorOnly, Approximate: approximate,
@@ -906,6 +937,17 @@ func guiPreviewAlign(element GUIElement) string {
 	return strings.ToLower(strings.Trim(strings.TrimSpace(guiPreviewProperty(element, "align")), "\""))
 }
 
+func guiPreviewFontSize(element GUIElement) int {
+	if size, ok := guiPreviewNumber(guiPreviewProperty(element, "fontsize")); ok && size > 0 {
+		return size
+	}
+	return 0
+}
+
+func guiPreviewFont(element GUIElement) string {
+	return strings.Trim(strings.TrimSpace(guiPreviewProperty(element, "font")), "\"")
+}
+
 func guiPreviewAlignSupported(align string) bool {
 	found := false
 	for _, part := range strings.Split(strings.ToLower(strings.TrimSpace(align)), "|") {
@@ -977,6 +1019,7 @@ func guiPreviewSemantics(element GUIElement) *GUISemantics {
 		Color:                 guiPreviewColorProperty(element, "color"),
 		TintColor:             guiPreviewColorProperty(element, "tintcolor"),
 		FontTintColor:         fontTintColor,
+		FontColor:             guiPreviewColorProperty(element, "fontcolor"),
 		DataContext:           guiPreviewProperty(element, "datacontext"),
 		DataModel:             guiPreviewProperty(element, "datamodel"),
 		OnClick:               guiPreviewProperty(element, "onclick"),
@@ -1002,7 +1045,7 @@ func guiPreviewSemantics(element GUIElement) *GUISemantics {
 	if semantics.Visible == "" && semantics.Enabled == "" && semantics.Down == "" && semantics.Selected == "" && semantics.SelectedIndex == "" && semantics.Checked == "" && semantics.Grayscale == "" && semantics.Alpha == "" && semantics.Scale == "" && semantics.RotateUV == "" && semantics.LineFrom == "" && semantics.LineTo == "" &&
 		semantics.MinWidth == "" && semantics.MaxWidth == "" && semantics.MinHeight == "" && semantics.MaxHeight == "" && semantics.MarginLeft == "" && semantics.MarginRight == "" && semantics.MarginTop == "" && semantics.MarginBottom == "" &&
 		semantics.Min == "" && semantics.Max == "" && semantics.Value == "" && semantics.AnimatedProgressValue == "" &&
-		semantics.Color == "" && semantics.TintColor == "" && semantics.FontTintColor == "" &&
+		semantics.Color == "" && semantics.TintColor == "" && semantics.FontTintColor == "" && semantics.FontColor == "" &&
 		semantics.DataContext == "" && semantics.DataModel == "" && semantics.OnClick == "" && semantics.OnRightClick == "" &&
 		semantics.Tooltip == "" && semantics.TooltipWhenDisabled == "" && semantics.RawTooltip == "" && semantics.TooltipVisible == "" && semantics.RawText == "" && semantics.RawTexture == "" && semantics.Video == "" && semantics.PortraitTexture == "" && semantics.CoatOfArmsTexture == "" && semantics.CoatOfArmsMask == "" && semantics.CoatOfArmsOffset == "" && semantics.CoatOfArmsScale == "" &&
 		semantics.NoProgressTexture == "" && semantics.State == "" {
@@ -1122,7 +1165,15 @@ func (layout *guiPreviewLayout) layoutFlowChildren(element GUIElement, bounds GU
 		}
 		if horizontal {
 			cursor += item.margins.left
-			childBounds = GUIPreviewRect{X: bounds.X + cursor, Y: bounds.Y + item.margins.top, Width: item.size.w, Height: item.size.h}
+			// Jomini centres a flow child on the cross axis; only the main axis
+			// packs from the start. Placing it flush instead put a 110-wide
+			// portrait against the left edge of a 210-wide card while the game
+			// centres it.
+			crossY := bounds.Y + item.margins.top
+			if inner := bounds.Height - item.margins.top - item.margins.bottom; inner > item.size.h {
+				crossY += (inner - item.size.h) / 2
+			}
+			childBounds = GUIPreviewRect{X: bounds.X + cursor, Y: crossY, Width: item.size.w, Height: item.size.h}
 			if item.expanding && allocation > 0 {
 				childBounds.Width = allocation
 				if scrollViewport && !strings.EqualFold(strings.TrimSpace(child.Kind), "expand") {
@@ -1130,12 +1181,17 @@ func (layout *guiPreviewLayout) layoutFlowChildren(element GUIElement, bounds GU
 				}
 			}
 			if strings.EqualFold(guiPreviewProperty(child, "layoutpolicy_vertical"), "expanding") {
+				childBounds.Y = bounds.Y + item.margins.top
 				childBounds.Height = maxInt(1, bounds.Height-item.margins.top-item.margins.bottom)
 			}
 			cursor += childBounds.Width + item.margins.right + spacing
 		} else {
 			cursor += item.margins.top
-			childBounds = GUIPreviewRect{X: bounds.X + item.margins.left, Y: bounds.Y + cursor, Width: item.size.w, Height: item.size.h}
+			crossX := bounds.X + item.margins.left
+			if inner := bounds.Width - item.margins.left - item.margins.right; inner > item.size.w {
+				crossX += (inner - item.size.w) / 2
+			}
+			childBounds = GUIPreviewRect{X: crossX, Y: bounds.Y + cursor, Width: item.size.w, Height: item.size.h}
 			if item.expanding && allocation > 0 {
 				childBounds.Height = allocation
 				if scrollViewport && !strings.EqualFold(strings.TrimSpace(child.Kind), "expand") {
@@ -1143,6 +1199,7 @@ func (layout *guiPreviewLayout) layoutFlowChildren(element GUIElement, bounds GU
 				}
 			}
 			if strings.EqualFold(guiPreviewProperty(child, "layoutpolicy_horizontal"), "expanding") {
+				childBounds.X = bounds.X + item.margins.left
 				childBounds.Width = maxInt(1, bounds.Width-item.margins.left-item.margins.right)
 			}
 			cursor += childBounds.Height + item.margins.bottom + spacing

@@ -505,8 +505,10 @@ func TestRenderGUIPreviewWeightsExpandingFlowItems(t *testing.T) {
 		t.Fatal(err)
 	}
 	first, second := result.Nodes[1], result.Nodes[2]
-	if first.Bounds != (GUIPreviewRect{X: 0, Y: 0, Width: 100, Height: 20}) ||
-		second.Bounds != (GUIPreviewRect{X: 100, Y: 0, Width: 200, Height: 20}) {
+	// The cross axis centres, so 20-tall children sit at (50-20)/2 in a
+	// 50-tall hbox. The weighting this test guards is the 100/200 split.
+	if first.Bounds != (GUIPreviewRect{X: 0, Y: 15, Width: 100, Height: 20}) ||
+		second.Bounds != (GUIPreviewRect{X: 100, Y: 15, Width: 200, Height: 20}) {
 		t.Fatalf("weighted hbox flow: first=%+v second=%+v", first.Bounds, second.Bounds)
 	}
 	if first.Layout == nil || second.Layout == nil || first.Layout.StretchHorizontal != 1 || second.Layout.StretchHorizontal != 2 {
@@ -530,8 +532,8 @@ func TestRenderGUIPreviewWeightsExpandingFlowItems(t *testing.T) {
 		t.Fatal(err)
 	}
 	first, second = result.Nodes[1], result.Nodes[2]
-	if first.Bounds != (GUIPreviewRect{X: 0, Y: 0, Width: 20, Height: 100}) ||
-		second.Bounds != (GUIPreviewRect{X: 0, Y: 100, Width: 20, Height: 200}) {
+	if first.Bounds != (GUIPreviewRect{X: 15, Y: 0, Width: 20, Height: 100}) ||
+		second.Bounds != (GUIPreviewRect{X: 15, Y: 100, Width: 20, Height: 200}) {
 		t.Fatalf("weighted vbox flow: first=%+v second=%+v", first.Bounds, second.Bounds)
 	}
 	if first.Layout == nil || second.Layout == nil || first.Layout.StretchVertical != 1 || second.Layout.StretchVertical != 2 {

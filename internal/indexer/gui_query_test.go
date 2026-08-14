@@ -370,8 +370,8 @@ func TestGUIQueryNodeLimitMatchesPublicMaximum(t *testing.T) {
 	if got := guiQueryNodeLimit(300); got != 300 {
 		t.Fatalf("GUI node limit silently changed 300 to %d", got)
 	}
-	if got := guiQueryNodeLimit(900); got != 500 {
-		t.Fatalf("GUI node limit cap=%d want 500", got)
+	if got := guiQueryNodeLimit(GUIPreviewMaxNodes + 400); got != GUIPreviewMaxNodes {
+		t.Fatalf("GUI node limit cap=%d want %d", got, GUIPreviewMaxNodes)
 	}
 }
 

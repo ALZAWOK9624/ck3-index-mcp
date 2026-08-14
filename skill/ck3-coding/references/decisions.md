@@ -31,6 +31,20 @@ across vanilla decisions:
 Read that as a specification, not trivia. A field at 86% is close to mandatory;
 a field at 1% is a privilege you have to earn.
 
+**But a distribution is a prior, not a verdict.** It tells you what to expect and
+where to look; it does not decide a case on its own, and applying it
+mechanically produces confident nonsense.
+
+The test is whether the reason behind the number applies here. Vanilla prefers
+`ai_check_interval_by_tier` on 82% of decisions because a flat interval makes a
+count-level AI pay an emperor's evaluation cost -- so a decision gated by
+`has_title = title:x` to a single holder has no tier spread to scale across, and
+a flat interval is correct for it. Flagging that as a deviation is a review
+failure, not a finding.
+
+Cite the reason, not the percentage. If you cannot say what the number is for,
+you are not ready to apply it.
+
 Reproduce it for any object type before reviewing one:
 
 ```sql

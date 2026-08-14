@@ -46,6 +46,13 @@ is deliberately rare; frequent throne-room scenes cheapen the room.
 **`activity_event` — structural, not stylistic.** It participates in activity
 context. Do not pick it for the look.
 
+**Vary the window within one chain; the contrast is the point.** A chain is not
+obliged to pick one window and keep it. An assembly convened in the hall is a
+`court_event` because the realm is watching; the envoy who comes to you
+privately afterwards is a `character_event` because nobody else is in the room.
+Rendering both the same way flattens a distinction the player would otherwise
+feel without being told. Ask the question per event, not per feature.
+
 **About one vanilla event in ten has no window at all.** Hidden events are
 machinery: bookkeeping, delayed chains, cleanup. A modder who makes every event
 visible is generating noise. **If the player has no decision and learns nothing

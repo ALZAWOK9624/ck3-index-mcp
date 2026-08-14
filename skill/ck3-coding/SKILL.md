@@ -247,6 +247,12 @@ When generating events, decisions, traits, modifiers, men-at-arms, traditions, o
 
 Inspect before imitating.
 
+- Before choosing where content lives -- which event window, which of the 124
+  scriptable systems, whether it needs a GUI at all -- load
+  `references/systems-and-surfaces.md`. Picking the system whose shape already
+  matches the content inherits its interface, AI and player habits; building a
+  decision plus a custom panel for something that is an activity, a scheme or a
+  contract is the commonest and most expensive mistake in a mod.
 - Before designing a new mechanic -- not scripting one, designing one -- load
   `references/design-methodology.md`. It is a position rather than a survey: what
   makes something a mechanic instead of upkeep with a UI, why a zero-sum shape asks

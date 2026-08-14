@@ -247,6 +247,11 @@ When generating events, decisions, traits, modifiers, men-at-arms, traditions, o
 
 Inspect before imitating.
 
+- Before writing or reviewing a decision, load `references/decisions.md`. It carries
+  the vanilla field-frequency table, which reads as a specification: a field on 86%
+  of 431 vanilla decisions is close to mandatory, one on 1% is a privilege. It also
+  covers cooldowns that start when a chain ends rather than begins, and the failure
+  reporting that decides whether a blocked decision is a goal or a mystery.
 - To judge how a GUI **looks** rather than what it resolves to, call `ck3_gui` with
   `operation=preview` and `format=visual`, then read the PNG and iterate. Load
   `references/gui-visual-design.md` first: it covers the render loop, the five CSS

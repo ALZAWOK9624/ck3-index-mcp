@@ -247,6 +247,17 @@ When generating events, decisions, traits, modifiers, men-at-arms, traditions, o
 
 Inspect before imitating.
 
+- For prose, concepts and formatting codes, load
+  `references/writing-and-localization.md`. It is short on purpose: event prose is
+  deliberately unspecified, because a template for writing produces writing that
+  reads like a template. The rules that do bind are that any reused term needs a
+  game_concept entry, and that colour codes pick out information rather than
+  decorate.
+- Once a panel is correct, `references/gui-composition.md` is what makes it good.
+  It opens with five counts -- spacing values, alignment baselines, font sizes,
+  colours, contrast -- that are mechanical. A panel failing two of them cannot be
+  rescued by taste; one passing all five looks professional even with mediocre
+  taste.
 - Before choosing where content lives -- which event window, which of the 124
   scriptable systems, whether it needs a GUI at all -- load
   `references/systems-and-surfaces.md`. Picking the system whose shape already

@@ -247,6 +247,11 @@ When generating events, decisions, traits, modifiers, men-at-arms, traditions, o
 
 Inspect before imitating.
 
+- Before building a story thread, load `references/narrative-design.md`. CK3's
+  narrative unit is the situation, not the plot: state persists and events are
+  windows onto it, so deleting an event must not delete the story. The same file
+  carries the on_action discipline, because a recurring hook's cost is multiplied
+  by the population and it is the most reliable way to make a mod stutter.
 - For prose, concepts and formatting codes, load
   `references/writing-and-localization.md`. It is short on purpose: event prose is
   deliberately unspecified, because a template for writing produces writing that

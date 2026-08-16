@@ -119,6 +119,19 @@ type fileRecord struct {
 // while silently answering every substring query with nothing.
 const indexRuleVersion = "2026-08-13-v0.5.0-trigram-loc-1"
 
+// lintRuleVersion is the diagnostic contract, kept apart from
+// indexRuleVersion because the two invalidate different things. A change to
+// what a rule reports leaves every stored row structurally valid, so paying
+// indexRuleVersion's price for it would drop the cache and mark the map
+// database stale — taking every map tool offline to correct a warning.
+// Bumping this instead re-parses script files, and only those, so their
+// diagnostics are recomputed while the map cache stays served.
+//
+// Bumped for on_action_direct_override: an index built before it compared
+// against the game's own block keeps serving warnings the current rule would
+// never raise, and no file changed to dislodge them.
+const lintRuleVersion = "2026-08-17-on-action-override-1"
+
 // Keep ordinary full scans well below SQLite's variable limit when they take
 // the scoped resolver/validator path. Larger edits remain correct by falling
 // back to the established global finalizers.
@@ -268,6 +281,7 @@ func scanWithPreparedEngineBundle(ctx context.Context, cfg Config, forceClean, p
 	publishedState := IndexState{}
 	cachedEngineFingerprint := ""
 	cachedRuleVersion := ""
+	cachedLintRuleVersion := ""
 	cachedInputFingerprint := ""
 	if !forceClean {
 		publishedState, err = db.IndexState(ctx)
@@ -280,6 +294,10 @@ func scanWithPreparedEngineBundle(ctx context.Context, cfg Config, forceClean, p
 				return ScanStats{}, err
 			}
 			cachedRuleVersion, err = db.metaValue(ctx, "index_rule_version")
+			if err != nil {
+				return ScanStats{}, err
+			}
+			cachedLintRuleVersion, err = db.metaValue(ctx, "lint_rule_version")
 			if err != nil {
 				return ScanStats{}, err
 			}
@@ -401,7 +419,7 @@ func scanWithPreparedEngineBundle(ctx context.Context, cfg Config, forceClean, p
 				rel:              rel,
 				kind:             kind,
 				prev:             existing[path],
-				forceParse:       (engineDataDirty || cachedRuleVersion != indexRuleVersion) && kind == "script",
+				forceParse:       (engineDataDirty || cachedRuleVersion != indexRuleVersion || cachedLintRuleVersion != lintRuleVersion) && kind == "script",
 				engineRules:      engineRules,
 				vanillaOnActions: vanillaOnActionLookup,
 			})
@@ -608,7 +626,7 @@ parsedFilesComplete:
 	// inputs outside ordinary script jobs (map CSV/.map files and engine logs),
 	// otherwise an apparently no-op scan could leave a derived cache stale.
 	var plannedMapManifest *mapInputManifest
-	if !fileChanges && !engineDataDirty && publishedState.Ready() && cachedRuleVersion == indexRuleVersion && ftsCurrent {
+	if !fileChanges && !engineDataDirty && publishedState.Ready() && cachedRuleVersion == indexRuleVersion && cachedLintRuleVersion == lintRuleVersion && ftsCurrent {
 		stageStart := time.Now()
 		manifest, err := collectMapInputManifest(ctx, cfg)
 		if err != nil {
@@ -856,6 +874,10 @@ parsedFilesComplete:
 	stageStart = time.Now()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('index_rule_version',?)
 		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, indexRuleVersion); err != nil {
+		return ScanStats{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('lint_rule_version',?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, lintRuleVersion); err != nil {
 		return ScanStats{}, err
 	}
 	// Record which upstream trees produced these rows so another workspace can

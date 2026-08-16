@@ -171,6 +171,11 @@ func scanWithPreparedEngineBundle(ctx context.Context, cfg Config, forceClean, p
 		return ScanStats{}, err
 	}
 	engineRules := engineRuleSetFromBundle(engineBundle)
+	vanillaOnActionRoot := ""
+	if gameSource, ok := GameSource(cfg); ok {
+		vanillaOnActionRoot = gameSource.Path
+	}
+	vanillaOnActionLookup := newVanillaOnActionIndex(vanillaOnActionRoot)
 	dbPath, err := ConfiguredDatabasePath(cfg)
 	if err != nil {
 		return ScanStats{}, err
@@ -391,13 +396,14 @@ func scanWithPreparedEngineBundle(ctx context.Context, cfg Config, forceClean, p
 				return nil
 			}
 			jobs = append(jobs, fileJob{
-				src:         src,
-				path:        path,
-				rel:         rel,
-				kind:        kind,
-				prev:        existing[path],
-				forceParse:  (engineDataDirty || cachedRuleVersion != indexRuleVersion) && kind == "script",
-				engineRules: engineRules,
+				src:              src,
+				path:             path,
+				rel:              rel,
+				kind:             kind,
+				prev:             existing[path],
+				forceParse:       (engineDataDirty || cachedRuleVersion != indexRuleVersion) && kind == "script",
+				engineRules:      engineRules,
+				vanillaOnActions: vanillaOnActionLookup,
 			})
 			return nil
 		}); err != nil {
@@ -1719,6 +1725,7 @@ type fileJob struct {
 	overrideRule     string
 	forceParse       bool
 	engineRules      *EngineRuleSet
+	vanillaOnActions *vanillaOnActionIndex
 }
 
 // guiBuiltinTypes are CK3 GUI type-building-block names that appear in
@@ -2042,7 +2049,7 @@ func parseOneFile(j fileJob) fileResult {
 			result.ctxDiags = checkScriptContext(parsed.Nodes, j.rel)
 			result.ctxDiags = append(result.ctxDiags, checkRuntimeContractsWithRules(parsed.Nodes, j.rel, j.engineRules)...)
 		}
-		result.ctxDiags = append(result.ctxDiags, checkScriptLint(parsed.Nodes, j.rel, j.src.Role)...)
+		result.ctxDiags = append(result.ctxDiags, checkScriptLint(parsed.Nodes, j.rel, j.src.Role, j.vanillaOnActions)...)
 		if !isGUI {
 			result.ctxDiags = append(result.ctxDiags, checkScopeTrackerWithRules(parsed.Nodes, j.rel, j.engineRules)...)
 			result.savedScopes = collectSavedScopes(parsed.Nodes)

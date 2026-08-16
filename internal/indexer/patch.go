@@ -85,7 +85,7 @@ func analyzeVirtualFileWithRules(relPath, sourceName string, sourceRank int, con
 			})
 		}
 		a.Diagnostics = append(a.Diagnostics, ctxDiagnostics(rel, "compiler", checkScriptContext(a.Parsed.Nodes, rel))...)
-		a.Diagnostics = append(a.Diagnostics, ctxDiagnostics(rel, "compiler", checkScriptLint(a.Parsed.Nodes, rel, SourceRoleProject))...)
+		a.Diagnostics = append(a.Diagnostics, ctxDiagnostics(rel, "compiler", checkScriptLint(a.Parsed.Nodes, rel, SourceRoleProject, nil))...)
 		a.Diagnostics = append(a.Diagnostics, ctxDiagnostics(rel, "compiler", checkRuntimeContractsWithRules(a.Parsed.Nodes, rel, rules))...)
 		a.Diagnostics = append(a.Diagnostics, ctxDiagnostics(rel, "compiler", checkScopeTrackerWithRules(a.Parsed.Nodes, rel, rules))...)
 		a.SavedScopes = collectSavedScopes(a.Parsed.Nodes)

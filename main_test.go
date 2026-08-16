@@ -74,6 +74,68 @@ func TestRunScanFilesRequiresAtLeastOnePathBeforeConfigAccess(t *testing.T) {
 	}
 }
 
+// TestGUICLIAcceptsDocumentedFlagsForEveryOperation pins the reported defect:
+// the gui usage line offers --format, --limit and the rest to every operation,
+// but only preview parsed them. summary and type read "--limit" as a
+// positional path and failed with `GUI path "--limit" must be under gui/`,
+// while file dropped the flag in silence — the worse of the two, because the
+// caller got a truncated tree and no indication why.
+//
+// Parsing happens before the config is opened, so a missing config is the
+// proof that an argument got past the parser rather than into a path slot.
+func TestGUICLIAcceptsDocumentedFlagsForEveryOperation(t *testing.T) {
+	for _, testcase := range []struct {
+		name string
+		args []string
+	}{
+		{name: "summary", args: []string{"gui", "summary", "--limit", "4"}},
+		{name: "summary with prefix", args: []string{"gui", "summary", "gui/frontend", "--limit", "4"}},
+		{name: "file", args: []string{"gui", "file", "gui/frontend/a.gui", "--limit", "4"}},
+		{name: "type", args: []string{"gui", "type", "some_type", "--limit", "4"}},
+		{name: "template", args: []string{"gui", "template", "some_template", "gui/frontend", "--limit", "4"}},
+		{name: "preview keeps working", args: []string{"gui", "preview", "some_type", "--limit", "4"}},
+	} {
+		t.Run(testcase.name, func(t *testing.T) {
+			err := run(context.Background(), append([]string{"--config", "definitely-missing.toml"}, testcase.args...))
+			if err == nil {
+				t.Fatal("run gui error = nil, want the missing-config error")
+			}
+			if strings.Contains(err.Error(), "--limit") {
+				t.Fatalf("run gui error = %v, want --limit consumed as a flag", err)
+			}
+			if !strings.Contains(err.Error(), "definitely-missing.toml") {
+				t.Fatalf("run gui error = %v, want the parser to hand off to config loading", err)
+			}
+		})
+	}
+}
+
+// TestGUICLIRejectsMalformedArguments covers the other half of the same
+// defect: arguments the parser cannot honour must be named, not absorbed into
+// a path or ignored.
+func TestGUICLIRejectsMalformedArguments(t *testing.T) {
+	for _, testcase := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "non-integer limit", args: []string{"gui", "summary", "--limit", "four"}, want: "GUI --limit requires an integer value"},
+		{name: "unknown flag", args: []string{"gui", "summary", "--depth", "2"}, want: `unknown GUI flag "--depth"`},
+		{name: "output without preview", args: []string{"gui", "summary", "--out", "shot.png"}, want: "only valid for operation=preview"},
+		{name: "extra summary positional", args: []string{"gui", "summary", "gui/a", "gui/b"}, want: `unexpected GUI summary argument "gui/b"`},
+		{name: "extra file positional", args: []string{"gui", "file", "gui/a.gui", "gui/b.gui"}, want: `unexpected GUI file argument "gui/b.gui"`},
+		{name: "extra type positional", args: []string{"gui", "type", "sym", "gui/a", "gui/b"}, want: `unexpected GUI type argument "gui/b"`},
+		{name: "extra preview positional", args: []string{"gui", "preview", "sym", "gui/a", "gui/b"}, want: `unexpected GUI preview argument "gui/b"`},
+	} {
+		t.Run(testcase.name, func(t *testing.T) {
+			err := run(context.Background(), append([]string{"--config", "definitely-missing.toml"}, testcase.args...))
+			if err == nil || !strings.Contains(err.Error(), testcase.want) {
+				t.Fatalf("run gui error = %v, want %q", err, testcase.want)
+			}
+		})
+	}
+}
+
 func TestRunHealthRequireReadyFailsForQueryableButUnpublishedDatabase(t *testing.T) {
 	root := t.TempDir()
 	project := filepath.Join(root, "project")

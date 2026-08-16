@@ -1,6 +1,8 @@
 package indexer
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"ck3-index/internal/script"
@@ -12,7 +14,7 @@ func lintTestDiagnostics(t *testing.T, source, path string) []ctxDiag {
 	if len(parsed.Errors) != 0 {
 		t.Fatalf("parse errors: %+v", parsed.Errors)
 	}
-	return checkScriptLint(parsed.Nodes, path, SourceRoleProject)
+	return checkScriptLint(parsed.Nodes, path, SourceRoleProject, nil)
 }
 
 func lintCodeCount(diagnostics []ctxDiag, code string) int {
@@ -205,23 +207,81 @@ self_recursive_effect = {
 }
 
 func TestOnActionAndIteratorLintRespectSourceRole(t *testing.T) {
+	vanilla := vanillaOnActionFixture(t)
 	onAction := script.Parse(`on_birth = { effect = { add_gold = 1 } }`)
-	if got := lintCodeCount(checkScriptLint(onAction.Nodes, "common/on_action/test.txt", SourceRoleGame), "on_action_direct_override"); got != 0 {
+	if got := lintCodeCount(checkScriptLint(onAction.Nodes, "common/on_action/test.txt", SourceRoleGame, vanilla), "on_action_direct_override"); got != 0 {
 		t.Fatalf("vanilla source reported as overriding itself: %d", got)
 	}
-	if got := lintCodeCount(checkScriptLint(onAction.Nodes, "common/on_action/test.txt", SourceRoleDependency), "on_action_direct_override"); got != 1 {
+	if got := lintCodeCount(checkScriptLint(onAction.Nodes, "common/on_action/test.txt", SourceRoleDependency, vanilla), "on_action_direct_override"); got != 1 {
 		t.Fatalf("dependency vanilla on_action override warning=%d, want 1", got)
 	}
 	custom := script.Parse(`custom_mod_on_action = { effect = { add_gold = 1 } }`)
-	if got := lintCodeCount(checkScriptLint(custom.Nodes, "common/on_action/test.txt", SourceRoleDependency), "on_action_direct_override"); got != 0 {
+	if got := lintCodeCount(checkScriptLint(custom.Nodes, "common/on_action/test.txt", SourceRoleDependency, vanilla), "on_action_direct_override"); got != 0 {
 		t.Fatalf("custom on_action was mistaken for vanilla: %d", got)
 	}
 
 	nested := script.Parse(`every_vassal = { every_child = { add_gold = 1 } }`)
-	if got := lintCodeCount(checkScriptLint(nested.Nodes, "events/test.txt", SourceRoleGame), "nested_iterator"); got != 0 {
+	if got := lintCodeCount(checkScriptLint(nested.Nodes, "events/test.txt", SourceRoleGame, nil), "nested_iterator"); got != 0 {
 		t.Fatalf("vanilla iterator heuristic leaked into project diagnostics: %d", got)
 	}
-	if got := lintCodeCount(checkScriptLint(nested.Nodes, "events/test.txt", SourceRoleProject), "nested_iterator"); got != 1 {
+	if got := lintCodeCount(checkScriptLint(nested.Nodes, "events/test.txt", SourceRoleProject, nil), "nested_iterator"); got != 1 {
 		t.Fatalf("project nested iterator advisory=%d, want 1", got)
+	}
+}
+
+// vanillaOnActionFixture writes a game layer whose on_birth carries an effect,
+// so the override check has an original to compare a mod's block against.
+func vanillaOnActionFixture(t *testing.T) *vanillaOnActionIndex {
+	t.Helper()
+	root := t.TempDir()
+	dir := filepath.Join(root, "common", "on_action")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	game := `on_birth = {
+	effect = { add_gold = 5 }
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "vanilla_on_actions.txt"), []byte(game), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return newVanillaOnActionIndex(root)
+}
+
+// TestOnActionOverrideComparesAgainstTheGameBlock pins the reported false
+// positive. Overriding a vanilla on_action file means copying it, so on a real
+// mod tree four out of five flagged blocks were the vanilla block verbatim:
+// the warning said they overwrite originals while they replaced the original
+// with an identical original, and told the author to restructure code that was
+// already correct.
+func TestOnActionOverrideComparesAgainstTheGameBlock(t *testing.T) {
+	vanilla := vanillaOnActionFixture(t)
+	rewrapped := `on_birth = {
+	effect = {
+		add_gold = 5
+	}
+}`
+	for _, testcase := range []struct {
+		name    string
+		source  string
+		vanilla *vanillaOnActionIndex
+		want    int
+	}{
+		{name: "changed effect is reported", source: `on_birth = { effect = { add_gold = 1 } }`, vanilla: vanilla, want: 1},
+		{name: "verbatim copy of the game block is not", source: `on_birth = { effect = { add_gold = 5 } }`, vanilla: vanilla, want: 0},
+		{name: "same shape written differently is not", source: rewrapped, vanilla: vanilla, want: 0},
+		{name: "block the game does not declare is not", source: `on_birth = { trigger = { always = yes } }`, vanilla: vanilla, want: 0},
+		{name: "no game layer means nothing to overwrite", source: `on_birth = { effect = { add_gold = 1 } }`, vanilla: nil, want: 0},
+	} {
+		t.Run(testcase.name, func(t *testing.T) {
+			parsed := script.Parse(testcase.source)
+			if len(parsed.Errors) != 0 {
+				t.Fatalf("parse errors: %+v", parsed.Errors)
+			}
+			got := lintCodeCount(checkScriptLint(parsed.Nodes, "common/on_action/test.txt", SourceRoleDependency, testcase.vanilla), "on_action_direct_override")
+			if got != testcase.want {
+				t.Fatalf("on_action_direct_override = %d, want %d", got, testcase.want)
+			}
+		})
 	}
 }

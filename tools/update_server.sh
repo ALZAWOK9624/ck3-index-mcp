@@ -6,7 +6,7 @@
 # Why it is shaped this way
 # ------------------------
 # The expensive step is the index rebuild, and it is only required when
-# indexRuleVersion changes — roughly six times in the last three weeks, far
+# indexRuleVersion or lintRuleVersion changes — roughly six times in the last three weeks, far
 # less often than commits land. So the script reads that constant before and
 # after the pull and skips the rebuild entirely when it did not move.
 #
@@ -86,6 +86,14 @@ DB_NEXT="$DB.next"
 RULE_FILE="internal/indexer/scan.go"
 read_rule_version() {
     sed -n 's/^const indexRuleVersion = "\(.*\)"/\1/p' "$RULE_FILE" | head -n 1
+}
+# The diagnostic rules carry a version of their own because correcting a rule
+# leaves every stored row valid — but the index keeps reporting what the old
+# rule said until each script file is parsed again, and nothing else dislodges a
+# diagnostic on a file that never changed. Re-parsing is most of a scan anyway,
+# so a move here earns the same staged rebuild an index rule change does.
+read_lint_rule_version() {
+    sed -n 's/^const lintRuleVersion = "\(.*\)"/\1/p' "$RULE_FILE" | head -n 1
 }
 
 BIN="$REPO/bin/ck3-index"
@@ -176,6 +184,8 @@ fi
 
 OLD_RULE="$(read_rule_version)"
 [ -n "$OLD_RULE" ] || fail "could not read indexRuleVersion from $RULE_FILE"
+# Absent before the constant existed, which correctly reads as a change.
+OLD_LINT="$(read_lint_rule_version)"
 
 if [ "$CHECK_ONLY" -eq 1 ]; then
     if [ "$RESUME_SWAP" -eq 1 ]; then
@@ -185,11 +195,15 @@ if [ "$CHECK_ONLY" -eq 1 ]; then
     log "update available: ${LOCAL:0:7} -> ${REMOTE:0:7}"
     log "$(git log --oneline "$LOCAL..$REMOTE" | wc -l) commit(s) pending"
     git log --oneline "$LOCAL..$REMOTE" | sed 's/^/[ck3-update]   /'
-    NEW_RULE_PREVIEW="$(git show "$REMOTE:$RULE_FILE" | sed -n 's/^const indexRuleVersion = "\(.*\)"/\1/p' | head -n 1)"
+    REMOTE_RULES="$(git show "$REMOTE:$RULE_FILE")"
+    NEW_RULE_PREVIEW="$(printf '%s\n' "$REMOTE_RULES" | sed -n 's/^const indexRuleVersion = "\(.*\)"/\1/p' | head -n 1)"
+    NEW_LINT_PREVIEW="$(printf '%s\n' "$REMOTE_RULES" | sed -n 's/^const lintRuleVersion = "\(.*\)"/\1/p' | head -n 1)"
     if [ "$OLD_RULE" != "$NEW_RULE_PREVIEW" ]; then
         log "index rules change: $OLD_RULE -> $NEW_RULE_PREVIEW (full rebuild required)"
+    elif [ "$OLD_LINT" != "$NEW_LINT_PREVIEW" ]; then
+        log "diagnostic rules change: $OLD_LINT -> $NEW_LINT_PREVIEW (rebuild required)"
     else
-        log "index rules unchanged (binary swap only, seconds of downtime)"
+        log "index and diagnostic rules unchanged (binary swap only, seconds of downtime)"
     fi
     exit 0
 fi
@@ -201,16 +215,20 @@ if [ "$RESUME_SWAP" -eq 0 ]; then
 
     NEW_RULE="$(read_rule_version)"
     [ -n "$NEW_RULE" ] || fail "could not read indexRuleVersion after pull"
+    NEW_LINT="$(read_lint_rule_version)"
 
     REBUILD=0
     if [ "$OLD_RULE" != "$NEW_RULE" ]; then
         log "index rules changed: $OLD_RULE -> $NEW_RULE"
         REBUILD=1
+    elif [ "$OLD_LINT" != "$NEW_LINT" ]; then
+        log "diagnostic rules changed: $OLD_LINT -> $NEW_LINT"
+        REBUILD=1
     elif [ "$FORCE_REBUILD" -eq 1 ]; then
         log "index rules unchanged, but --force-rebuild was given"
         REBUILD=1
     else
-        log "index rules unchanged; skipping rebuild"
+        log "index and diagnostic rules unchanged; skipping rebuild"
     fi
 
     rollback_git() {

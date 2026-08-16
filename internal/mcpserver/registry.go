@@ -107,7 +107,7 @@ func advertisedCanonicalTool(definition ToolDefinition) map[string]any {
 		"name":        definition.Name,
 		"title":       definition.Title,
 		"description": definition.Description,
-		"inputSchema": definition.InputSchema,
+		"inputSchema": publishedInputSchema(definition.InputSchema),
 		"annotations": definition.Annotations,
 	}
 }

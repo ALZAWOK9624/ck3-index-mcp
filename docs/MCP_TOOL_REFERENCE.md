@@ -2,7 +2,7 @@
 
 > 本文档由 `go run ./cmd/mcp-docgen` 根据 `internal/mcpserver` 自动生成，请勿手工修改。
 
-ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operation 参数表达，不再提供旧版专用工具别名。
+ck3-index 公开 37 个规范工具。细分能力由各工具的受限 operation 参数表达，不再提供旧版专用工具别名。
 
 ## `ck3_search` — 搜索 CK3 索引
 
@@ -19,7 +19,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `source` | 否 | 字符串 |  | 可选的已索引来源名称。 |
 | `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `ck3_inspect` — 检查 CK3 标识符
 
@@ -34,7 +34,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `source` | 否 | 字符串 |  | operation=compare 时可选的已配置高优先级来源；私有可见性下默认使用当前 Mod/最高优先级层。 |
 | `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `ck3_review` — 审查 CK3 文件
 
@@ -46,7 +46,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
 | `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `ck3_workspace` — 检查 CK3 工作区
 
@@ -59,7 +59,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `operation` | 否 | 字符串 | 可选值=[overview object_types on_action_evidence capabilities] | 工作区视图。 |
 | `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `ck3_dependencies` — 追踪 CK3 依赖
 
@@ -77,7 +77,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `operation` | 否 | 字符串 | 可选值=[neighborhood event_chain] | 依赖视图；neighborhood 最多两跳，event_chain 最多六跳。 |
 | `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `ck3_prepare_edit` — 准备 CK3 编辑
 
@@ -90,7 +90,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `operation` | 否 | 字符串 | 可选值=[context examples rules patterns] | 准备视图。 |
 | `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `ck3_preflight` — 预检 CK3 改动
 
@@ -104,7 +104,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `operation` | 是 | 字符串 | 可选值=[subject patch dirty] | 预检目标。 |
 | `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `ck3_impact` — 分析 CK3 补丁影响
 
@@ -116,7 +116,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
 | `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `ck3_diagnostics` — 检查 CK3 诊断
 
@@ -133,7 +133,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `source` | 否 | 字符串 |  | 可选的诊断来源。 |
 | `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `ck3_save` — 读取 CK3 存档
 
@@ -150,7 +150,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `operation` | 否 | 字符串 | 可选值=[card compatibility audit character timeline document]; 默认值=card | 存档视图。card 为默认值，用于识别存档；compatibility 列出存档声明的内容；audit 把存档携带的每个 ID 与已索引来源核对，并报告存档记录的游玩角色；character 从 gamestate 中提取单个角色的档案，未另行指定存档 ID 时取该游玩角色；timeline 汇总存档记录的带日期事件；document 读取 gamestate 中的任意路径。 |
 | `path` | 是 | 字符串 |  | 位于已配置存档根目录内的存档文件，按相对该根目录的路径给出。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `ck3_refresh` — 刷新 CK3 索引
 
@@ -174,7 +174,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
 | `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `ck3_health` — 检查 CK3 索引健康状态
 
@@ -184,7 +184,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 |---|---:|---|---|---|
 | `mode` | 否 | 字符串 | 可选值=[quick deep] | quick 直接读取扫描时记录的统计值；deep 重新逐表计数并重新校验 GIS sidecar。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `ck3_database` — 选择 CK3 索引数据库
 
@@ -231,7 +231,22 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
 | `width` | 否 | 整数 | 最小值=64; 最大值=3840 | 可选的 GUI 预览宽度（像素）。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容，另返回 PNG 图像内容。
+
+## `ck3_coat_of_arms` — 读取并渲染 CK3 纹章
+
+读取一个生效的纹章并把它画出来。inspect 将纹章的底纹、三种颜色与每个纹饰对照生效的 named_colors 和已索引贴图逐一解析，并报告哪些引用没有任何来源提供；声明了 parent 的定义会先逐层合并父定义，因此返回的是真正会画出来的那份设计；render 合成 CK3 在加框之前构建的纹章本体并返回 PNG；assets 列出纹章定义可以引用的底纹与纹饰贴图名。颜色与贴图均按已配置的载入顺序解析，因此结果是游戏实际会载入的那一份，而不是某一个来源单独声明的内容；visibility=public 下只按公开层的载入顺序解析，响应会明确报告这一点。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `filter` | 否 | 字符串 |  | operation=assets 时对贴图名称或种类的可选子串筛选。 |
+| `id` | 否 | 字符串 |  | 准确的纹章 ID，inspect 与 render 必填。 |
+| `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
+| `operation` | 否 | 字符串 | 可选值=[inspect render assets] | 纹章视图。 |
+| `size` | 否 | 整数 | 最小值=32; 最大值=1024 | operation=render 时的方形渲染边长（像素）。 |
+| `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
+
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容，另返回 PNG 图像内容。
 
 ## `map_migration_snapshot` — 保存 CK3 地图迁移快照
 
@@ -269,7 +284,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `operation` | 否 | 字符串 | 可选值=[summary provinces rivers] | 要审计的地图资源类别。 |
 | `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `map_province_mapping` — 比较省份地图版本
 
@@ -286,7 +301,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `target` | 是 | 字符串 |  | 已配置的目标地图名称，或 active。 |
 | `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `map_split_province` — 规划省份切割
 
@@ -355,7 +370,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `operation` | 是 | 字符串 | 可选值=[list status inspect] | 产物恢复操作。 |
 | `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `map_province_info` — 检查地图省份
 
@@ -368,7 +383,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 | `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `map_physical_context` — 检查物理地理
 
@@ -384,7 +399,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `targets` | 否 | 数组 | 最少项数=1; 最多项数=16 | 最多 16 个省份、头衔或 region:<id> 目标。 |
 | `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `map_neighbors` — 检查地图邻域
 
@@ -398,7 +413,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 | `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `map_spatial_relation` — 比较地图省份
 
@@ -412,7 +427,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 | `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `map_strategic_passages` — 检查战略通道
 
@@ -425,7 +440,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `target` | 否 | 字符串 |  | 省份标识符、领地头衔标识符、逗号分隔的多个目标或 all。 |
 | `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `map_title_context` — 检查地图头衔
 
@@ -438,7 +453,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 | `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `map_assignment_plan` — 规划地图分配
 
@@ -452,7 +467,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 | `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `map_building_candidates` — 评估地图建筑候选地
 
@@ -465,7 +480,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 | `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `map_recipe_catalog` — 列出地图配方
 
@@ -475,7 +490,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 |---|---:|---|---|---|
 | `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `map_build_metric` — 构建地图指标
 
@@ -500,7 +515,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `visibility` | 否 | 字符串 | 可选值=[private]; 默认值=private | 仅支持 private；地图缓存不记录来源级出处。 |
 | `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `map_route` — 计算地图路线
 
@@ -522,7 +537,7 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `waypoints` | 否 | 数组 | 最多项数=16 | 路线必须按顺序经过的可选准确地图地点。 |
 | `year` | 否 | 整数 | 最小值=1; 默认值=1 | CK3 历史年份。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `map_render` — 渲染 CK3 地图
 
@@ -562,4 +577,4 @@ ck3-index 公开 36 个规范工具。细分能力由各工具的受限 operatio
 | `width` | 否 | 整数 | 最小值=1; 最大值=8192 | 可选的明确输出宽度；同时省略 width 与 height 时自动确定尺寸。 |
 | `year` | 否 | 整数 | 最小值=1 | 地图册显示年份。 |
 
-属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。
+属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容，另返回 PNG 图像内容。

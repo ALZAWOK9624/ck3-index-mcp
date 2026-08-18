@@ -222,6 +222,21 @@ func buildCanonicalTools() []ToolDefinition {
 			OutputSchema: output, Annotations: annotations, Handler: handleGUI,
 			CompatibilityProperties: legacyPrivacyProperties,
 		},
+		{
+			Name:        "ck3_coat_of_arms",
+			Title:       "Read and Render a CK3 Coat of Arms",
+			Description: "Read one active coat of arms and draw it. inspect resolves its pattern, its three colours and every emblem against the active named_colors and indexed textures, reporting which references no source supplies. A definition that declares a parent is resolved against it first, so what comes back is the design that draws rather than the fields the child happens to restate. render composites the field CK3 builds before framing and returns it as a PNG. assets lists the pattern and emblem texture names a definition may refer to. Colours and textures follow the configured load order, so the result is what the game would load rather than what any one source declares; under visibility=public they follow the public load order alone, which the response reports.",
+			InputSchema: objectSchema(map[string]any{
+				"operation":  stringProperty("Coat of arms view.", "inspect", "render", "assets"),
+				"id":         stringProperty("Exact coat of arms id, required for inspect and render."),
+				"size":       integerProperty("Square render edge in pixels for operation=render.", 32, indexer.CoatOfArmsMaxRenderSize, 0),
+				"filter":     stringProperty("Optional substring filter over texture name or kind for operation=assets."),
+				"limit":      limitProperty(),
+				"visibility": visibilityProperty(),
+			}),
+			OutputSchema: output, Annotations: annotations, Handler: handleCoatOfArms,
+			CompatibilityProperties: legacyPrivacyProperties,
+		},
 	}
 	definitions = append(definitions, buildMigrationTools(output)...)
 	definitions = append(definitions, buildCanonicalMapTools(annotations, output)...)
@@ -427,6 +442,11 @@ func standardizeCanonicalToolDescriptions(definitions []ToolDefinition) []ToolDe
 			When:     "inspecting indexed GUI structure, dependencies, or a bounded static preview",
 			DoNotUse: "the task requires executing arbitrary Jomini UI code or a live game UI session",
 			Unlike:   "ck3_inspect, it understands GUI syntax and visual layout-specific relationships",
+		},
+		"ck3_coat_of_arms": {
+			When:     "a coat of arms must be read as resolved colours and textures, or seen rather than described",
+			DoNotUse: "the question is which titles or dynasties use a coat of arms; use ck3_dependencies on the id instead",
+			Unlike:   "ck3_inspect, it resolves colour names and texture references and can draw the result",
 		},
 		"map_migration_snapshot": {
 			When:     "an upstream map update needs a durable old-upstream/project migration baseline",

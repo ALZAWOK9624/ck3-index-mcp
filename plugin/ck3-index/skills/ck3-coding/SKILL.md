@@ -30,7 +30,7 @@ The same tools serve two jobs with different limits. Decide which one you are in
 When a question turns into an edit, restate the mode change before the first write; do not drift from one into the other.
 
 <!-- BEGIN GENERATED MCP TOOLS -->
-## MCP Tools (36 canonical tools)
+## MCP Tools (37 canonical tools)
 
 ck3-index exposes one canonical MCP tool surface. Each tool uses bounded operations rather than legacy specialist aliases.
 
@@ -54,6 +54,7 @@ ck3-index exposes one canonical MCP tool surface. Each tool uses bounded operati
 | `ck3_database` | Use when the running MCP service has multiple configured SQLite indexes and the task needs a different evidence base. |
 | `ck3_package` | Use when a validated set of Mod files must be packaged into a portable installation artifact. |
 | `ck3_gui` | Use when inspecting indexed GUI structure, dependencies, or a bounded static preview. |
+| `ck3_coat_of_arms` | Use when a coat of arms must be read as resolved colours and textures, or seen rather than described. |
 
 ### Map Tools
 
@@ -304,6 +305,16 @@ Inspect before imitating.
 - Treat a `flowcontainer` without an explicit direction as horizontal. Treat a resolved `scrollbox` as a clipped vertical viewport even when its primitive kind is `scrollarea`: use the preserved `type_chain`; structural `block`/`blockoverride` wrappers are transparent to its content flow, scroll chrome stays outside that flow, `allow_outside=yes` descendants do not inflate its extent, wheel and range controls move only flow content, and nested viewports intersect their clips. Pair a missing `widgetanchor` with the declared `parentanchor`, while preserving an explicit widget anchor. Preserve literal zero dimensions for ordinary widgets; text, autoresize, and expanding axes may treat zero as an auto-measure request. `autoresize=yes` multiline text is remeasured after language or runtime-text changes within explicit width/height limits. Resolved grids preserve wrap/row/column steps; provided model rows enter deterministic cells, and row-local manual changes stay isolated by row id. When a resolved flow or grid has `ignoreinvisible=yes`, verify that known-hidden direct children leave the inspector layout. Margins, spacing, expanding policies, `flipdirection`, unprovided virtualized rows, external engine templates, and compound anchors remain approximate and still require in-game validation.
 - Treat `tooltipwidget` descendants as hover-only overlay evidence, not permanent parent content. The PNG omits them from ordinary layout, while the inspector retains them in the tree and opens the resolved overlay next to its owner on hover. When no overlay exists, resolved tooltip text and bounded tooltip plans use a fixed text-only hover panel; `textContent` keeps runtime values inert. Exact engine tooltip templates, timing, pointer shapes, animation, and multi-monitor placement remain in-game validation items.
 - Review the inspector in its default `Visual` mode first: embedded textures and resolved text are shown without diagnostic container chrome, a known-hidden parent suppresses its whole flattened preview subtree, allowlisted `modify_texture` blends are alpha-masked to the parent icon, and `Replay clicks` makes supported buttons react directly on the canvas. Disable `Replay clicks` when selecting nodes without changing state. Turn `Visual` off to inspect colored kind boxes, approximate geometry, missing-texture placeholders, and hidden nodes. Visual mode improves artifact fidelity but does not manufacture unresolved engine templates or assets.
+
+### Coat of arms
+
+`ck3_coat_of_arms` reads and draws heraldry. `inspect` resolves a definition's pattern, its three colours and every emblem against the active `named_colors` and the indexed textures, and reports which references no source supplies; `render` returns the field as a PNG; `assets` lists the pattern and emblem names a definition may refer to.
+
+- Only `common/coat_of_arms/coat_of_arms/` holds heraldry. Its sibling folders (`options/`, `template_lists/`, `dynamic_definitions/`) index under the same object type but describe other things, and the tool deliberately does not serve them.
+- An emblem's own `color1`/`color2`/`color3` override the definition's for that emblem; a slot it omits falls back. A colour name no active `named_colors` file defines renders as **black in game** and is reported as a warning rather than substituted.
+- `render` is the field CK3 composites *before* the frame, material and dirt overlays, so the shield outline is absent by design.
+- Texture names carry no directory: CK3 supplies it. `assets` lists the winning source per name, so a mod emblem shadowing a vanilla one shows as the mod's.
+- `visibility=public` withholds both the definition and the render for a coat of arms defined in a private source, and says so via `redacted`. A render is the content made legible, so it does not bypass the evidence boundary.
 
 ## Diagnostics Reference
 

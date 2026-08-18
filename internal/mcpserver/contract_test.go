@@ -19,11 +19,11 @@ import (
 
 func TestToolRegistryContract(t *testing.T) {
 	definitions := registry()
-	if len(definitions) != 36 {
-		t.Fatalf("standard registry count = %d, want 36", len(definitions))
+	if len(definitions) != 37 {
+		t.Fatalf("standard registry count = %d, want 37", len(definitions))
 	}
-	if got := len(mcpTools()); got != 36 {
-		t.Fatalf("tools/list count = %d, want 36", got)
+	if got := len(mcpTools()); got != 37 {
+		t.Fatalf("tools/list count = %d, want 37", got)
 	}
 
 	seen := make(map[string]struct{}, len(definitions))
@@ -360,6 +360,7 @@ func TestCanonicalSchemasMatchTypedArguments(t *testing.T) {
 		"ck3_database":            reflect.TypeOf(ck3DatabaseArgs{}),
 		"ck3_package":             reflect.TypeOf(ck3PackageArgs{}),
 		"ck3_gui":                 reflect.TypeOf(ck3GUIArgs{}),
+		"ck3_coat_of_arms":        reflect.TypeOf(ck3CoatOfArmsArgs{}),
 		"map_asset_audit":         reflect.TypeOf(mapAssetAuditArgs{}),
 		"map_province_mapping":    reflect.TypeOf(mapProvinceMappingArgs{}),
 		"map_migration_snapshot":  reflect.TypeOf(mapMigrationSnapshotArgs{}),
@@ -621,6 +622,7 @@ func TestEveryCallableToolHasSuccessAndMalformedArgumentCases(t *testing.T) {
 			"files":    []map[string]any{{"path": "common/scripted_triggers/contract_package.txt", "content": "contract_package_trigger = { always = yes }"}},
 		},
 		"ck3_gui":                {"operation": "summary", "limit": 2},
+		"ck3_coat_of_arms":       {"operation": "assets", "limit": 2},
 		"map_asset_audit":        {"operation": "summary", "limit": 2},
 		"map_province_mapping":   {"source": "project", "target": "active", "limit": 2},
 		"map_migration_snapshot": {"project": "project", "base": "base"},
@@ -650,8 +652,8 @@ func TestEveryCallableToolHasSuccessAndMalformedArgumentCases(t *testing.T) {
 		"map_render":              {"target": "k_k11", "year": 6253, "width": 400, "layers": []map[string]any{{"type": "borders", "level": "county"}}},
 		"ck3_save":                {"path": "fixture.ck3", "operation": "card"},
 	}
-	if len(successArguments) != 36 {
-		t.Fatalf("success case count = %d, want 36 canonical names", len(successArguments))
+	if len(successArguments) != 37 {
+		t.Fatalf("success case count = %d, want 37 canonical names", len(successArguments))
 	}
 	for name, args := range successArguments {
 		name, args := name, args

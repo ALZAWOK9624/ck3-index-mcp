@@ -17,6 +17,17 @@ const (
 	endMarker   = "<!-- END GENERATED MCP TOOLS -->"
 )
 
+// imageReturningTools are the read-only tools whose response carries a PNG
+// content block alongside the structured result. The list is written out here
+// rather than inferred, because whether a tool returns an image is decided by
+// the result type it hands to encodeToolResult and nothing in the tool
+// definition reflects it.
+var imageReturningTools = map[string]bool{
+	"map_render":       true,
+	"ck3_gui":          true,
+	"ck3_coat_of_arms": true,
+}
+
 func main() {
 	root := flag.String("root", ".", "ck3-index repository root")
 	check := flag.Bool("check", false, "verify generated files without writing")
@@ -194,8 +205,10 @@ func renderReference(canonical []mcpserver.ToolDocumentation) string {
 			builder.WriteString("属性：预览阶段只读，确认后生成受控不可变产物；非破坏、封闭世界。输出：结构化对象与 PNG 预览；确认后另返回 artifact 标识、相对文件与哈希。\n\n")
 		} else if !tool.Annotations.ReadOnlyHint {
 			builder.WriteString("属性：生成受限临时产物、非破坏、封闭世界。输出：结构化对象与 JSON 文本；成功时返回可供附件发送层解析的 artifact 标识和相对路径。\n\n")
+		} else if imageReturningTools[tool.Name] {
+			builder.WriteString("属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容，另返回 PNG 图像内容。\n\n")
 		} else {
-			builder.WriteString("属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容；`map_render` 还会返回 PNG 图像内容。\n\n")
+			builder.WriteString("属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。\n\n")
 		}
 	}
 	return strings.TrimRight(builder.String(), "\n") + "\n"

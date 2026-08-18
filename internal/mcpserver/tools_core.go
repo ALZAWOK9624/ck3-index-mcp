@@ -347,6 +347,26 @@ func handleDiagnostics(ctx context.Context, runtime *Runtime, definition *ToolDe
 	return toolOutput{Value: value, Visibility: visibility}, err
 }
 
+func handleCoatOfArms(ctx context.Context, runtime *Runtime, definition *ToolDefinition, raw json.RawMessage) (toolOutput, error) {
+	var args ck3CoatOfArmsArgs
+	if err := decodeToolArgs(raw, definition.InputSchema, definition.CompatibilityProperties, &args); err != nil {
+		return toolOutput{}, err
+	}
+	opts, visibility, err := args.options(0)
+	if err != nil {
+		return toolOutput{}, err
+	}
+	opts = configureRuntimeOptions(runtime, opts)
+	value, err := runtime.DB.LLMCoatOfArms(ctx, indexer.CoatOfArmsSpec{
+		Operation: args.Operation,
+		ID:        args.ID,
+		Size:      args.Size,
+		Filter:    args.Filter,
+		Limit:     opts.Limit,
+	}, opts)
+	return toolOutput{Value: value, Visibility: visibility}, err
+}
+
 func handleScriptReference(ctx context.Context, runtime *Runtime, definition *ToolDefinition, raw json.RawMessage) (toolOutput, error) {
 	var args ck3ScriptReferenceArgs
 	if err := decodeToolArgs(raw, definition.InputSchema, definition.CompatibilityProperties, &args); err != nil {

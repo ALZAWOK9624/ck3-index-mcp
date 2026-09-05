@@ -112,6 +112,30 @@ func (c *readToolCache) put(key string, data []byte) {
 	}
 }
 
+// invalidateTool drops every cached response for one tool. The cache key
+// carries the published index identity, which covers refreshes and database
+// switches; it cannot see a write that changes what a read returns without
+// moving the generation. A baseline write is exactly that, so it says so here.
+//
+// Entries for other databases are dropped too. The key holds the database path,
+// so they could be spared, but the cost of not sparing them is one recomputed
+// read and the cost of getting the condition wrong is a stale answer.
+func (c *readToolCache) invalidateTool(name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	prefix := name + "\x00"
+	for element := c.lru.Front(); element != nil; {
+		next := element.Next()
+		entry := element.Value.(*toolCacheEntry)
+		if strings.HasPrefix(entry.key, prefix) {
+			c.lru.Remove(element)
+			delete(c.entries, entry.key)
+			c.curBytes -= int64(len(entry.data))
+		}
+		element = next
+	}
+}
+
 // Stats reports hit/miss counters and the current byte occupancy.
 type readToolCacheStats struct {
 	Hits     int64 `json:"hits"`

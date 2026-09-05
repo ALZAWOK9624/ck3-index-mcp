@@ -2,7 +2,7 @@
 
 > 本文档由 `go run ./cmd/mcp-docgen` 根据 `internal/mcpserver` 自动生成，请勿手工修改。
 
-ck3-index 公开 37 个规范工具。细分能力由各工具的受限 operation 参数表达，不再提供旧版专用工具别名。
+ck3-index 公开 38 个规范工具。细分能力由各工具的受限 operation 参数表达，不再提供旧版专用工具别名。
 
 ## `ck3_search` — 搜索 CK3 索引
 
@@ -124,6 +124,7 @@ ck3-index 公开 37 个规范工具。细分能力由各工具的受限 operatio
 
 | 参数 | 必填 | 类型 | 约束 | 说明 |
 |---|---:|---|---|---|
+| `baseline` | 否 | 字符串 |  | 由 ck3_diagnostic_baseline 记录的基线名称。会隐藏该基线已收录的全部发现。未记录的名称会报错，而不是当作空筛选器。 |
 | `code` | 否 | 字符串 |  | operation=explain 时必填。 |
 | `confidence` | 否 | 字符串 |  | 可选的置信度筛选器。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
@@ -134,6 +135,17 @@ ck3-index 公开 37 个规范工具。细分能力由各工具的受限 operatio
 | `visibility` | 否 | 字符串 | 可选值=[private public]; 默认值=private | public 仅返回非私有来源的证据。 |
 
 属性：只读、非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
+
+## `ck3_diagnostic_baseline` — 记录 CK3 诊断基线
+
+记录当前已经存在的诊断，使后续 ck3_diagnostics 只报告此后新出现的问题。save 把索引当前持有的诊断记在一个名字下，覆盖同名的旧快照；list 列出已记录的名字；clear 忘掉一个。在没有任何诊断的工程上记录的基线同样是基线，而且是最有用的那种：此后出现的每一条都是新的。基线不会被 ck3_refresh operation=full 清除，因为重建会原样复现它当初对照的那些诊断。
+
+| 参数 | 必填 | 类型 | 约束 | 说明 |
+|---|---:|---|---|---|
+| `baseline` | 否 | 字符串 |  | 基线名称，默认为 "default"。list 不需要。 |
+| `operation` | 是 | 字符串 | 可选值=[save list clear] | 基线操作。 |
+
+属性：save 与 clear 写入索引缓存中的基线记录，list 只读；非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。
 
 ## `ck3_save` — 读取 CK3 存档
 

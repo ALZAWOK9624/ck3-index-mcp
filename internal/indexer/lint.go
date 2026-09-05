@@ -29,8 +29,14 @@ func checkScriptLint(nodes []*script.Node, relPath string, sourceRole SourceRole
 	// Iterator nesting is a review heuristic, not an engine illegality. Keep it
 	// scoped to the writable project instead of reporting vanilla/dependency
 	// implementation choices as project defects.
+	// Boolean-shape and hidden-scope findings are review heuristics about how
+	// content is written, not engine illegalities. Reporting them for vanilla
+	// and upstream files would bury the project's own in a wall of other
+	// people's style.
 	if sourceRole == SourceRoleProject {
 		out = append(out, checkIteratorDepth(nodes, relPath)...)
+		out = append(out, checkTriggerAlgebra(nodes, relPath)...)
+		out = append(out, checkHiddenScopeDependency(nodes, relPath)...)
 	}
 	out = append(out, checkEventHasOption(nodes, relPath)...)
 	return out
@@ -105,7 +111,7 @@ func checkOnActionOverride(nodes []*script.Node, relPath string, sourceRole Sour
 		}
 		for _, c := range n.Children {
 			_, generatedVanilla := engineOnActions[strings.ToLower(n.Key)]
-			if c.Key != "effect" && c.Key != "trigger" {
+			if !onActionSingleSlotFields[strings.ToLower(c.Key)] {
 				continue
 			}
 			if !vanillaOnActions[n.Key] && !generatedVanilla {

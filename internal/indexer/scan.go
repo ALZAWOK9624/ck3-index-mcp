@@ -129,10 +129,9 @@ const indexRuleVersion = "2026-08-13-v0.5.0-trigram-loc-1"
 // Bumping this instead re-parses script files, and only those, so their
 // diagnostics are recomputed while the map cache stays served.
 //
-// Bumped for on_action_direct_override: an index built before it compared
-// against the game's own block keeps serving warnings the current rule would
-// never raise, and no file changed to dislodge them.
-const lintRuleVersion = "2026-08-17-on-action-override-1"
+// Bumped for folder dispatch, trigger algebra and the additional on_action
+// single-slot checks introduced by competitor-tooling integration.
+const lintRuleVersion = "2026-09-05-competitor-diagnostics-1"
 
 // Keep ordinary full scans well below SQLite's variable limit when they take
 // the scoped resolver/validator path. Larger edits remain correct by falling
@@ -739,6 +738,9 @@ parsedFilesComplete:
 		if err := refreshCourtTypeDefaultDiagnostics(ctx, tx); err != nil {
 			return ScanStats{}, err
 		}
+		if err := refreshFolderSchemaDiagnostics(ctx, tx, project.Rank); err != nil {
+			return ScanStats{}, err
+		}
 		if err := refreshErrorLogContractDiagnostics(ctx, tx, project.Rank); err != nil {
 			return ScanStats{}, err
 		}
@@ -795,6 +797,9 @@ parsedFilesComplete:
 			return ScanStats{}, err
 		}
 		if err := refreshCourtTypeDefaultDiagnostics(ctx, tx); err != nil {
+			return ScanStats{}, err
+		}
+		if err := refreshFolderSchemaDiagnostics(ctx, tx, project.Rank); err != nil {
 			return ScanStats{}, err
 		}
 		if err := refreshErrorLogContractDiagnostics(ctx, tx, project.Rank); err != nil {

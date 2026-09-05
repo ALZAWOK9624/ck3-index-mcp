@@ -174,7 +174,7 @@ base 必须用一份**工程来源指向空目录**、其余来源与本配置�
 MCP 只公开一套规范工具；精细能力通过各工具的受限 `operation` 参数提供。详细参数见 [MCP 工具参考](docs/MCP_TOOL_REFERENCE.md)。
 
 <!-- BEGIN GENERATED MCP TOOLS -->
-## MCP 工具（37 个规范工具）
+## MCP 工具（38 个规范工具）
 
 ck3-index 仅公开一套规范 MCP 工具；细分能力通过受限 operation 提供，不再保留旧版专用工具别名。
 
@@ -191,6 +191,7 @@ ck3-index 仅公开一套规范 MCP 工具；细分能力通过受限 operation 
 | `ck3_preflight` | 对已索引目标、拟议完整文件或当前脏文件执行只读门禁。使用 operation 选择目标、补丁或脏文件模式。 |
 | `ck3_impact` | 编辑前分析拟议的新增或更新、删除与重命名操作。返回只读依赖风险与未解析引用风险。 |
 | `ck3_diagnostics` | 无需重新扫描即可检查已缓存的工程诊断。默认返回摘要；explain 可按诊断代码和可选来源字段筛选。 |
+| `ck3_diagnostic_baseline` | 记录当前已经存在的诊断，使后续 ck3_diagnostics 只报告此后新出现的问题。save 把索引当前持有的诊断记在一个名字下，覆盖同名的旧快照；list 列出已记录的名字；clear 忘掉一个。在没有任何诊断的工程上记录的基线同样是基线，而且是最有用的那种：此后出现的每一条都是新的。基线不会被 ck3_refresh operation=full 清除，因为重建会原样复现它当初对照的那些诊断。 |
 | `ck3_save` | 读取单个 CK3 存档文件。card 与 compatibility 只读元数据：存档身份——版本、游戏内日期、玩家、主头衔、家族、政体、玩家人数——以及存档声明的 mod、DLC 与游戏规则，供调用方与自己的配置比对。audit 与 character 流式扫描 gamestate：存档携带但已索引来源不再定义的 ID，以及单个角色的属性、特质、家族与头衔。timeline 提取存档记录的带日期事件——头衔继承史与人物记忆。document 走到 gamestate 的任意路径并报告那里有什么，因此没有专门投影的区块同样可读。工具只陈述存档记录的事实，不判断存档能否载入。 |
 | `ck3_refresh` | 在 Mod 源文件变动后刷新已配置工程层的索引。status 只报告就绪状态；files 只增量更新显式给出的相对路径；full 通过旁路扫描和事务发布完整重建，不会悄悄降级。 |
 | `ck3_script_reference` | 查询一项本地引擎或脚本规则事实。通过 kind 选择作用域、数据类型、值形状、define、on_action、迭代器、示例或修正值。 |

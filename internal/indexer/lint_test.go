@@ -239,6 +239,8 @@ func vanillaOnActionFixture(t *testing.T) *vanillaOnActionIndex {
 		t.Fatal(err)
 	}
 	game := `on_birth = {
+	weight_multiplier = { base = 1 }
+	fallback = on_birth_fallback
 	effect = { add_gold = 5 }
 }
 `
@@ -267,6 +269,10 @@ func TestOnActionOverrideComparesAgainstTheGameBlock(t *testing.T) {
 		vanilla *vanillaOnActionIndex
 		want    int
 	}{
+		{name: "changed weight is reported", source: `on_birth = { weight_multiplier = { base = 2 } }`, vanilla: vanilla, want: 1},
+		{name: "identical weight is not", source: `on_birth = { weight_multiplier = { base = 1 } }`, vanilla: vanilla, want: 0},
+		{name: "changed fallback is reported", source: `on_birth = { fallback = different_fallback }`, vanilla: vanilla, want: 1},
+		{name: "identical fallback is not", source: `on_birth = { fallback = on_birth_fallback }`, vanilla: vanilla, want: 0},
 		{name: "changed effect is reported", source: `on_birth = { effect = { add_gold = 1 } }`, vanilla: vanilla, want: 1},
 		{name: "verbatim copy of the game block is not", source: `on_birth = { effect = { add_gold = 5 } }`, vanilla: vanilla, want: 0},
 		{name: "same shape written differently is not", source: rewrapped, vanilla: vanilla, want: 0},

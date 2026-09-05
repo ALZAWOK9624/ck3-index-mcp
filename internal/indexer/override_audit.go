@@ -42,11 +42,20 @@ type OverrideDriftAudit struct {
 
 // OverrideDriftFile summarizes a single source file. Paths are source-root
 // relative; physical source paths and raw script content are never exposed.
+//
+// MergePolicy and PolicyConsequence answer the question a bare drift listing
+// leaves open: a base_only_definition costs nothing under per_key_override and
+// costs the whole definition under override, and the reader cannot tell which
+// from the key name alone.
 type OverrideDriftFile struct {
 	Classification     string               `json:"classification"`
 	Path               string               `json:"path"`
 	Source             string               `json:"source"`
 	Base               string               `json:"base,omitempty"`
+	MergePolicy        MergePolicy          `json:"merge_policy,omitempty"`
+	PolicyConsequence  string               `json:"policy_consequence,omitempty"`
+	LoadOrderIntent    LoadOrderIntent      `json:"load_order_intent,omitempty"`
+	LoadOrderNote      string               `json:"load_order_note,omitempty"`
 	SourceEntries      int                  `json:"source_entries,omitempty"`
 	BaseEntries        int                  `json:"base_entries,omitempty"`
 	UnsupportedEntries int                  `json:"unsupported_entries,omitempty"`
@@ -118,6 +127,7 @@ func AuditOverrideDrift(ctx context.Context, cfg Config, options OverrideDriftAu
 			"CK3 replaces files by path. Source-only and base-only definitions may be intentional; this is drift evidence, not an automatic bug report.",
 			"Only unique top-level assignments in common/ and events/ .txt files are paired. Duplicate keys, anonymous entries, and unsupported syntax stay ambiguous or unsupported.",
 			"semantic_changed ignores comments and whitespace through a canonical AST hash. This audit never writes, merges, or migrates files.",
+			"merge_policy states how CK3 combines the two files. Read base_only_definition against it: under override the definition is gone, under per_key_override it falls back to another loaded file, and under container_merge the replacement also drops entries other files appended.",
 		},
 	}
 	if len(baseCandidates) > 0 {
@@ -148,6 +158,8 @@ func AuditOverrideDrift(ctx context.Context, cfg Config, options OverrideDriftAu
 		if err != nil {
 			return report, err
 		}
+		annotateOverrideMergePolicy(&result)
+		report.Counts["policy_"+string(result.MergePolicy)]++
 		switch result.Classification {
 		case "identical":
 			report.Counts["identical_files"]++
@@ -277,6 +289,28 @@ func overrideAuditBaseFile(candidates []Source, rel string) (Source, string) {
 		}
 	}
 	return Source{}, ""
+}
+
+// annotateOverrideMergePolicy records the folder's merge behaviour and what a
+// leading load-order prefix does under it. The load-order note is stated as
+// engine behaviour, not as a verdict on the file: a zzz_ prefix under gui/ is
+// worth knowing about precisely because the file still looks correct.
+func annotateOverrideMergePolicy(result *OverrideDriftFile) {
+	policy := MergePolicyForPath(result.Path)
+	result.MergePolicy = policy
+	result.PolicyConsequence = policy.Consequence()
+	target, intent := LoadOrderPrefix(result.Path)
+	result.LoadOrderIntent = intent
+	switch {
+	case intent == LoadOrderIntentLast && policy == MergePolicyFirstInWins:
+		result.LoadOrderNote = fmt.Sprintf("The name loads after %q, and this folder keeps the first definition read, so the prefix aims away from winning. Overrides here lead with 00_.", target)
+	case intent == LoadOrderIntentFirst && policy == MergePolicyFirstInWins:
+		result.LoadOrderNote = fmt.Sprintf("The name loads before %q, which is the direction that wins in this folder.", target)
+	case intent == LoadOrderIntentLast:
+		result.LoadOrderNote = fmt.Sprintf("The name loads after %q, which is the direction that wins in this folder.", target)
+	case intent == LoadOrderIntentFirst && policy != MergePolicyFirstInWins:
+		result.LoadOrderNote = fmt.Sprintf("The name loads before %q. Within one source the later file wins here, so a numeric prefix orders content rather than overriding it.", target)
+	}
 }
 
 func auditOverrideFile(ctx context.Context, input overrideAuditFileInput, base Source, basePath string) (OverrideDriftFile, error) {

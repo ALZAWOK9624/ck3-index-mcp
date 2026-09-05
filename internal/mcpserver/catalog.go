@@ -125,19 +125,35 @@ func buildCanonicalTools() []ToolDefinition {
 		{
 			Name:        "ck3_diagnostics",
 			Title:       "Inspect CK3 Diagnostics",
-			Description: "Inspect cached project diagnostics without rescanning. Defaults to summary; explain filters one diagnostic code and optional provenance fields.",
+			Description: "Inspect cached project diagnostics without rescanning. Defaults to summary; explain filters one diagnostic code and optional provenance fields. Passing baseline hides every finding that baseline already recorded, so the report covers only what appeared since; record one with ck3_diagnostic_baseline.",
 			InputSchema: objectSchema(map[string]any{
 				"operation":   stringProperty("Diagnostic view.", "summary", "explain"),
 				"code":        stringProperty("Required for operation=explain."),
 				"source":      stringProperty("Optional diagnostic source."),
 				"path_prefix": stringProperty("Optional source-root-relative path prefix."),
 				"confidence":  stringProperty("Optional confidence filter."),
+				"baseline":    stringProperty("Name of a baseline recorded by ck3_diagnostic_baseline. Hides every finding that baseline already held. An unrecorded name is an error rather than an empty filter."),
 				"limit":       limitProperty(),
 				"page":        pageProperty(),
 				"visibility":  visibilityProperty(),
 			}),
 			OutputSchema: output, Annotations: annotations, Handler: handleDiagnostics,
 			CompatibilityProperties: legacyPrivacyProperties,
+		},
+		{
+			// Separate from ck3_diagnostics because save and clear write to the
+			// index. A tool is advertised read-only or it is not, and the read
+			// cache keys on the index generation, which a baseline write does not
+			// move -- so as one tool the write could be answered out of an earlier
+			// call's cached response and never run at all.
+			Name:        "ck3_diagnostic_baseline",
+			Title:       "Record CK3 Diagnostic Baselines",
+			Description: "Record which diagnostics are already present so ck3_diagnostics reports only what appeared since. save records the findings the index currently holds under a name, replacing any earlier snapshot of that name; list reports the recorded names; clear forgets one. A baseline recorded on a project with no findings is still a baseline, and the most useful one: every finding that appears afterwards is new. Baselines survive ck3_refresh operation=full, because a rebuild reproduces exactly the findings they were taken against.",
+			InputSchema: objectSchema(map[string]any{
+				"operation": stringProperty("Baseline operation.", "save", "list", "clear"),
+				"baseline":  stringProperty("Baseline name; defaults to \"default\". Not required by list."),
+			}, "operation"),
+			OutputSchema: output, Annotations: artifactAnnotations(), Handler: handleDiagnosticBaseline,
 		},
 		{
 			Name:        "ck3_save",
@@ -408,6 +424,12 @@ func standardizeCanonicalToolDescriptions(definitions []ToolDefinition) []ToolDe
 			DoNotUse: "project source files changed since the last scan; use ck3_refresh first",
 			Unlike:   "ck3_review, it does not parse new proposed content",
 		},
+		"ck3_diagnostic_baseline": {
+			When:     "the findings already present must be recorded so later diagnostic reports cover only what appeared since",
+			DoNotUse: "reading the findings themselves; use ck3_diagnostics",
+			Unlike:   "ck3_diagnostics, it writes the caller's decision into the index instead of reading findings out of it",
+		},
+
 		"ck3_save": {
 			When:     "a CK3 save file must be identified, its declared content listed, its ids checked against the Mod, or one character profiled",
 			DoNotUse: "questions about Mod source content; a save records a played game, not the scripts that define it",

@@ -30,7 +30,7 @@ The same tools serve two jobs with different limits. Decide which one you are in
 When a question turns into an edit, restate the mode change before the first write; do not drift from one into the other.
 
 <!-- BEGIN GENERATED MCP TOOLS -->
-## MCP Tools (37 canonical tools)
+## MCP Tools (38 canonical tools)
 
 ck3-index exposes one canonical MCP tool surface. Each tool uses bounded operations rather than legacy specialist aliases.
 
@@ -47,6 +47,7 @@ ck3-index exposes one canonical MCP tool surface. Each tool uses bounded operati
 | `ck3_preflight` | Use when a final pass/fail gate is needed before accepting, applying, packaging, or publishing a change. |
 | `ck3_impact` | Use when deleting, renaming, replacing, or substantially changing an existing object. |
 | `ck3_diagnostics` | Use when reading diagnostics already produced by the current index generation. |
+| `ck3_diagnostic_baseline` | Use when the findings already present must be recorded so later diagnostic reports cover only what appeared since. |
 | `ck3_save` | Use when a CK3 save file must be identified, its declared content listed, its ids checked against the Mod, or one character profiled. |
 | `ck3_refresh` | Use when configured project source files changed and the index must reflect them. |
 | `ck3_script_reference` | Use when a local CK3 engine or script-rule fact needs authoritative indexed evidence. |
@@ -212,13 +213,24 @@ Their evidence is authoritative about themselves and about nothing else.
 
 3. File override semantics: CK3 loads files by `rel_path`; same-path files from higher-priority sources replace lower ones entirely. `ck3-index` detects overridden files and excludes them from active queries.
 
-4. Source boundary semantics: only source-root-relative CK3 load roots (`common`, `events`, `history`, `gui`, `localization`, `gfx`, `map_data`, and `sound`) are indexed. Root-level backups, tools, docs, caches, and temporary folders are intentionally ignored even when they contain nested CK3-looking paths.
+4. Know what an override costs before writing one. Replacement is by file, but what that destroys depends on the folder:
 
-5. Never use localization text alone as proof of mechanics. Confirm in scripts, history, GUI, or indexed definitions.
+   | Folder | Policy | Replacing a file at the same path |
+   |---|---|---|
+   | most of `common/`, `events/` | `override` | The replaced file is not read at all; every definition it held is gone unless you declare it again. |
+   | `common/on_action/` | `container_merge` | List containers (`events`, `on_actions`, `random_events`, `first_valid`, ...) accumulate across files, but `trigger`, `effect`, `weight_multiplier` and `fallback` take the last writer. Append behaviour by adding a list entry pointing at your own on_action; never edit a vanilla on_action's `effect` in place. |
+   | `common/defines/`, `history/`, `localization/` | `per_key_override` | Files combine key by key, so a key you omit falls back to another loaded file or the engine default. |
+   | `gui/` | `first_in_wins` | The first definition read is kept. An override has to load *earlier*: lead with `00_`, not the trailing `zzz_` that works in override folders. |
 
-6. During the edit loop, prefer canonical `ck3_preflight` operations and `scan --files` over repeated full `scan`; follow every scan with `diag_stats`. Before final release or a large handoff, run `ck3-index scan`, `ck3-index validate`, and `ck3-index diag_stats`.
+   Filename prefixes carry load-order intent: a numeric prefix loads first, a `z`/`zz`/`zzz` prefix loads last. The override drift audit reports `merge_policy`, `policy_consequence` and `load_order_note` on every finding, so read a `base_only_definition` against the policy rather than assuming it is harmless.
 
-7. Keep generated code conservative:
+5. Source boundary semantics: only source-root-relative CK3 load roots (`common`, `events`, `history`, `gui`, `localization`, `gfx`, `map_data`, and `sound`) are indexed. Root-level backups, tools, docs, caches, and temporary folders are intentionally ignored even when they contain nested CK3-looking paths.
+
+6. Never use localization text alone as proof of mechanics. Confirm in scripts, history, GUI, or indexed definitions.
+
+7. During the edit loop, prefer canonical `ck3_preflight` operations and `scan --files` over repeated full `scan`; follow every scan with `diag_stats`. Before final release or a large handoff, run `ck3-index scan`, `ck3-index validate`, and `ck3-index diag_stats`.
+
+8. Keep generated code conservative:
    - Match nearby file style.
    - Prefer existing scripted triggers/effects/values.
    - Add new localization keys with clear prefixes.
@@ -318,9 +330,20 @@ Inspect before imitating.
 
 ## Diagnostics Reference
 
+This project sits on top of an upstream mod, so a bare `ck3_diagnostics` summary reports the upstream's findings alongside yours. Record what is already there once with `ck3_diagnostic_baseline operation=save`, then pass the same `baseline` name to `ck3_diagnostics` `summary` and `explain` to see only what appeared since. Recording a baseline on a tree with no findings is legitimate and useful: everything that appears afterwards is new. The baseline survives `ck3_refresh operation=full`; re-record it after deliberately accepting new upstream findings, and use `operation=list` / `operation=clear` to manage them.
+
 | Code | Severity | Meaning |
 |---|---|---|
 | `parse_error` | error | CK3 script syntax error |
+| `unread_script_folder` | error | Project content sits in a folder CK3 does not dispatch, next to a near-identical folder it does; the message names the folder the game layer actually reads |
+| `trigger_always_false` | error | An explicit AND block requires a condition and its own negation, so nothing satisfies it |
+| `trigger_always_true` | error | An explicit OR block accepts a condition and its own negation, so it filters nothing |
+| `trigger_duplicate_condition` | warning | The same condition is checked twice in one AND/OR/NOT block |
+| `trigger_double_negation` | warning | NOT wraps a NOT/NOR/NAND, negating twice |
+| `hidden_scope_dependency` | warning | A scripted effect or trigger uses `prev` before entering any scope of its own, so it reads a scope opened by the caller |
+| `trigger_nested_same_operator` | info | AND nested directly in AND, or OR in OR; the members can move up |
+| `trigger_common_condition` | info | Every branch of an OR checks the same condition; lift it out |
+| `trigger_absorbed_branch` | info | A branch repeats a condition the enclosing block already decides |
 | `effect_in_trigger` | error | Effect used inside a trigger block |
 | `scope_mismatch` | warning | Proven trigger/effect scope conflict with a root/current scope trace |
 | `trigger_in_effect` | warning | Trigger used inside an effect block |

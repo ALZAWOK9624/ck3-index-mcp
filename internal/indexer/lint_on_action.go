@@ -47,7 +47,7 @@ func (index *vanillaOnActionIndex) block(action, blockKey string) (*script.Node,
 	if !ok {
 		return nil, false
 	}
-	node, ok := children[blockKey]
+	node, ok := children[strings.ToLower(blockKey)]
 	return node, ok
 }
 
@@ -73,8 +73,8 @@ func (index *vanillaOnActionIndex) load() {
 				index.blocks[name] = children
 			}
 			for _, child := range node.Children {
-				if child.Key == "effect" || child.Key == "trigger" {
-					children[child.Key] = child
+				if onActionSingleSlotFields[strings.ToLower(child.Key)] {
+					children[strings.ToLower(child.Key)] = child
 				}
 			}
 		}

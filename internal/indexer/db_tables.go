@@ -52,3 +52,28 @@ var semanticIndexTableCatalog = [...]string{
 	"script_text_fts",
 	"trigram_loc",
 }
+
+// rebuildPreservedTables hold caller decisions rather than derived index data,
+// so they are created by ensureSchema but belong to neither of the catalog's
+// two jobs: reset must not drop them and staged publication must not copy them.
+// A diagnostic baseline records which findings the caller has already accepted,
+// and a full rebuild reproduces exactly those findings -- dropping the baseline
+// with them would silently undo the decision at the moment it is needed most.
+//
+// Named here rather than left out silently so the schema-catalog test can tell
+// a deliberate exclusion from a table someone forgot to register.
+var rebuildPreservedTables = map[string]bool{
+	"diagnostic_baselines":          true,
+	"diagnostic_baseline_snapshots": true,
+}
+
+// schemaTableNames is every table ensureSchema creates: the published index
+// catalog plus the preserved ones.
+func schemaTableNames() []string {
+	out := make([]string, 0, len(semanticIndexTableCatalog)+len(rebuildPreservedTables))
+	out = append(out, semanticIndexTableCatalog[:]...)
+	for table := range rebuildPreservedTables {
+		out = append(out, table)
+	}
+	return out
+}

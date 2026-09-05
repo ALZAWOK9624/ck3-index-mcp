@@ -19,11 +19,11 @@ import (
 
 func TestToolRegistryContract(t *testing.T) {
 	definitions := registry()
-	if len(definitions) != 37 {
-		t.Fatalf("standard registry count = %d, want 37", len(definitions))
+	if len(definitions) != 38 {
+		t.Fatalf("standard registry count = %d, want 38", len(definitions))
 	}
-	if got := len(mcpTools()); got != 37 {
-		t.Fatalf("tools/list count = %d, want 37", got)
+	if got := len(mcpTools()); got != 38 {
+		t.Fatalf("tools/list count = %d, want 38", got)
 	}
 
 	seen := make(map[string]struct{}, len(definitions))
@@ -47,7 +47,7 @@ func TestToolRegistryContract(t *testing.T) {
 		if got := definition.OutputSchema["type"]; got != "object" {
 			t.Fatalf("tool %q output schema type = %v, want object", definition.Name, got)
 		}
-		if definition.Name == "ck3_refresh" || definition.Name == "ck3_database" || definition.Name == "ck3_package" || definition.Name == "map_migration_snapshot" || definition.Name == "map_province_migration" || definition.Name == "map_split_province" || definition.Name == "map_apply_split" || definition.Name == "map_terrain_edit" {
+		if definition.Name == "ck3_refresh" || definition.Name == "ck3_database" || definition.Name == "ck3_package" || definition.Name == "ck3_diagnostic_baseline" || definition.Name == "map_migration_snapshot" || definition.Name == "map_province_migration" || definition.Name == "map_split_province" || definition.Name == "map_apply_split" || definition.Name == "map_terrain_edit" {
 			if definition.Annotations.ReadOnlyHint || definition.Annotations.DestructiveHint || definition.Annotations.OpenWorldHint {
 				t.Fatalf("tool %q annotations must be non-read-only, non-destructive, and closed-world", definition.Name)
 			}
@@ -355,6 +355,7 @@ func TestCanonicalSchemasMatchTypedArguments(t *testing.T) {
 		"ck3_preflight":           reflect.TypeOf(ck3PreflightArgs{}),
 		"ck3_impact":              reflect.TypeOf(ck3ImpactArgs{}),
 		"ck3_diagnostics":         reflect.TypeOf(ck3DiagnosticsArgs{}),
+		"ck3_diagnostic_baseline": reflect.TypeOf(ck3DiagnosticBaselineArgs{}),
 		"ck3_script_reference":    reflect.TypeOf(ck3ScriptReferenceArgs{}),
 		"ck3_health":              reflect.TypeOf(ck3HealthArgs{}),
 		"ck3_database":            reflect.TypeOf(ck3DatabaseArgs{}),
@@ -604,19 +605,20 @@ func TestEveryCallableToolHasSuccessAndMalformedArgumentCases(t *testing.T) {
 	}}
 	planID, planHash := planSplitForMCP(t, db, cfg)
 	successArguments := map[string]map[string]any{
-		"ck3_search":           {"query": "c_c114", "limit": 2},
-		"ck3_inspect":          {"id": "c_c114", "limit": 2},
-		"ck3_review":           {"files": patchFiles, "limit": 2},
-		"ck3_workspace":        {"operation": "overview", "limit": 2},
-		"ck3_dependencies":     {"id": "c_c114", "depth": 1, "limit": 2},
-		"ck3_prepare_edit":     {"id": "c_c114", "operation": "context", "limit": 2},
-		"ck3_preflight":        {"operation": "patch", "files": patchFiles, "limit": 2},
-		"ck3_impact":           {"files": patchFiles, "limit": 2},
-		"ck3_diagnostics":      {"operation": "summary", "limit": 2},
-		"ck3_refresh":          {"operation": "status"},
-		"ck3_script_reference": {"kind": "shape", "id": "has_trait", "limit": 2},
-		"ck3_health":           {},
-		"ck3_database":         {"operation": "list"},
+		"ck3_search":              {"query": "c_c114", "limit": 2},
+		"ck3_inspect":             {"id": "c_c114", "limit": 2},
+		"ck3_review":              {"files": patchFiles, "limit": 2},
+		"ck3_workspace":           {"operation": "overview", "limit": 2},
+		"ck3_dependencies":        {"id": "c_c114", "depth": 1, "limit": 2},
+		"ck3_prepare_edit":        {"id": "c_c114", "operation": "context", "limit": 2},
+		"ck3_preflight":           {"operation": "patch", "files": patchFiles, "limit": 2},
+		"ck3_impact":              {"files": patchFiles, "limit": 2},
+		"ck3_diagnostics":         {"operation": "summary", "limit": 2},
+		"ck3_diagnostic_baseline": {"operation": "list"},
+		"ck3_refresh":             {"operation": "status"},
+		"ck3_script_reference":    {"kind": "shape", "id": "has_trait", "limit": 2},
+		"ck3_health":              {},
+		"ck3_database":            {"operation": "list"},
 		"ck3_package": {
 			"metadata": map[string]any{"name": "Contract Mod", "slug": "contract_mod", "version": "1.0", "supported_version": "1.19.*", "tags": []string{"Gameplay"}},
 			"files":    []map[string]any{{"path": "common/scripted_triggers/contract_package.txt", "content": "contract_package_trigger = { always = yes }"}},
@@ -652,8 +654,8 @@ func TestEveryCallableToolHasSuccessAndMalformedArgumentCases(t *testing.T) {
 		"map_render":              {"target": "k_k11", "year": 6253, "width": 400, "layers": []map[string]any{{"type": "borders", "level": "county"}}},
 		"ck3_save":                {"path": "fixture.ck3", "operation": "card"},
 	}
-	if len(successArguments) != 37 {
-		t.Fatalf("success case count = %d, want 37 canonical names", len(successArguments))
+	if len(successArguments) != 38 {
+		t.Fatalf("success case count = %d, want 38 canonical names", len(successArguments))
 	}
 	for name, args := range successArguments {
 		name, args := name, args

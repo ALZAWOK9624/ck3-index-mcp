@@ -196,7 +196,7 @@ $settings = @{version = 1; config_path = ''} | ConvertTo-Json -Compress
 & $python $pluginValidator $stage
 if ($LASTEXITCODE -ne 0) { throw 'Staged plugin validation failed.' }
 
-& $python $mcpSmoke --stage $stage --platform windows-x64 --config $resolvedConfig --expected-tools 37
+& $python $mcpSmoke --stage $stage --platform windows-x64 --config $resolvedConfig --expected-tools 38
 if ($LASTEXITCODE -ne 0) { throw 'Staged plugin MCP smoke check failed.' }
 
 $releaseRoot = Join-Path $repo 'cache\release'

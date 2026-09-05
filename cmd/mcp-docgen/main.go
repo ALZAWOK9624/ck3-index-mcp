@@ -203,6 +203,10 @@ func renderReference(canonical []mcpserver.ToolDocumentation) string {
 		writeInputFields(&builder, tool.InputSchema)
 		if tool.Name == "map_terrain_edit" {
 			builder.WriteString("属性：预览阶段只读，确认后生成受控不可变产物；非破坏、封闭世界。输出：结构化对象与 PNG 预览；确认后另返回 artifact 标识、相对文件与哈希。\n\n")
+		} else if tool.Name == "ck3_diagnostic_baseline" {
+			// Non-read-only without producing an artifact: save and clear write a
+			// caller decision into the index cache and return nothing to attach.
+			builder.WriteString("属性：save 与 clear 写入索引缓存中的基线记录，list 只读；非破坏、封闭世界。输出：结构化对象与 JSON 文本内容。\n\n")
 		} else if !tool.Annotations.ReadOnlyHint {
 			builder.WriteString("属性：生成受限临时产物、非破坏、封闭世界。输出：结构化对象与 JSON 文本；成功时返回可供附件发送层解析的 artifact 标识和相对路径。\n\n")
 		} else if imageReturningTools[tool.Name] {

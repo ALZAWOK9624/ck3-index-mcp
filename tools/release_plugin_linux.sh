@@ -152,7 +152,7 @@ python3 "$repo/tools/verify_release_mcp.py" \
   --stage "$stage" \
   --platform linux-x64 \
   --config "$config" \
-  --expected-tools 37
+  --expected-tools 38
 
 if [ "$allow_unlicensed" = 1 ] && [ -z "$project_license" ]; then
   archive_suffix=-unlicensed-local-rc

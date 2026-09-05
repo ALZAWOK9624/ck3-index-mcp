@@ -490,6 +490,9 @@ func publishStagedFullScan(ctx context.Context, cfg Config, stagePath string, ba
 		}
 		_ = conn.Close()
 	}()
+	if err := copyPreservedPublicationTables(ctx, conn, dbPath); err != nil {
+		return fmt.Errorf("preserve diagnostic baselines: %w", err)
+	}
 	// A staged publication is a new physical snapshot even when its contents
 	// were seeded from a previous generation. Do not inherit that snapshot's
 	// revision identity (used by pinned readers and stale-generation checks).

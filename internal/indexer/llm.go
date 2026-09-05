@@ -892,6 +892,12 @@ func (db *DB) LLMQueryPatterns(ctx context.Context, typ string, opts LLMOptions)
 }
 
 func (db *DB) LLMValidate(ctx context.Context, opts LLMOptions) (LLMResult, error) {
+	return db.LLMValidateSinceBaseline(ctx, "", opts)
+}
+
+// LLMValidateSinceBaseline is LLMValidate restricted to findings the named
+// baseline did not already hold. An empty baseline name reports everything.
+func (db *DB) LLMValidateSinceBaseline(ctx context.Context, baseline string, opts LLMOptions) (LLMResult, error) {
 	limit := opts.normalizedLimit()
 	projectSource, err := db.projectSourceName(ctx)
 	if err != nil {
@@ -904,7 +910,7 @@ func (db *DB) LLMValidate(ctx context.Context, opts LLMOptions) (LLMResult, erro
 		// source_layers. Current caches always resolve this through SourceRole.
 		projectSource = "project"
 	}
-	rep, err := db.CachedValidationForSource(ctx, projectSource)
+	rep, err := db.CachedValidationSinceBaseline(ctx, projectSource, baseline)
 	if err != nil {
 		return LLMResult{}, err
 	}
@@ -916,6 +922,10 @@ func (db *DB) LLMValidate(ctx context.Context, opts LLMOptions) (LLMResult, erro
 		r.Evidence = append(r.Evidence, diagnosticEvidence(d))
 	}
 	r.Summary = fmt.Sprintf("Cached validation has %d error(s), %d warning(s), and %d info diagnostic(s).", rep.Counts["error"], rep.Counts["warning"], rep.Counts["info"])
+	if strings.TrimSpace(baseline) != "" {
+		r.Summary = fmt.Sprintf("Since baseline %q: %d error(s), %d warning(s), and %d info diagnostic(s). Findings the baseline already recorded are hidden.",
+			normalizeBaselineName(baseline), rep.Counts["error"], rep.Counts["warning"], rep.Counts["info"])
+	}
 	r.Guidance = []string{
 		"This summary is limited to the current project source plus global diagnostics; upstream game and Godherja files remain searchable as reference evidence.",
 		"This MCP tool reads diagnostics refreshed by full or incremental scan; ambiguous title definitions are also synthesized live by ck3_inspect.",

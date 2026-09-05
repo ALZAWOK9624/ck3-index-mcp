@@ -393,6 +393,9 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 			if err := refreshCourtTypeDefaultDiagnostics(ctx, tx); err != nil {
 				return ScanStats{}, err
 			}
+			if err := refreshFolderSchemaDiagnostics(ctx, tx, src.Rank); err != nil {
+				return ScanStats{}, err
+			}
 			if err := refreshErrorLogContractDiagnostics(ctx, tx, src.Rank); err != nil {
 				return ScanStats{}, err
 			}
@@ -443,6 +446,9 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 				return ScanStats{}, err
 			}
 			if err := refreshCourtTypeDefaultDiagnostics(ctx, tx); err != nil {
+				return ScanStats{}, err
+			}
+			if err := refreshFolderSchemaDiagnostics(ctx, tx, src.Rank); err != nil {
 				return ScanStats{}, err
 			}
 			if err := refreshErrorLogContractDiagnostics(ctx, tx, src.Rank); err != nil {

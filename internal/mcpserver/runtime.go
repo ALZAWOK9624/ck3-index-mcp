@@ -18,6 +18,8 @@ type Runtime struct {
 	DatabaseName       string
 	DatabaseEpoch      uint64
 	DatabaseController mcpDatabaseController
+	ownedDB            *indexer.DB
+	releaseRebound     func()
 }
 
 type toolOutput struct {
@@ -36,6 +38,14 @@ type callToolParams struct {
 
 func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw json.RawMessage) (any, error) {
 	runtime := &Runtime{DB: db, Config: cfg}
+	defer func() {
+		if runtime.ownedDB != nil {
+			_ = runtime.ownedDB.Close()
+		}
+		if runtime.releaseRebound != nil {
+			runtime.releaseRebound()
+		}
+	}()
 	if path, err := indexer.ConfiguredDatabasePath(cfg); err == nil {
 		runtime.DBPath = path
 	}
@@ -43,6 +53,9 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 		runtime.DatabaseController = databaseContext.Controller
 		runtime.DatabaseName = databaseContext.Identity.Name
 		runtime.DatabaseEpoch = databaseContext.Identity.Epoch
+		if databaseContext.Identity.databasePath != "" {
+			runtime.DBPath = databaseContext.Identity.databasePath
+		}
 	}
 	var call callToolParams
 	if err := json.Unmarshal(raw, &call); err != nil {
@@ -73,7 +86,10 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 	if err := ctx.Err(); err != nil {
 		return encodeToolError(err, runtime), nil
 	}
-	before, beforeErr := db.IndexState(ctx)
+	if err := ensurePublishedDatabaseBinding(ctx, runtime); err != nil {
+		return encodeToolError(err, runtime), nil
+	}
+	before, beforeErr := runtime.DB.IndexState(ctx)
 	// cacheStart is the published state whose rows the current handler
 	// invocation reads. A generation-bound retry resets it below; an initial
 	// state-read failure remains disqualifying instead of letting a later
@@ -100,7 +116,7 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 	if definition.Annotations.ReadOnlyHint && cacheableReadRequest(definition.Name, handlerArguments) && beforeErr == nil && before.Ready() && before.Revision != "" {
 		key := toolCacheKey(definition.Name, runtime.DBPath, runtime.DatabaseEpoch, before.Generation, before.Revision, call.Arguments)
 		if cached, ok := mcpReadToolCache.get(key); ok {
-			afterState, stateErr := db.IndexState(ctx)
+			afterState, stateErr := runtime.DB.IndexState(ctx)
 			if stateErr == nil && afterState.Ready() && !indexStateChanged(before, afterState) && !indexStatePublishing(afterState) {
 				var payload map[string]any
 				if err := json.Unmarshal(cached, &payload); err == nil {
@@ -129,7 +145,7 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 	if output.Committed {
 		resultContext = context.WithoutCancel(ctx)
 	}
-	after, afterErr := db.IndexState(resultContext)
+	after, afterErr := runtime.DB.IndexState(resultContext)
 	if beforeErr == nil && afterErr == nil && indexStateChanged(before, after) {
 		// Refresh owns its one intentional generation change. Re-running it
 		// would either duplicate work or produce a second generation, so return
@@ -155,7 +171,7 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 			if err := ctx.Err(); err != nil {
 				return encodeToolError(err, runtime), nil
 			}
-			after, afterErr = db.IndexState(resultContext)
+			after, afterErr = runtime.DB.IndexState(resultContext)
 			if afterErr != nil {
 				return encodeInternalToolError(runtime, ErrorIndexStale, "ck3-index could not verify the scan generation after retrying the query."), nil
 			}
@@ -282,6 +298,7 @@ func (runtime *Runtime) databaseIdentity() mcpDatabaseIdentity {
 	return mcpDatabaseIdentity{
 		Name: name, Epoch: epoch, DatabaseIdentity: redactedMCPPath(runtime.DBPath),
 		ConfigIdentity: indexer.DisplayConfigPath(runtime.Config),
+		databasePath:   runtime.DBPath,
 	}
 }
 

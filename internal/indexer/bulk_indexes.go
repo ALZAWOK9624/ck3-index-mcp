@@ -7,6 +7,28 @@ import (
 	"strings"
 )
 
+// Keep bulk index construction on the pinned scan writer. Going through the
+// read pool lost the scan's cache settings and committed every index separately.
+// A single transaction also leaves no partially built index set on failure.
+func createScanIndexes(ctx context.Context, conn *sql.Conn) error {
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, statement := range indexStmts {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("build scan indexes: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// Planner statistics are optional, just as they are on ordinary opens.
+	_, _ = conn.ExecContext(ctx, `PRAGMA optimize`)
+	return nil
+}
+
 // dropSecondaryIndexes removes every explicitly declared index on the main
 // schema and returns a closure that puts back exactly what it took away.
 //

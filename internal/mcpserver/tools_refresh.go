@@ -138,6 +138,64 @@ func refreshStatusOutput(ctx context.Context, runtime *Runtime) (map[string]any,
 	return result, nil
 }
 
+func rebindPublishedDatabase(ctx context.Context, runtime *Runtime) error {
+	if reloader, ok := runtime.DatabaseController.(mcpDatabaseReloader); ok {
+		reloaded, err := reloader.ReloadCurrent(ctx)
+		if err != nil {
+			return err
+		}
+		runtime.DB = reloaded.DB
+		runtime.Config = reloaded.Config
+		runtime.DBPath = reloaded.Identity.databasePath
+		runtime.DatabaseName = reloaded.Identity.Name
+		runtime.DatabaseEpoch = reloaded.Identity.Epoch
+		if reloaded.release != nil {
+			if runtime.releaseRebound != nil {
+				runtime.releaseRebound()
+			}
+			runtime.releaseRebound = reloaded.Release
+		}
+		return nil
+	}
+	publishedPath, err := indexer.ConfiguredDatabasePath(runtime.Config)
+	if err != nil {
+		return err
+	}
+	published, err := indexer.OpenReadOnlyWithOptions(publishedPath, runtime.Config.SQLiteReadOptions())
+	if err != nil {
+		return err
+	}
+	if err := published.RestoreEngineRules(ctx, runtime.Config.EngineLogs); err != nil {
+		_ = published.Close()
+		return err
+	}
+	if runtime.ownedDB != nil {
+		_ = runtime.ownedDB.Close()
+	}
+	runtime.ownedDB = published
+	runtime.DB = published
+	runtime.DBPath = publishedPath
+	runtime.DatabaseEpoch++
+	if runtime.DatabaseEpoch == 0 {
+		runtime.DatabaseEpoch = 1
+	}
+	return nil
+}
+
+func ensurePublishedDatabaseBinding(ctx context.Context, runtime *Runtime) error {
+	if runtime == nil || strings.TrimSpace(runtime.Config.Database) == "" {
+		return nil
+	}
+	publishedPath, err := indexer.ConfiguredDatabasePath(runtime.Config)
+	if err != nil {
+		return err
+	}
+	if canonicalMCPDatabasePath(publishedPath) == canonicalMCPDatabasePath(runtime.DBPath) {
+		return nil
+	}
+	return rebindPublishedDatabase(ctx, runtime)
+}
+
 func handleRefresh(ctx context.Context, runtime *Runtime, definition *ToolDefinition, raw json.RawMessage) (toolOutput, error) {
 	var args ck3RefreshArgs
 	if err := decodeToolArgs(raw, definition.InputSchema, definition.CompatibilityProperties, &args); err != nil {
@@ -167,10 +225,16 @@ func handleRefresh(ctx context.Context, runtime *Runtime, definition *ToolDefini
 				map[string]any{"guidance": "Call ck3_refresh status and retry after is_scanning is false."})
 		}
 		stats, refreshErr := indexer.ScanFullStaged(ctx, runtime.Config)
-		finish(refreshErr)
 		if refreshErr != nil {
+			finish(refreshErr)
 			return toolOutput{}, refreshErr
 		}
+		if reloadErr := rebindPublishedDatabase(context.WithoutCancel(ctx), runtime); reloadErr != nil {
+			finish(reloadErr)
+			markMCPCommitted(ctx)
+			return toolOutput{}, reloadErr
+		}
+		finish(nil)
 		if rulesErr := runtime.DB.RestoreEngineRules(context.WithoutCancel(ctx), runtime.Config.EngineLogs); rulesErr != nil {
 			markMCPCommitted(ctx)
 			return toolOutput{}, rulesErr

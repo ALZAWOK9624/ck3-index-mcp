@@ -181,9 +181,8 @@ func run(ctx context.Context, args []string) error {
 			}
 			return printJSON(stats)
 		}
-		// Every user-visible full scan uses staged publication. --clean remains
-		// accepted for CLI compatibility; the staging database is always a clean
-		// rebuild and replaces the live generation only after finalization.
+		// Full scans verify source content in an isolated staged generation.
+		// --clean bypasses both published-generation and shared-base reuse.
 		cfg.ForceClean = clean
 		stats, err := indexer.ScanFullStaged(ctx, cfg)
 		if err != nil {

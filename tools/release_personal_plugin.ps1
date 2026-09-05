@@ -7,6 +7,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$env:PYTHONUTF8 = '1'
 
 function Assert-SafeDirectoryTarget {
     param(
@@ -40,6 +41,14 @@ $version = (Get-Content -LiteralPath $versionPath -Raw -Encoding UTF8).Trim()
 if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
     throw "VERSION must contain one release semver without build metadata: $version"
 }
+$gitCommand = Get-Command git.exe -ErrorAction Stop
+$revision = (& $gitCommand.Source -C $repo rev-parse --short=12 HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $revision -notmatch '^[0-9a-fA-F]{7,40}$') {
+    throw 'Could not resolve the ck3-index source revision for the release binary.'
+}
+$dirtyState = (& $gitCommand.Source -C $repo status --porcelain --untracked-files=normal | Out-String).Trim()
+if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the ck3-index worktree state.' }
+if (-not [string]::IsNullOrWhiteSpace($dirtyState)) { $revision = "$revision-dirty" }
 $projectLicense = @('LICENSE', 'LICENSE.txt', 'LICENSE.md', 'COPYING', 'COPYING.txt') |
     ForEach-Object { Join-Path $repo $_ } |
     Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
@@ -117,10 +126,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Go vet failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Skill validation failed.' }
 
 New-Item -ItemType Directory -Force -Path $repoBin | Out-Null
-& $go build -trimpath -buildvcs=false -ldflags "-s -w -X ck3-index/internal/buildinfo.Version=$version" -o $repoBinary .
+& $go build -trimpath -buildvcs=false -ldflags "-s -w -X ck3-index/internal/buildinfo.Version=$version -X ck3-index/internal/buildinfo.Revision=$revision" -o $repoBinary .
 if ($LASTEXITCODE -ne 0) { throw 'Go build failed.' }
 try {
-    & $go build -trimpath -buildvcs=false -ldflags "-s -w -X ck3-index/internal/buildinfo.Version=$version" -o $verifyBinary .
+    & $go build -trimpath -buildvcs=false -ldflags "-s -w -X ck3-index/internal/buildinfo.Version=$version -X ck3-index/internal/buildinfo.Revision=$revision" -o $verifyBinary .
     if ($LASTEXITCODE -ne 0) { throw 'Reproducibility verification build failed.' }
     $firstHash = (Get-FileHash -LiteralPath $repoBinary -Algorithm SHA256).Hash.ToLowerInvariant()
     $secondHash = (Get-FileHash -LiteralPath $verifyBinary -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -131,8 +140,11 @@ try {
 finally {
     Remove-Item -LiteralPath $verifyBinary -Force -ErrorAction SilentlyContinue
 }
-& $repoBinary --config $resolvedConfig health | Out-Null
+$builtHealth = (& $repoBinary --config $resolvedConfig health | Out-String) | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw 'Built binary health check failed.' }
+if ([string]$builtHealth.binary_version -ne $version -or [string]$builtHealth.binary_revision -ne $revision) {
+    throw "Built binary identity mismatch: expected $version $revision."
+}
 
 New-Item -ItemType Directory -Force -Path $stageRoot | Out-Null
 if (Test-Path -LiteralPath $stage) {
@@ -184,7 +196,7 @@ $settings = @{version = 1; config_path = ''} | ConvertTo-Json -Compress
 & $python $pluginValidator $stage
 if ($LASTEXITCODE -ne 0) { throw 'Staged plugin validation failed.' }
 
-& $python $mcpSmoke --stage $stage --platform windows-x64 --config $resolvedConfig --expected-tools 30
+& $python $mcpSmoke --stage $stage --platform windows-x64 --config $resolvedConfig --expected-tools 37
 if ($LASTEXITCODE -ne 0) { throw 'Staged plugin MCP smoke check failed.' }
 
 $releaseRoot = Join-Path $repo 'cache\release'

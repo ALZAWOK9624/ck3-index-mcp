@@ -225,6 +225,10 @@ func diagnosticHint(code, message string) (string, string) {
 		return "Keep one trigger and one effect block per named on_action. Append behavior through events/on_actions or call a separate custom on_action.", "ck3-index:on_action_runtime_contract"
 	case "illegal_field_context":
 		return "Move or rename the field according to the module's CK3 runtime contract. The parser can accept arbitrary keys, but CK3 only loads fields valid for that container.", "ck3-index:runtime_field_contract"
+	case "government_registration_unverifiable":
+		return "The index has no NGovernment.GOVERNMENT_TYPES block to check against, so registration is undecidable here. Add the source layer or base database that owns common/defines (for example the upstream mod base) and rescan before acting on government registration findings.", "ck3-index:government_runtime_contract"
+	case "unknown_define":
+		return "Use an @Namespace|KEY that the current engine data or an active common/defines file declares. Mod-added namespaces are accepted when they are indexed; a typo inside a declared namespace is still reported.", "ck3-index:define_runtime_contract"
 	case "unregistered_government_type":
 		return "Register the custom government id in NGovernment.GOVERNMENT_TYPES in an active common/defines file, then run a full scan before testing the government-dependent modifiers.", "ck3-index:government_runtime_contract"
 	case "opinion_modifier_time_conflict":

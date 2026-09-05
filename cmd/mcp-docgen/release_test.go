@@ -1,7 +1,9 @@
 package main
 
 import (
+	"ck3-index/internal/mcpserver"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -67,6 +69,10 @@ func TestReleaseSourcePluginIsPortable(t *testing.T) {
 			t.Fatalf("%s does not fail closed for an incomplete or altered GIS sidecar", relative)
 		}
 	}
+	windowsLauncher := readFile(t, filepath.Join(root, "plugin", "ck3-index", "scripts", "start-ck3-index.ps1"))
+	if strings.Contains(windowsLauncher, "Get-FileHash") || !strings.Contains(windowsLauncher, "System.Security.Cryptography.SHA256") {
+		t.Fatal("Windows plugin launcher must hash its sidecar without relying on optional PowerShell modules")
+	}
 }
 
 func TestReleaseScriptsEnforceRCAndReproducibilityGates(t *testing.T) {
@@ -80,6 +86,9 @@ func TestReleaseScriptsEnforceRCAndReproducibilityGates(t *testing.T) {
 		"build_release_bundle.py",
 		"verify_release_mcp.py",
 		"config_path = ''",
+		"buildinfo.Revision",
+		"binary_revision",
+		"PYTHONUTF8",
 	} {
 		if !strings.Contains(windows, marker) {
 			t.Fatalf("Windows release script lacks %q", marker)
@@ -94,6 +103,7 @@ func TestReleaseScriptsEnforceRCAndReproducibilityGates(t *testing.T) {
 		"REPRODUCIBLE_BUILD_MISMATCH",
 		"build_release_bundle.py",
 		"verify_release_mcp.py",
+		"buildinfo.Revision",
 		`printf '{"config_path":"","version":1}`,
 	} {
 		if !strings.Contains(linux, marker) {
@@ -102,6 +112,12 @@ func TestReleaseScriptsEnforceRCAndReproducibilityGates(t *testing.T) {
 	}
 	if strings.Contains(linux, "https://www.whiteboxgeo.com/") {
 		t.Fatal("Linux release script must read WhiteboxTools URLs and hashes from the pinned manifest")
+	}
+	expectedToolGate := fmt.Sprintf("--expected-tools %d", len(mcpserver.CanonicalToolDocumentation()))
+	for name, script := range map[string]string{"Windows": windows, "Linux": linux} {
+		if !strings.Contains(script, expectedToolGate) {
+			t.Fatalf("%s release script does not smoke-test the canonical tool count with %q", name, expectedToolGate)
+		}
 	}
 }
 

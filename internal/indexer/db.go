@@ -842,7 +842,7 @@ func (db *DB) ensureSchemaNoIndexes(ctx context.Context) error {
 		)`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(kind, name, text, source, path UNINDEXED, file_id UNINDEXED, tokenize='unicode61 remove_diacritics 2')`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS script_text_fts USING fts5(search_text, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2')`,
-		`CREATE VIRTUAL TABLE IF NOT EXISTS trigram_loc USING fts5(value, content='', contentless_delete=1, tokenize='trigram')`,
+		`CREATE VIRTUAL TABLE IF NOT EXISTS trigram_loc USING fts5(value, content='', contentless_delete=1, detail=none, tokenize='trigram')`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.sql.ExecContext(ctx, stmt); err != nil {

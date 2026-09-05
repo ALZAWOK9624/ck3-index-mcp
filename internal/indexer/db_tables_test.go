@@ -49,30 +49,12 @@ func TestSemanticIndexTableCatalogMatchesCreatedSchema(t *testing.T) {
 	}
 }
 
-func TestSemanticIndexTableCatalogHasNoDuplicatesAndDrivesPublication(t *testing.T) {
+func TestSemanticIndexTableCatalogHasNoDuplicates(t *testing.T) {
 	seen := make(map[string]bool, len(semanticIndexTableCatalog))
 	for _, table := range semanticIndexTableCatalog {
 		if seen[table] {
 			t.Fatalf("semantic index table catalog repeats %q", table)
 		}
 		seen[table] = true
-	}
-	// Publication must carry every catalog table except the contentless FTS
-	// caches, which are rebuilt from the copied source tables. Positional
-	// slicing used to encode this and quietly published script_text_fts as
-	// soon as a new table was appended after it.
-	var want []string
-	for _, table := range semanticIndexTableCatalog {
-		if !contentlessDerivedTables[table] {
-			want = append(want, table)
-		}
-	}
-	if !reflect.DeepEqual(publishedIndexTables, want) {
-		t.Fatalf("publication table catalog must omit exactly the rebuilt contentless FTS tables:\ngot:  %v\nwant: %v", publishedIndexTables, want)
-	}
-	for table := range contentlessDerivedTables {
-		if !seen[table] {
-			t.Fatalf("contentless derived table %q is not in the semantic index catalog", table)
-		}
 	}
 }

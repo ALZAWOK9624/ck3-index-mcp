@@ -1,0 +1,53 @@
+{
+  "name": "every CK3 variable read spelling suppresses variable_write_only",
+  "files": [
+    {
+      "path": "common/scripted_effects/vrs_effects.txt",
+      "content": "vrs_set_all = {\n\tset_variable = vrs_scalar\n\tset_variable = { name = vrs_block value = 1 }\n\tset_variable = vrs_inline\n\tset_global_variable = vrs_global\n\tset_local_variable = vrs_local\n\tset_dead_character_variable = vrs_dead\n\tset_variable = vrs_truly_dead\n}\n"
+    },
+    {
+      "path": "common/scripted_triggers/vrs_triggers.txt",
+      "content": "vrs_reads_trigger = {\n\thas_variable = vrs_scalar\n}\n"
+    },
+    {
+      "path": "events/vrs_events.txt",
+      "content": "namespace = vrs\nvrs.1 = {\n\tdesc = vrs.1.desc\n\ttrigger = { vrs_reads_trigger = yes }\n\timmediate = {\n\t\thas_variable = { name = vrs_block }\n\t\tadd_gold = var:vrs_inline\n\t\tadd_gold = global_var:vrs_global\n\t\tadd_gold = local_var:vrs_local\n\t\tadd_gold = dead_var:vrs_dead\n\t}\n\toption = { name = vrs.1.a }\n}\n"
+    },
+    {
+      "path": "localization/english/vrs_l_english.yml",
+      "content": "l_english:\n vrs.1.desc:0 \"Variable read spelling fixture\"\n vrs.1.a:0 \"Continue\"\n"
+    }
+  ],
+  "expect_diagnostics": [
+    {
+      "code": "variable_write_only",
+      "contains": "vrs_truly_dead"
+    }
+  ],
+  "reject_diagnostics": [
+    {
+      "code": "variable_write_only",
+      "contains": "vrs_scalar"
+    },
+    {
+      "code": "variable_write_only",
+      "contains": "vrs_block"
+    },
+    {
+      "code": "variable_write_only",
+      "contains": "vrs_inline"
+    },
+    {
+      "code": "variable_write_only",
+      "contains": "vrs_global"
+    },
+    {
+      "code": "variable_write_only",
+      "contains": "vrs_local"
+    },
+    {
+      "code": "variable_write_only",
+      "contains": "vrs_dead"
+    }
+  ]
+}

@@ -2,6 +2,7 @@ package indexer
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,6 +11,15 @@ import (
 	"testing"
 	"time"
 )
+
+func fileDigest(t *testing.T, path string) [sha256.Size]byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sha256.Sum256(data)
+}
 
 func TestStagedPublicationCopiesMigratedSchemaByColumnName(t *testing.T) {
 	ctx := context.Background()
@@ -92,7 +102,11 @@ func TestStagedPublicationCopiesMigratedSchemaByColumnName(t *testing.T) {
 	if _, err := ScanFullStaged(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
-	published, err := Open(dbPath)
+	publishedPath, err := ConfiguredDatabasePath(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	published, err := Open(publishedPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +139,7 @@ func TestStagedPublicationCopiesMigratedSchemaByColumnName(t *testing.T) {
 	}
 }
 
-func TestStagedPublicationRejectsColumnSetMismatchBeforeClearingLiveRows(t *testing.T) {
+func TestStagedPublicationRejectsMissingTableBeforeSwitchingPointer(t *testing.T) {
 	ctx := context.Background()
 	cfg, reader, sourcePath, dbPath := stagedFullRefreshFixture(t)
 	before, err := reader.IndexState(ctx)
@@ -150,7 +164,7 @@ func TestStagedPublicationRejectsColumnSetMismatchBeforeClearingLiveRows(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := stage.sql.ExecContext(ctx, `ALTER TABLE files ADD COLUMN future_only_column TEXT NOT NULL DEFAULT ''`); err != nil {
+	if _, err := stage.sql.ExecContext(ctx, `DROP TABLE files`); err != nil {
 		stage.Close()
 		t.Fatal(err)
 	}
@@ -158,15 +172,15 @@ func TestStagedPublicationRejectsColumnSetMismatchBeforeClearingLiveRows(t *test
 		t.Fatal(err)
 	}
 	err = publishStagedFullScan(ctx, cfg, stagePath, publicationBaseFromState(before))
-	if err == nil || !strings.Contains(err.Error(), `table "files" columns do not match`) {
-		t.Fatalf("column-set mismatch publication error = %v", err)
+	if err == nil || !strings.Contains(err.Error(), `missing table "files"`) {
+		t.Fatalf("missing-table publication error = %v", err)
 	}
 	oldObject, err := reader.QueryObject(ctx, "staged_before")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(oldObject.Definitions) != 1 {
-		t.Fatalf("column-set mismatch cleared the live generation: %+v", oldObject)
+		t.Fatalf("missing staged table replaced the live generation: %+v", oldObject)
 	}
 }
 
@@ -202,6 +216,20 @@ func stagedFullRefreshFixture(t *testing.T) (Config, *DB, string, string) {
 	return cfg, reader, path, dbPath
 }
 
+func openConfiguredDatabase(t *testing.T, cfg Config) *DB {
+	t.Helper()
+	path, err := ConfiguredDatabasePath(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
 func TestScanFullStagedPublishesOnlyCompletedGeneration(t *testing.T) {
 	ctx := context.Background()
 	cfg, reader, sourcePath, dbPath := stagedFullRefreshFixture(t)
@@ -222,26 +250,36 @@ func TestScanFullStagedPublishesOnlyCompletedGeneration(t *testing.T) {
 	if stats.Database != dbPath {
 		t.Fatalf("published database = %q, want %q", stats.Database, dbPath)
 	}
-	after, err := reader.IndexState(ctx)
+	// An in-flight lease remains on its immutable old generation. New callers
+	// resolve the pointer and observe the newly published generation.
+	retained, err := reader.IndexState(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !samePublishedIndexState(before, retained) {
+		t.Fatalf("existing reader changed underneath publication: before=%+v after=%+v", before, retained)
+	}
+	published := openConfiguredDatabase(t, cfg)
+	after, err := published.IndexState(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !after.Ready() || after.Generation != before.Generation+1 || after.Revision == before.Revision {
 		t.Fatalf("staged publication state before=%+v after=%+v", before, after)
 	}
-	oldObject, err := reader.QueryObject(ctx, "staged_before")
+	oldObject, err := published.QueryObject(ctx, "staged_before")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(oldObject.Definitions) != 0 {
 		t.Fatalf("old definition survived staged publication: %+v", oldObject.Definitions)
 	}
-	newObject, err := reader.QueryObject(ctx, "staged_after")
+	newObject, err := published.QueryObject(ctx, "staged_after")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(newObject.Definitions) != 1 {
-		t.Fatalf("new definition not visible through existing reader: %+v", newObject)
+		t.Fatalf("new definition not visible through published reader: %+v", newObject)
 	}
 	leftovers, err := filepath.Glob(filepath.Join(filepath.Dir(dbPath), ".test.sqlite.staging-*.sqlite*"))
 	if err != nil {
@@ -249,6 +287,85 @@ func TestScanFullStagedPublishesOnlyCompletedGeneration(t *testing.T) {
 	}
 	if len(leftovers) != 0 {
 		t.Fatalf("staged database was not cleaned up: %v", leftovers)
+	}
+}
+
+func TestScanFullStagedDoesNotRewriteLiveDatabaseOrGrowItsWAL(t *testing.T) {
+	ctx := context.Background()
+	cfg, _, sourcePath, livePath := stagedFullRefreshFixture(t)
+	beforeDigest := fileDigest(t, livePath)
+	beforeWALSize := int64(0)
+	if info, err := os.Stat(livePath + "-wal"); err == nil {
+		beforeWALSize = info.Size()
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("immutable_publication = {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ScanFullStaged(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if afterDigest := fileDigest(t, livePath); afterDigest != beforeDigest {
+		t.Fatal("full publication rewrote the previously published database")
+	}
+	afterWALSize := int64(0)
+	if info, err := os.Stat(livePath + "-wal"); err == nil {
+		afterWALSize = info.Size()
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if afterWALSize > beforeWALSize {
+		t.Fatalf("full publication grew the live WAL from %d to %d bytes", beforeWALSize, afterWALSize)
+	}
+	publishedPath, err := ConfiguredDatabasePath(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if publishedPath == livePath {
+		t.Fatal("full publication did not switch to an immutable generation")
+	}
+}
+
+func TestScanFullStagedPublishesWhenNoLiveDatabaseExists(t *testing.T) {
+	dir := t.TempDir()
+	project := filepath.Join(dir, "project")
+	sourcePath := filepath.Join(project, "common", "traits", "first.txt")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("first_published_generation = {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{
+		ConfigPath: filepath.Join(dir, "ck3-index.toml"),
+		Database:   "cache/index.sqlite",
+		Sources:    []Source{{Name: "project", Path: project, Rank: 1, Role: SourceRoleProject}},
+	}
+	anchor, err := ConfiguredDatabaseAnchorPath(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ScanFullStaged(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(anchor); !os.IsNotExist(err) {
+		t.Fatalf("first immutable publication unexpectedly created the mutable anchor: %v", err)
+	}
+	published := openConfiguredDatabase(t, cfg)
+	state, err := published.IndexState(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.Ready() || state.Generation != 1 {
+		t.Fatalf("first published state = %+v", state)
+	}
+	object, err := published.QueryObject(context.Background(), "first_published_generation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(object.Definitions) != 1 {
+		t.Fatalf("first published generation is missing its source: %+v", object)
 	}
 }
 
@@ -263,7 +380,8 @@ func TestScanFullStagedCancellationRetainsPublishedGeneration(t *testing.T) {
 	if _, err := ScanFullStaged(ctx, cfg); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled staged scan error = %v, want context.Canceled", err)
 	}
-	after, err := reader.IndexState(context.Background())
+	published := openConfiguredDatabase(t, cfg)
+	after, err := published.IndexState(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,7 +522,8 @@ func TestConcurrentFullRefreshesPublishDistinctGenerations(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	after, err := reader.IndexState(context.Background())
+	published := openConfiguredDatabase(t, cfg)
+	after, err := published.IndexState(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +533,7 @@ func TestConcurrentFullRefreshesPublishDistinctGenerations(t *testing.T) {
 }
 
 func TestConcurrentFullAndFilesRefreshDoNotLoseEitherSourceUpdate(t *testing.T) {
-	cfg, reader, fullPath, _ := stagedFullRefreshFixture(t)
+	cfg, _, fullPath, _ := stagedFullRefreshFixture(t)
 	filesRel := "common/traits/concurrent_files.txt"
 	filesPath := filepath.Join(cfg.Sources[0].Path, filepath.FromSlash(filesRel))
 	if err := os.WriteFile(fullPath, []byte("concurrent_full_value = {}\n"), 0o644); err != nil {
@@ -442,9 +561,10 @@ func TestConcurrentFullAndFilesRefreshDoNotLoseEitherSourceUpdate(t *testing.T) 
 			t.Fatalf("concurrent full/files refresh %d failed: %v", index+1, err)
 		}
 	}
+	published := openConfiguredDatabase(t, cfg)
 
 	for _, id := range []string{"concurrent_full_value", "concurrent_files_value"} {
-		object, err := reader.QueryObject(context.Background(), id)
+		object, err := published.QueryObject(context.Background(), id)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -452,7 +572,7 @@ func TestConcurrentFullAndFilesRefreshDoNotLoseEitherSourceUpdate(t *testing.T) 
 			t.Fatalf("concurrent full/files refresh lost %q: %+v", id, object)
 		}
 	}
-	oldObject, err := reader.QueryObject(context.Background(), "staged_before")
+	oldObject, err := published.QueryObject(context.Background(), "staged_before")
 	if err != nil {
 		t.Fatal(err)
 	}

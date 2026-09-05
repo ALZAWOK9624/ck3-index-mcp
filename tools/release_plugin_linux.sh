@@ -8,6 +8,13 @@ import re, sys
 if re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", sys.argv[1]) is None:
     raise SystemExit("VERSION must contain one release semver without build metadata")
 ' "$version"
+revision=$(git -C "$repo" rev-parse --short=12 HEAD)
+case "$revision" in
+  ''|*[!0-9a-fA-F]*) echo "could not resolve ck3-index source revision" >&2; exit 1 ;;
+esac
+if [ -n "$(git -C "$repo" status --porcelain --untracked-files=normal)" ]; then
+  revision=$revision-dirty
+fi
 
 manifest_version=$(python3 -c '
 import json, sys
@@ -48,11 +55,11 @@ binary="$repo/bin/ck3-index-v$version"
 verify_binary="$repo/bin/ck3-index-v$version.repro-check"
 mkdir -p "$repo/bin" "$repo/cache/third-party" "$repo/cache/plugin-stage-linux" "$repo/cache/release"
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false \
-  -ldflags "-s -w -X ck3-index/internal/buildinfo.Version=$version" \
+  -ldflags "-s -w -X ck3-index/internal/buildinfo.Version=$version -X ck3-index/internal/buildinfo.Revision=$revision" \
   -o "$binary" .
 trap 'rm -f -- "$verify_binary"' 0 HUP INT TERM
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false \
-  -ldflags "-s -w -X ck3-index/internal/buildinfo.Version=$version" \
+  -ldflags "-s -w -X ck3-index/internal/buildinfo.Version=$version -X ck3-index/internal/buildinfo.Revision=$revision" \
   -o "$verify_binary" .
 cmp -s "$binary" "$verify_binary" || {
   echo "REPRODUCIBLE_BUILD_MISMATCH: repeated ck3-index Linux builds differ" >&2
@@ -145,7 +152,7 @@ python3 "$repo/tools/verify_release_mcp.py" \
   --stage "$stage" \
   --platform linux-x64 \
   --config "$config" \
-  --expected-tools 30
+  --expected-tools 37
 
 if [ "$allow_unlicensed" = 1 ] && [ -z "$project_license" ]; then
   archive_suffix=-unlicensed-local-rc

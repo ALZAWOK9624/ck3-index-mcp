@@ -207,14 +207,23 @@ func TestRefreshFullPublishesStagedGeneration(t *testing.T) {
 	if body["operation"] != "full" || body["is_scanning"] != false {
 		t.Fatalf("full refresh response did not finish cleanly: %+v", body)
 	}
-	after, err := db.IndexState(ctx)
+	publishedPath, err := indexer.ConfiguredDatabasePath(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	published, err := indexer.OpenReadOnly(publishedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer published.Close()
+	after, err := published.IndexState(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !after.Ready() || after.Generation != before.Generation+1 || after.Revision == before.Revision {
 		t.Fatalf("full refresh did not publish a new generation: before=%+v after=%+v", before, after)
 	}
-	object, err := db.QueryObject(ctx, "refresh_full_trait")
+	object, err := published.QueryObject(ctx, "refresh_full_trait")
 	if err != nil {
 		t.Fatal(err)
 	}

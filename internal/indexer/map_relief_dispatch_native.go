@@ -3,11 +3,8 @@
 package indexer
 
 /*
-// Deliberately built without -march=native: the loop is scalar either way,
-// and the generic x86-64 baseline has no FMA instruction, which makes fused
-// multiply-add rounding differences structurally impossible instead of
-// luck-dependent. -ffp-contract is disabled by that same instruction-level
-// constraint, so the statement splitting below is a belt to that brace.
+// Keep the scalar fallback on baseline x86-64. SIMD is enabled only on the
+// specialized functions and dispatched after checking CPU and OS support.
 #cgo CFLAGS: -O3
 
 #include <stdint.h>
@@ -19,16 +16,13 @@ package indexer
 // versions are byte-identical to Go's math.Max/math.Min for the finite
 // inputs this kernel produces), and round is replaced by the half-away
 // truncation identity that Go's math.Round uses for non-negative values.
-#pragma GCC optimize ("no-math-errno")
+#pragma GCC optimize ("no-math-errno", "fp-contract=off")
 
-// Mirrors buildMultiScaleReliefGo exactly. Every intermediate is its own
-// statement so that GCC cannot fuse or reassociate multiply-add chains
-// (-ffp-contract=fast is the default at -O2+ and changes rounding; the C99
-// FP_CONTRACT pragma is not honoured by the MinGW build, and cgo rejects the
-// -f/-m flags that would disable it). With every operation an IEEE-754
-// correctly-rounded double add/mul/sub/div, sqrt, min/max or round in the
-// same order as the Go code, the output is byte-for-byte identical to the
-// Go implementation.
+#include "map_relief_simd.h"
+
+// Mirrors buildMultiScaleReliefGo in IEEE-754 operation order. The pragma
+// above disables contraction explicitly; splitting C statements alone is not
+// sufficient to stop a compiler from fusing multiply-add operations.
 
 // Height samples are scaled by 1/65535, exactly like heightField.at in the
 // Go implementation.
@@ -53,14 +47,23 @@ static inline uint8_t gh_round_u8(double v)
 	return (uint8_t)(v + 0.5);
 }
 
-static void gh_relief_band_impl(const uint16_t *field, int width, int height, int y0, int y1,
+// memcpy keeps odd byte strides and unaligned Gray16 subimages defined in C.
+static inline double gh_relief_sample(const uint8_t *p, int big_endian)
+{
+    uint16_t value;
+    memcpy(&value, p, sizeof(value));
+    if (big_endian) value = __builtin_bswap16(value);
+    return (double)value * relief_height_scale;
+}
+
+static void gh_relief_band_impl(const uint8_t *field, int width, int height, int stride, int big_endian, int y0, int y1,
                                 uint8_t *hill, uint8_t *detail, uint8_t *elev,
                                 double keyX, double keyY, double keyZ,
-                                double fillX, double fillY, double fillZ)
+                                double fillX, double fillY, double fillZ, int kernel)
 {
 	for (int y = y0; y < y1; ++y) {
 		// Row pointers clamped once per row; row 5 is the current row.
-		const uint16_t *rp[11];
+		const uint8_t *rp[11];
 		for (int k = 0; k < 11; ++k) {
 			int ry = y + k - 5;
 			if (ry < 0) {
@@ -68,12 +71,22 @@ static void gh_relief_band_impl(const uint16_t *field, int width, int height, in
 			} else if (ry >= height) {
 				ry = height - 1;
 			}
-			rp[k] = field + (size_t)ry * width;
+			rp[k] = field + (size_t)ry * stride;
 		}
 		uint8_t *hillRow = hill + (size_t)y * width;
 		uint8_t *detailRow = detail + (size_t)y * width;
 		uint8_t *elevRow = elev + (size_t)y * width;
+		int vectorEnd = 5;
+		if (kernel == 2 && width >= 18) {
+			vectorEnd = gh_relief_row_avx512(rp, width, hillRow, detailRow, elevRow,
+				keyX, keyY, keyZ, fillX, fillY, fillZ, big_endian);
+		} else if (kernel && width >= 14) {
+			vectorEnd = gh_relief_row_avx2(rp, width, hillRow, detailRow, elevRow,
+				keyX, keyY, keyZ, fillX, fillY, fillZ, big_endian);
+		}
 		for (int x = 0; x < width; ++x) {
+			if (x == 5) x = vectorEnd;
+			if (x >= width) break;
 			const int xm5 = x > 4 ? x - 5 : 0;
 			const int xm4 = x > 3 ? x - 4 : 0;
 			const int xm2 = x > 1 ? x - 2 : 0;
@@ -83,22 +96,22 @@ static void gh_relief_band_impl(const uint16_t *field, int width, int height, in
 			const int xp4 = x < width - 4 ? x + 4 : width - 1;
 			const int xp5 = x < width - 5 ? x + 5 : width - 1;
 
-			const double h0 = (double)rp[5][x] * relief_height_scale;
+			const double h0 = gh_relief_sample(rp[5] + 2*(x), big_endian);
 
-			const double sx1 = (double)rp[5][xp1] * relief_height_scale;
-			const double sxm1 = (double)rp[5][xm1] * relief_height_scale;
+			const double sx1 = gh_relief_sample(rp[5] + 2*(xp1), big_endian);
+			const double sxm1 = gh_relief_sample(rp[5] + 2*(xm1), big_endian);
 			const double dxf = sx1 - sxm1;
 			const double dxFine = dxf * 9.0;
-			const double sy1 = (double)rp[6][x] * relief_height_scale;
-			const double sym1 = (double)rp[4][x] * relief_height_scale;
+			const double sy1 = gh_relief_sample(rp[6] + 2*(x), big_endian);
+			const double sym1 = gh_relief_sample(rp[4] + 2*(x), big_endian);
 			const double dyf = sy1 - sym1;
 			const double dyFine = dyf * 9.0;
-			const double sx4 = (double)rp[5][xp4] * relief_height_scale;
-			const double sxm4 = (double)rp[5][xm4] * relief_height_scale;
+			const double sx4 = gh_relief_sample(rp[5] + 2*(xp4), big_endian);
+			const double sxm4 = gh_relief_sample(rp[5] + 2*(xm4), big_endian);
 			const double dxb = sx4 - sxm4;
 			const double dxBroad = dxb * 2.25;
-			const double sy4 = (double)rp[9][x] * relief_height_scale;
-			const double sym4 = (double)rp[1][x] * relief_height_scale;
+			const double sy4 = gh_relief_sample(rp[9] + 2*(x), big_endian);
+			const double sym4 = gh_relief_sample(rp[1] + 2*(x), big_endian);
 			const double dyb = sy4 - sym4;
 			const double dyBroad = dyb * 2.25;
 
@@ -139,10 +152,10 @@ static void gh_relief_band_impl(const uint16_t *field, int width, int height, in
 			const double sh2 = 0.28 * fill;
 			const double shadeBase = sh1 + sh2;
 
-			const double bm1 = (double)rp[5][xm5] * relief_height_scale;
-			const double bm2 = (double)rp[5][xp5] * relief_height_scale;
-			const double bm3 = (double)rp[0][x] * relief_height_scale;
-			const double bm4 = (double)rp[10][x] * relief_height_scale;
+			const double bm1 = gh_relief_sample(rp[5] + 2*(xm5), big_endian);
+			const double bm2 = gh_relief_sample(rp[5] + 2*(xp5), big_endian);
+			const double bm3 = gh_relief_sample(rp[0] + 2*(x), big_endian);
+			const double bm4 = gh_relief_sample(rp[10] + 2*(x), big_endian);
 			// Left-to-right, exactly as Go evaluates a+b+c+d. Summing the
 			// two axes separately and adding the pairs is a different
 			// IEEE-754 rounding and drifts one ULP, which survives the x42
@@ -152,10 +165,10 @@ static void gh_relief_band_impl(const uint16_t *field, int width, int height, in
 			const double bm6 = bm5 + bm3;
 			const double bm7 = bm6 + bm4;
 			const double broadMean = bm7 / 4.0;
-			const double fm1 = (double)rp[5][xm2] * relief_height_scale;
-			const double fm2 = (double)rp[5][xp2] * relief_height_scale;
-			const double fm3 = (double)rp[3][x] * relief_height_scale;
-			const double fm4 = (double)rp[7][x] * relief_height_scale;
+			const double fm1 = gh_relief_sample(rp[5] + 2*(xm2), big_endian);
+			const double fm2 = gh_relief_sample(rp[5] + 2*(xp2), big_endian);
+			const double fm3 = gh_relief_sample(rp[3] + 2*(x), big_endian);
+			const double fm4 = gh_relief_sample(rp[7] + 2*(x), big_endian);
 			const double fm5 = fm1 + fm2;
 			const double fm6 = fm5 + fm3;
 			const double fm7 = fm6 + fm4;
@@ -202,6 +215,8 @@ import (
 	"runtime"
 	"sync"
 	"unsafe"
+
+	"golang.org/x/sys/cpu"
 )
 
 // buildMultiScaleRelief dispatches to the C implementation above when built
@@ -210,9 +225,21 @@ import (
 // add/mul/div/sqrt/min/max/round, which keeps the output byte-for-byte
 // identical to the pure-Go implementation.
 func buildMultiScaleRelief(heightmap image.Image) (*image.Gray, *image.Gray, *image.Gray) {
+	kernel := 0
+	if cpu.X86.HasAVX2 {
+		kernel = 1
+		if cpu.X86.HasAVX512F && cpu.X86.HasAVX512BW && cpu.X86.HasAVX512DQ {
+			kernel = 2
+		}
+	}
+	return buildMultiScaleReliefNative(heightmap, kernel)
+}
+
+// kernel 0 is scalar, 1 is AVX2, and 2 is AVX-512. The caller must check
+// CPU/OS support before selecting a nonzero mode.
+func buildMultiScaleReliefNative(heightmap image.Image, kernel int) (*image.Gray, *image.Gray, *image.Gray) {
 	bounds := heightmap.Bounds()
 	width, height := bounds.Dx(), bounds.Dy()
-	field := newHeightField(heightmap)
 	hillshade := image.NewGray(image.Rect(0, 0, width, height))
 	detail := image.NewGray(image.Rect(0, 0, width, height))
 	elevation := image.NewGray(image.Rect(0, 0, width, height))
@@ -220,7 +247,24 @@ func buildMultiScaleRelief(heightmap image.Image) (*image.Gray, *image.Gray, *im
 		return hillshade, detail, elevation
 	}
 
+	var fieldData unsafe.Pointer
+	stride, bigEndian := width*2, 0
+	if gray, ok := heightmap.(*image.Gray16); ok {
+		// PNG heightmaps already contain every sample we need. Load and
+		// byte-swap them in SIMD registers instead of copying a full raster.
+		fieldData = unsafe.Pointer(&gray.Pix[0])
+		stride, bigEndian = gray.Stride, 1
+	} else {
+		field := newHeightField(heightmap)
+		fieldData = unsafe.Pointer(&field.values[0])
+	}
+
 	workers := runtime.GOMAXPROCS(0)
+	// A cgo call and goroutine per row cost more than the shader on thumbnails.
+	// Give each worker at least 64K pixels before adding another worker.
+	if useful := width * height / (64 << 10); workers > useful {
+		workers = useful
+	}
 	if workers > height {
 		workers = height
 	}
@@ -228,6 +272,22 @@ func buildMultiScaleRelief(heightmap image.Image) (*image.Gray, *image.Gray, *im
 		workers = 1
 	}
 	bandSize := (height + workers - 1) / workers
+	runBand := func(y0, y1 int) {
+		C.gh_relief_band_impl(
+			(*C.uint8_t)(fieldData),
+			C.int(width), C.int(height), C.int(stride), C.int(bigEndian), C.int(y0), C.int(y1),
+			(*C.uint8_t)(unsafe.Pointer(&hillshade.Pix[0])),
+			(*C.uint8_t)(unsafe.Pointer(&detail.Pix[0])),
+			(*C.uint8_t)(unsafe.Pointer(&elevation.Pix[0])),
+			C.double(reliefKeyLight.X), C.double(reliefKeyLight.Y), C.double(reliefKeyLight.Z),
+			C.double(reliefFillLight.X), C.double(reliefFillLight.Y), C.double(reliefFillLight.Z),
+			C.int(kernel),
+		)
+	}
+	if workers == 1 {
+		runBand(0, height)
+		return hillshade, detail, elevation
+	}
 	var wg sync.WaitGroup
 	for start := 0; start < height; start += bandSize {
 		end := start + bandSize
@@ -237,15 +297,7 @@ func buildMultiScaleRelief(heightmap image.Image) (*image.Gray, *image.Gray, *im
 		wg.Add(1)
 		go func(y0, y1 int) {
 			defer wg.Done()
-			C.gh_relief_band_impl(
-				(*C.uint16_t)(unsafe.Pointer(&field.values[0])),
-				C.int(width), C.int(height), C.int(y0), C.int(y1),
-				(*C.uint8_t)(unsafe.Pointer(&hillshade.Pix[0])),
-				(*C.uint8_t)(unsafe.Pointer(&detail.Pix[0])),
-				(*C.uint8_t)(unsafe.Pointer(&elevation.Pix[0])),
-				C.double(reliefKeyLight.X), C.double(reliefKeyLight.Y), C.double(reliefKeyLight.Z),
-				C.double(reliefFillLight.X), C.double(reliefFillLight.Y), C.double(reliefFillLight.Z),
-			)
+			runBand(y0, y1)
 		}(start, end)
 	}
 	wg.Wait()

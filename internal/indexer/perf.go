@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"ck3-index/internal/buildinfo"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -32,6 +33,8 @@ type BenchQuery struct {
 type HealthReport struct {
 	Status                       string            `json:"status"`
 	Depth                        string            `json:"depth,omitempty"`
+	BinaryVersion                string            `json:"binary_version"`
+	BinaryRevision               string            `json:"binary_revision"`
 	Database                     string            `json:"-"`
 	DatabaseMB                   float64           `json:"database_mb"`
 	DatabaseVersion              string            `json:"database_version,omitempty"`
@@ -412,6 +415,8 @@ func (db *DB) health(ctx context.Context, configuredPath string, depth HealthDep
 	report := HealthReport{
 		Status:                "ok",
 		Depth:                 string(depth),
+		BinaryVersion:         buildinfo.Version,
+		BinaryRevision:        buildinfo.Revision,
 		Database:              dbPath,
 		DatabaseMB:            fileSizeMB(dbPath),
 		DatabaseVersion:       version,
@@ -460,7 +465,7 @@ func (db *DB) health(ctx context.Context, configuredPath string, depth HealthDep
 	}
 	semanticFTSReady := db.tableExists(ctx, "search_fts") && db.sql.QueryRowContext(ctx, `SELECT count(*) FROM search_fts WHERE search_fts MATCH 'ck3indexhealthtoken'`).Scan(new(int)) == nil
 	scriptFTSReady := db.tableExists(ctx, "script_text_fts") && db.sql.QueryRowContext(ctx, `SELECT count(*) FROM script_text_fts WHERE script_text_fts MATCH 'ck3indexhealthtoken'`).Scan(new(int)) == nil
-	trigramFTSReady := db.tableExists(ctx, "trigram_loc") && db.sql.QueryRowContext(ctx, `SELECT count(*) FROM trigram_loc WHERE trigram_loc MATCH 'ck3indexhealthtoken'`).Scan(new(int)) == nil
+	trigramFTSReady := db.tableExists(ctx, "trigram_loc") && db.sql.QueryRowContext(ctx, `SELECT count(*) FROM trigram_loc WHERE trigram_loc MATCH ?`, localizationTrigramCandidates("ck3indexhealthtoken")).Scan(new(int)) == nil
 	if semanticFTSReady && scriptFTSReady && trigramFTSReady {
 		report.FTS5Available = true
 	} else {

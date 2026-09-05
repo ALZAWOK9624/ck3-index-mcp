@@ -756,6 +756,65 @@ func databaseManagerTestConfig(firstPath, secondPath string) indexer.Config {
 	}
 }
 
+func TestDatabaseManagerReloadsImmutablePublishedGeneration(t *testing.T) {
+	dir := t.TempDir()
+	firstPath := createReadyMCPDatabase(t, dir, "first.sqlite", 1)
+	generationName := ".first.sqlite.generation-2-0123456789abcdef.sqlite"
+	generationPath := createReadyMCPDatabase(t, dir, generationName, 2)
+	cfg := databaseManagerTestConfig(firstPath, "")
+	cfg.MCPDatabases = nil
+	first, err := indexer.OpenReadOnly(firstPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := newMCPDatabaseManager(cfg, firstPath, first)
+	if err != nil {
+		_ = first.Close()
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	oldLease, err := manager.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer oldLease.Release()
+	if err := os.WriteFile(firstPath+".current", []byte(filepath.Base(generationPath)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := manager.ReloadCurrent(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reloaded.Release()
+	newState, err := reloaded.DB.IndexState(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldState, err := oldLease.DB.IndexState(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newState.Generation != 2 || oldState.Generation != 1 {
+		t.Fatalf("immutable reload states old=%+v new=%+v", oldState, newState)
+	}
+	if reloaded.Identity.Epoch != 2 || reloaded.Identity.databasePath != generationPath {
+		t.Fatalf("reload identity = %+v", reloaded.Identity)
+	}
+	newLease, err := manager.Acquire()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer newLease.Release()
+	if newLease.Identity.databasePath != generationPath {
+		t.Fatalf("new lease remained on %q, want %q", newLease.Identity.databasePath, generationPath)
+	}
+	oldLease.Release()
+	if _, err := os.Stat(firstPath); !os.IsNotExist(err) {
+		t.Fatalf("retired database generation was not reclaimed after its last lease: %v", err)
+	}
+}
+
 func createReadyMCPDatabase(t *testing.T, dir, name string, generation int64) string {
 	t.Helper()
 	path := filepath.Join(dir, name)

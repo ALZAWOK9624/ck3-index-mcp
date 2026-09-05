@@ -68,15 +68,19 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 	if err != nil {
 		return ScanStats{}, err
 	}
-	dbPath, err := ConfiguredDatabasePath(cfg)
+	anchorPath, err := ConfiguredDatabaseAnchorPath(cfg)
 	if err != nil {
 		return ScanStats{}, err
 	}
-	lock, err := acquirePublicationLock(ctx, dbPath)
+	lock, err := acquirePublicationLock(ctx, anchorPath)
 	if err != nil {
 		return ScanStats{}, err
 	}
 	defer lock.Close()
+	dbPath, err := ConfiguredDatabasePath(cfg)
+	if err != nil {
+		return ScanStats{}, err
+	}
 	db, err := OpenWithOptions(dbPath, normalized.SQLiteReadOptions())
 	if err != nil {
 		return ScanStats{}, err
@@ -423,7 +427,7 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 			if _, err := tx.ExecContext(ctx, `DELETE FROM diagnostics WHERE source='validator'`); err != nil {
 				return ScanStats{}, err
 			}
-			if err := addValidationDiagnostics(ctx, tx, src.Rank, locKeys, objectNames, evidence); err != nil {
+			if err := addValidationDiagnostics(ctx, tx, src.Rank); err != nil {
 				return ScanStats{}, err
 			}
 			if err := refreshTitleIntegrityDiagnostics(ctx, tx); err != nil {
@@ -634,6 +638,7 @@ func (db *DB) fileRecordsByProjectRel(ctx context.Context, sourceRank int) (map[
 }
 
 func prepareScanWriter(ctx context.Context, tx *sql.Tx) (scanWriter, func(), error) {
+	batches := &scanBatchWriter{Tx: tx, statements: make(map[string]*sql.Stmt, 6)}
 	var stmts []*sql.Stmt
 	prep := func(query string) (*sql.Stmt, error) {
 		stmt, err := tx.PrepareContext(ctx, query)
@@ -644,6 +649,7 @@ func prepareScanWriter(ctx context.Context, tx *sql.Tx) (scanWriter, func(), err
 		return stmt, nil
 	}
 	closeFn := func() {
+		batches.close()
 		for _, stmt := range stmts {
 			_ = stmt.Close()
 		}
@@ -670,6 +676,7 @@ func prepareScanWriter(ctx context.Context, tx *sql.Tx) (scanWriter, func(), err
 		return scanWriter{}, nil, err
 	}
 	return scanWriter{
+		batches:    batches,
 		tx:         tx,
 		fileStmt:   fileStmt,
 		diagStmt:   diagStmt,

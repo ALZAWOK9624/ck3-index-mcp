@@ -656,14 +656,37 @@ func missingTrigramIndex(err error) bool {
 }
 
 func (db *DB) searchLocalizationValuesTrigram(ctx context.Context, query string, opts SearchOptions, limit int) ([]LLMEvidence, error) {
-	trimmed := strings.TrimSpace(query)
-	match := `"` + strings.ReplaceAll(trimmed, `"`, `""`) + `"`
+	match := localizationTrigramCandidates(query)
 	rows, err := db.sql.QueryContext(ctx, `SELECT l.key,l.source_name,f.rel_path,l.line,l.language,l.value FROM trigram_loc t JOIN localization l ON l.id=t.rowid JOIN files f ON f.id=l.file_id WHERE trigram_loc MATCH ? AND instr(l.value,?)>0 AND f.overridden=0 AND (?='' OR l.source_name=?) AND (?='' OR f.rel_path LIKE ?) ORDER BY l.source_rank,l.key LIMIT ?`, match, query, opts.Source, opts.Source, opts.PathPrefix, escapeLike(opts.PathPrefix)+"%", limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	return scanLocalizationEvidence(rows)
+}
+
+// Intersect a bounded sample of three-rune tokens, then let instr() check the
+// exact original substring. This works with both legacy positional FTS and
+// compact detail=none indexes. Order, repetition, whitespace and case remain
+// exact because candidates never bypass the final substring check.
+func localizationTrigramCandidates(query string) string {
+	runes := []rune(strings.TrimSpace(query))
+	windows := len(runes) - 2
+	count := min(windows, 8)
+	terms := make([]string, 0, max(count, 0))
+	seen := map[string]bool{}
+	for i := 0; i < count; i++ {
+		start := 0
+		if count > 1 {
+			start = i * (windows - 1) / (count - 1)
+		}
+		token := string(runes[start : start+3])
+		if !seen[token] {
+			terms = append(terms, `"`+strings.ReplaceAll(token, `"`, `""`)+`"`)
+			seen[token] = true
+		}
+	}
+	return strings.Join(terms, " AND ")
 }
 
 func scanLocalizationEvidence(rows *sql.Rows) ([]LLMEvidence, error) {

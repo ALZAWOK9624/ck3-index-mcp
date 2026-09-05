@@ -381,24 +381,26 @@ static void gh_sha256_bytes_hex(const uint8_t *data, uint64_t len, char out[65])
 // faster than Go's os.Open + io.CopyBuffer equivalent on the same corpus.
 // Returns 0 on success, a Win32 error code otherwise (in errout).
 #define GH_SHA_READ_BUFFER (4 << 20)
+#define GH_SHA_SMALL_BUFFER (64 << 10)
 
-static int gh_sha256_file_hex(const char *path_utf8, char out[65], uint32_t *errout)
+static int gh_sha256_file_hex(const char *path_utf8, int path_len, char out[65], uint32_t *errout)
 {
-	int wlen = MultiByteToWideChar(CP_UTF8, 0, path_utf8, -1, NULL, 0);
-	if (wlen <= 0) {
-		*errout = (uint32_t)GetLastError();
-		return -1;
-	}
-	wchar_t *wpath = (wchar_t *)malloc((size_t)wlen * sizeof(wchar_t));
+	// UTF-16 needs no more code units than UTF-8 has bytes. Convert directly
+	// into stack storage for normal paths, without a sizing pass or CString.
+	wchar_t short_path[512];
+	wchar_t *wpath = path_len < 512 ? short_path :
+		(wchar_t *)malloc(((size_t)path_len + 1) * sizeof(wchar_t));
 	if (!wpath) {
 		*errout = (uint32_t)ERROR_NOT_ENOUGH_MEMORY;
 		return -1;
 	}
-	if (MultiByteToWideChar(CP_UTF8, 0, path_utf8, -1, wpath, wlen) <= 0) {
+	int wlen = MultiByteToWideChar(CP_UTF8, 0, path_utf8, path_len, wpath, path_len);
+	if (wlen <= 0) {
 		*errout = (uint32_t)GetLastError();
-		free(wpath);
+		if (wpath != short_path) free(wpath);
 		return -1;
 	}
+	wpath[wlen] = 0;
 	// Share write and delete as well as read. Denying them made hashing fail
 	// outright whenever an editor held the file open, and editors that save
 	// through a temporary file plus rename need DELETE sharing too. The torn
@@ -409,7 +411,7 @@ static int gh_sha256_file_hex(const char *path_utf8, char out[65], uint32_t *err
 		FILE_FLAG_SEQUENTIAL_SCAN, NULL);
 	if (h == INVALID_HANDLE_VALUE) {
 		*errout = (uint32_t)GetLastError();
-		free(wpath);
+		if (wpath != short_path) free(wpath);
 		return -1;
 	}
 	BY_HANDLE_FILE_INFORMATION beforeInfo;
@@ -418,10 +420,18 @@ static int gh_sha256_file_hex(const char *path_utf8, char out[65], uint32_t *err
 	// every scan worker -- parseOneFile runs on up to sixteen goroutines --
 	// and they would overwrite each other's bytes, producing digests that are
 	// wrong rather than merely slow.
-	uint8_t *buf = (uint8_t *)malloc(GH_SHA_READ_BUFFER);
+	// Most resources are small. Avoid a 4 MiB heap allocation for every icon
+	// and empty file. Still read until EOF even if the initial size was small;
+	// the identity/size/mtime checks below must catch a file growing mid-read.
+	uint8_t small_buf[GH_SHA_SMALL_BUFFER];
+	uint64_t file_size = haveBefore ?
+		((uint64_t)beforeInfo.nFileSizeHigh << 32) | beforeInfo.nFileSizeLow : GH_SHA_READ_BUFFER;
+	DWORD buffer_size = file_size <= GH_SHA_SMALL_BUFFER ? GH_SHA_SMALL_BUFFER :
+		(file_size < GH_SHA_READ_BUFFER ? (DWORD)file_size : GH_SHA_READ_BUFFER);
+	uint8_t *buf = buffer_size == GH_SHA_SMALL_BUFFER ? small_buf : (uint8_t *)malloc(buffer_size);
 	if (!buf) {
 		CloseHandle(h);
-		free(wpath);
+		if (wpath != short_path) free(wpath);
 		*errout = (uint32_t)ERROR_NOT_ENOUGH_MEMORY;
 		return -1;
 	}
@@ -434,7 +444,7 @@ static int gh_sha256_file_hex(const char *path_utf8, char out[65], uint32_t *err
 		// error it may leave got at zero, which is indistinguishable from a
 		// clean end of file. Testing GetLastError() after the loop instead
 		// would report a truncated read as a successful hash.
-		if (!ReadFile(h, buf, GH_SHA_READ_BUFFER, &got, NULL)) {
+		if (!ReadFile(h, buf, buffer_size, &got, NULL)) {
 			*errout = (uint32_t)GetLastError();
 			failed = 1;
 			break;
@@ -444,7 +454,7 @@ static int gh_sha256_file_hex(const char *path_utf8, char out[65], uint32_t *err
 		}
 		gh_sha256_ctx_update(&ctx, buf, (uint64_t)got);
 	}
-	free(buf);
+	if (buf != small_buf) free(buf);
 	BY_HANDLE_FILE_INFORMATION afterInfo;
 	int haveAfter = GetFileInformationByHandle(h, &afterInfo) != 0;
 	// Size and mtime on h only identify the object this handle kept open. An
@@ -460,7 +470,7 @@ static int gh_sha256_file_hex(const char *path_utf8, char out[65], uint32_t *err
 	if (current != INVALID_HANDLE_VALUE) {
 		CloseHandle(current);
 	}
-	free(wpath);
+	if (wpath != short_path) free(wpath);
 	CloseHandle(h);
 	if (failed) {
 		return -1;
@@ -497,6 +507,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"strings"
 	"sync"
 	"unsafe"
 )
@@ -546,11 +557,12 @@ func sha256FileHex(path string) (sum string, ok bool, err error) {
 		sum, err = goSHA256FileHex(path)
 		return sum, false, err
 	}
-	cPath := C.CString(path)
-	defer C.free(unsafe.Pointer(cPath))
+	if len(path) == 0 || len(path) > 1<<31-1 || strings.IndexByte(path, 0) >= 0 {
+		return "", true, &fs.PathError{Op: "hash", Path: path, Err: fs.ErrInvalid}
+	}
 	var out [65]C.char
 	var errout C.uint32_t
-	rc := C.gh_sha256_file_hex(cPath, &out[0], &errout)
+	rc := C.gh_sha256_file_hex((*C.char)(unsafe.Pointer(unsafe.StringData(path))), C.int(len(path)), &out[0], &errout)
 	if rc == -2 {
 		return "", true, &fs.PathError{Op: "hash", Path: path, Err: errFileChangedWhileHashing}
 	}
@@ -585,20 +597,11 @@ func sha256BytesHex(data []byte) (sum string, ok bool) {
 		return hex.EncodeToString(digest[:]), false
 	}
 	if len(data) == 0 {
-		// Empty input still needs the C path for byte-identical results;
-		// pass a valid pointer via the slice's data pointer (nil is fine too,
-		// but keep the length explicit).
-		return nativeHashBytesEmpty(), true
+		return "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", true
 	}
 	var out [65]C.char
 	C.gh_sha256_bytes_hex((*C.uint8_t)(unsafe.Pointer(&data[0])), C.uint64_t(len(data)), &out[0])
 	return C.GoString(&out[0]), true
-}
-
-func nativeHashBytesEmpty() string {
-	var out [65]C.char
-	C.gh_sha256_bytes_hex(nil, 0, &out[0])
-	return C.GoString(&out[0])
 }
 
 // nativeSHA256Chunked drives the streaming path over caller-chosen chunk

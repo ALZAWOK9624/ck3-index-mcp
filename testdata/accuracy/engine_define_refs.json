@@ -1,0 +1,29 @@
+{
+  "name": "engine define references are validated against engine data and active defines",
+  "files": [
+    {
+      "path": "common/defines/edr_defines.txt",
+      "content": "NAccuracy = {\n\tDECLARED_VALUE = 5\n}\n"
+    },
+    {
+      "path": "common/script_values/edr_values.txt",
+      "content": "edr_declared = {\n\tvalue = @NAccuracy|DECLARED_VALUE\n}\nedr_typo = {\n\tvalue = @NAccuracy|MISSPELLED_VALUE\n}\nedr_unknown_engine = {\n\tvalue = @NAI|ACCURACY_NOT_A_REAL_DEFINE\n}\n"
+    }
+  ],
+  "expect_diagnostics": [
+    {
+      "code": "unknown_define",
+      "contains": "@NAccuracy|MISSPELLED_VALUE"
+    },
+    {
+      "code": "unknown_define",
+      "contains": "@NAI|ACCURACY_NOT_A_REAL_DEFINE"
+    }
+  ],
+  "reject_diagnostics": [
+    {
+      "code": "unknown_define",
+      "contains": "@NAccuracy|DECLARED_VALUE"
+    }
+  ]
+}

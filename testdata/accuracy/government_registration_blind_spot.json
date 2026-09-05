@@ -1,0 +1,24 @@
+{
+  "name": "missing GOVERNMENT_TYPES source layer is a blind spot not an unregistered government",
+  "files": [
+    {
+      "path": "common/governments/grb_governments.txt",
+      "content": "grb_upstream_government = {\n\tfallback = 1\n}\ngrb_second_government = {\n\tfallback = 2\n}\n"
+    }
+  ],
+  "expect_diagnostics": [
+    {
+      "code": "government_registration_unverifiable"
+    }
+  ],
+  "reject_diagnostics": [
+    {
+      "code": "unregistered_government_type",
+      "contains": "grb_upstream_government"
+    },
+    {
+      "code": "unregistered_government_type",
+      "contains": "grb_second_government"
+    }
+  ]
+}

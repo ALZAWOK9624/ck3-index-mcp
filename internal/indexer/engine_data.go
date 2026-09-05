@@ -564,7 +564,9 @@ func rebuildTrigramLoc(ctx context.Context, execer contextExecer) error {
 	if _, err := execer.ExecContext(ctx, `DROP TABLE IF EXISTS trigram_loc`); err != nil {
 		return fmt.Errorf("trigram FTS5 unavailable: %w", err)
 	}
-	if _, err := execer.ExecContext(ctx, `CREATE VIRTUAL TABLE trigram_loc USING fts5(value, content='', contentless_delete=1, tokenize='trigram')`); err != nil {
+	// Substring searches verify the original value with instr(); token positions
+	// are redundant. detail=none stores document membership only.
+	if _, err := execer.ExecContext(ctx, `CREATE VIRTUAL TABLE trigram_loc USING fts5(value, content='', contentless_delete=1, detail=none, tokenize='trigram')`); err != nil {
 		return fmt.Errorf("trigram FTS5 unavailable: %w", err)
 	}
 	if _, err := execer.ExecContext(ctx, `INSERT INTO trigram_loc(rowid,value)

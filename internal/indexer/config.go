@@ -23,7 +23,7 @@ type Config struct {
 	// BaseDatabase is an optional prebuilt index holding only the immutable
 	// upstream layers. A full refresh seeds from it instead of reparsing those
 	// trees, so two projects that share the same game/mod sources pay that cost
-	// once. Empty means every full refresh parses every source.
+	// once. A compatible published generation is preferred when available.
 	BaseDatabase           string
 	EngineLogs             string
 	ArtifactRoot           string
@@ -72,6 +72,9 @@ type Config struct {
 	MCPDatabases           []MCPDatabaseTarget
 	Sources                []Source
 	ForceClean             bool
+	// Full staged refreshes verify all file bytes before reusing derived rows.
+	// This is internal execution state, never a TOML option.
+	verifyContent bool
 }
 
 type MCPDatabaseTarget struct {
@@ -788,11 +791,12 @@ func validateSources(sources []Source) error {
 	return err
 }
 
-// ConfiguredDatabasePath is the single authority for resolving the index
-// database used by scans, CLI commands, and MCP. A relative path is always
-// anchored to the configuration file; it is never interpreted relative to the
-// caller's current working directory.
-func ConfiguredDatabasePath(cfg Config) (string, error) {
+// ConfiguredDatabaseAnchorPath resolves the stable path named by the
+// configuration. Full refreshes publish immutable generation files next to
+// this anchor and atomically move a small pointer between them; publication
+// locks and orphan sweeps must therefore use the anchor rather than whichever
+// generation is current at one instant.
+func ConfiguredDatabaseAnchorPath(cfg Config) (string, error) {
 	value := strings.TrimSpace(cfg.Database)
 	if value == "" {
 		return "", fmt.Errorf("database is not configured")
@@ -805,6 +809,18 @@ func ConfiguredDatabasePath(cfg Config) (string, error) {
 		return "", fmt.Errorf("relative database path requires a configuration file")
 	}
 	return filepath.Clean(filepath.Join(filepath.Dir(cfg.ConfigPath), native)), nil
+}
+
+// ConfiguredDatabasePath is the single authority for resolving the currently
+// published index database used by scans, CLI commands, and MCP. A relative
+// configured path is always anchored to the configuration file; it is never
+// interpreted relative to the caller's current working directory.
+func ConfiguredDatabasePath(cfg Config) (string, error) {
+	anchor, err := ConfiguredDatabaseAnchorPath(cfg)
+	if err != nil {
+		return "", err
+	}
+	return resolvePublishedDatabasePath(anchor)
 }
 
 func resolveConfigPath(baseDir, value string) string {

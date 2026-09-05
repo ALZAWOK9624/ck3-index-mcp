@@ -223,8 +223,8 @@ func (db *DB) QueryGUI(ctx context.Context, options GUIQueryOptions) (GUIQueryRe
 		if previewFormat == "" {
 			previewFormat = "png"
 		}
-		if previewFormat != "png" && previewFormat != "html" && previewFormat != "both" {
-			return result, fmt.Errorf("GUI preview format %q is invalid; expected png, html, or both", options.Format)
+		if previewFormat != "png" && previewFormat != "visual" && previewFormat != "html" && previewFormat != "both" {
+			return result, fmt.Errorf("GUI preview format %q is invalid; expected png, visual, html, or both", options.Format)
 		}
 		htmlMode := strings.ToLower(strings.TrimSpace(options.HTMLMode))
 		if htmlMode == "" {
@@ -233,7 +233,7 @@ func (db *DB) QueryGUI(ctx context.Context, options GUIQueryOptions) (GUIQueryRe
 		if htmlMode != GUIHTMLModeStatic && htmlMode != GUIHTMLModeInspector {
 			return result, fmt.Errorf("GUI HTML mode %q is invalid; expected static or inspector", options.HTMLMode)
 		}
-		if previewFormat == "png" && strings.TrimSpace(options.HTMLMode) != "" {
+		if (previewFormat == "png" || previewFormat == "visual") && strings.TrimSpace(options.HTMLMode) != "" {
 			return result, fmt.Errorf("GUI HTML mode requires preview format html or both")
 		}
 		language, err := normalizeGUIPreviewLanguage(options.Language)
@@ -277,7 +277,19 @@ func (db *DB) QueryGUI(ctx context.Context, options GUIQueryOptions) (GUIQueryRe
 			if err != nil {
 				return result, err
 			}
-			preview, err := BuildGUIPreviewScene(result.Query, symbolKind, source, element, options.Width, options.Height, guiQueryNodeLimit(limit))
+			// The node budget is not the evidence-item cap. A window's own
+			// widgets are a minority of its nodes once vanilla tooltip
+			// subtrees are pulled in, so the preview reads the caller's
+			// raw limit rather than the value already clamped for lists.
+			previewNodeLimit := options.Limit
+			if previewNodeLimit <= 0 {
+				previewNodeLimit = limit
+			}
+			buildScene := BuildGUIPreviewScene
+			if previewFormat == "visual" {
+				buildScene = BuildGUIPreviewSceneWithoutOverlays
+			}
+			preview, err := buildScene(result.Query, symbolKind, source, element, options.Width, options.Height, guiQueryNodeLimit(previewNodeLimit))
 			if err != nil {
 				return result, err
 			}
@@ -302,7 +314,15 @@ func (db *DB) QueryGUI(ctx context.Context, options GUIQueryOptions) (GUIQueryRe
 			// construction and again after localization, runtime facts,
 			// scenario values, and model rows meant every request paid for two
 			// PNG encodes, including format=html which then discarded both.
-			if previewFormat == "png" || previewFormat == "both" {
+			if previewFormat == "visual" {
+				rasterTextures, err := db.loadGUIRasterTextures(ctx, &preview)
+				if err != nil {
+					return result, err
+				}
+				if err := refreshGUIVisualPNG(&preview, rasterTextures); err != nil {
+					return result, err
+				}
+			} else if previewFormat == "png" || previewFormat == "both" {
 				if err := refreshGUIPreviewPNG(&preview); err != nil {
 					return result, err
 				}
@@ -784,8 +804,8 @@ func guiQueryNodeLimit(limit int) int {
 	if nodes < 20 {
 		nodes = 20
 	}
-	if nodes > 500 {
-		nodes = 500
+	if nodes > GUIPreviewMaxNodes {
+		nodes = GUIPreviewMaxNodes
 	}
 	return nodes
 }

@@ -20,10 +20,15 @@ func refreshHistoryCharacterNameDiagnostics(ctx context.Context, tx *sql.Tx) err
 		WHERE source='validator' AND code='history_character_name_localization_missing'`); err != nil {
 		return err
 	}
-	locKeys, err := activeLocalizationKeys(ctx, tx)
+	// Only history names need checking. Materializing every localization key
+	// scanned millions of unrelated translations on each single-file refresh.
+	locLookup, err := tx.PrepareContext(ctx, `SELECT EXISTS(SELECT 1 FROM localization l
+		JOIN files f ON f.id=l.file_id WHERE l.key=? AND f.overridden=0)`)
 	if err != nil {
 		return err
 	}
+	defer locLookup.Close()
+	locKeys := map[string]bool{}
 	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT of.file_id,of.path,of.line
 		FROM object_fields of
 		JOIN objects o ON o.object_type=of.object_type AND o.name=of.object_name AND o.file_id=of.file_id
@@ -57,7 +62,18 @@ func refreshHistoryCharacterNameDiagnostics(ctx context.Context, tx *sql.Tx) err
 			continue
 		}
 		match := unquotedCharacterHistoryName.FindStringSubmatch(lines[line-1])
-		if match == nil || locKeys[match[1]] {
+		if match == nil {
+			continue
+		}
+		key := match[1]
+		exists, checked := locKeys[key]
+		if !checked {
+			if err := locLookup.QueryRowContext(ctx, key).Scan(&exists); err != nil {
+				return err
+			}
+			locKeys[key] = exists
+		}
+		if exists {
 			continue
 		}
 		insertDiag(ctx, tx, "validator", "warning", "history_character_name_localization_missing",
@@ -98,6 +114,10 @@ func refreshVariableWriteOnlyDiagnostics(ctx context.Context, tx *sql.Tx, projec
 	// is correct but becomes quadratic on the vanilla index (which has hundreds
 	// of thousands of edges); the two bounded scans below keep the finalizer
 	// linear in the active variable edges.
+	// A prefix read such as global_var:name, local_var:name or dead_var:name
+	// carries no relation; it is a read by construction. Missing these
+	// spellings turned every variable written with set_local_variable or
+	// set_dead_character_variable into a false write-only finding.
 	readRows, err := tx.QueryContext(ctx, `SELECT DISTINCT r.ref_name
 		FROM refs r JOIN files f ON f.id=r.file_id
 		WHERE f.overridden=0 AND (
@@ -106,7 +126,7 @@ func refreshVariableWriteOnlyDiagnostics(ctx context.Context, tx *sql.Tx, projec
 				'clamp_variable','clear_variable','localization_read'
 			))
 			OR
-			(r.ref_kind='global_var' AND r.relation IN ('','localization_read'))
+			(r.ref_kind IN ('global_var','local_var','dead_var') AND r.relation IN ('','localization_read'))
 		)`)
 	if err != nil {
 		return err

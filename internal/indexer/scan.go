@@ -61,7 +61,8 @@ type ScanStats struct {
 	// BaseSeed is populated by a staged full refresh so a caller can tell a
 	// cheap seeded rebuild apart from one that reparsed every source, and can
 	// see why a configured base was rejected.
-	BaseSeed *BaseSeedResult `json:"base_seed,omitempty"`
+	BaseSeed         *BaseSeedResult `json:"base_seed,omitempty"`
+	ReusedGeneration bool            `json:"reused_generation,omitempty"`
 }
 
 // BaseSeedResult explains what a staged full refresh did with base_database.
@@ -89,6 +90,7 @@ type RefreshPathOutcome struct {
 }
 
 type scanWriter struct {
+	batches    *scanBatchWriter
 	tx         *sql.Tx
 	fileStmt   *sql.Stmt
 	diagStmt   *sql.Stmt
@@ -119,6 +121,18 @@ type fileRecord struct {
 // while silently answering every substring query with nothing.
 const indexRuleVersion = "2026-08-13-v0.5.0-trigram-loc-1"
 
+// lintRuleVersion is the diagnostic contract, kept apart from
+// indexRuleVersion because the two invalidate different things. A change to
+// what a rule reports leaves every stored row structurally valid, so paying
+// indexRuleVersion's price for it would drop the cache and mark the map
+// database stale — taking every map tool offline to correct a warning.
+// Bumping this instead re-parses script files, and only those, so their
+// diagnostics are recomputed while the map cache stays served.
+//
+// Bumped for folder dispatch, trigger algebra and the additional on_action
+// single-slot checks introduced by competitor-tooling integration.
+const lintRuleVersion = "2026-09-05-competitor-diagnostics-1"
+
 // Keep ordinary full scans well below SQLite's variable limit when they take
 // the scoped resolver/validator path. Larger edits remain correct by falling
 // back to the established global finalizers.
@@ -133,7 +147,7 @@ func Scan(ctx context.Context, cfg Config) (ScanStats, error) {
 	if err != nil {
 		return ScanStats{}, err
 	}
-	dbPath, err := ConfiguredDatabasePath(normalized)
+	dbPath, err := ConfiguredDatabaseAnchorPath(normalized)
 	if err != nil {
 		return ScanStats{}, err
 	}
@@ -171,6 +185,11 @@ func scanWithPreparedEngineBundle(ctx context.Context, cfg Config, forceClean, p
 		return ScanStats{}, err
 	}
 	engineRules := engineRuleSetFromBundle(engineBundle)
+	vanillaOnActionRoot := ""
+	if gameSource, ok := GameSource(cfg); ok {
+		vanillaOnActionRoot = gameSource.Path
+	}
+	vanillaOnActionLookup := newVanillaOnActionIndex(vanillaOnActionRoot)
 	dbPath, err := ConfiguredDatabasePath(cfg)
 	if err != nil {
 		return ScanStats{}, err
@@ -263,6 +282,7 @@ func scanWithPreparedEngineBundle(ctx context.Context, cfg Config, forceClean, p
 	publishedState := IndexState{}
 	cachedEngineFingerprint := ""
 	cachedRuleVersion := ""
+	cachedLintRuleVersion := ""
 	cachedInputFingerprint := ""
 	if !forceClean {
 		publishedState, err = db.IndexState(ctx)
@@ -275,6 +295,10 @@ func scanWithPreparedEngineBundle(ctx context.Context, cfg Config, forceClean, p
 				return ScanStats{}, err
 			}
 			cachedRuleVersion, err = db.metaValue(ctx, "index_rule_version")
+			if err != nil {
+				return ScanStats{}, err
+			}
+			cachedLintRuleVersion, err = db.metaValue(ctx, "lint_rule_version")
 			if err != nil {
 				return ScanStats{}, err
 			}
@@ -391,13 +415,15 @@ func scanWithPreparedEngineBundle(ctx context.Context, cfg Config, forceClean, p
 				return nil
 			}
 			jobs = append(jobs, fileJob{
-				src:         src,
-				path:        path,
-				rel:         rel,
-				kind:        kind,
-				prev:        existing[path],
-				forceParse:  (engineDataDirty || cachedRuleVersion != indexRuleVersion) && kind == "script",
-				engineRules: engineRules,
+				src:              src,
+				path:             path,
+				rel:              rel,
+				kind:             kind,
+				prev:             existing[path],
+				forceParse:       (engineDataDirty || cachedRuleVersion != indexRuleVersion || cachedLintRuleVersion != lintRuleVersion) && kind == "script",
+				verifyContent:    cfg.verifyContent,
+				engineRules:      engineRules,
+				vanillaOnActions: vanillaOnActionLookup,
 			})
 			return nil
 		}); err != nil {
@@ -602,7 +628,7 @@ parsedFilesComplete:
 	// inputs outside ordinary script jobs (map CSV/.map files and engine logs),
 	// otherwise an apparently no-op scan could leave a derived cache stale.
 	var plannedMapManifest *mapInputManifest
-	if !fileChanges && !engineDataDirty && publishedState.Ready() && cachedRuleVersion == indexRuleVersion && ftsCurrent {
+	if !fileChanges && !engineDataDirty && publishedState.Ready() && cachedRuleVersion == indexRuleVersion && cachedLintRuleVersion == lintRuleVersion && ftsCurrent {
 		stageStart := time.Now()
 		manifest, err := collectMapInputManifest(ctx, cfg)
 		if err != nil {
@@ -649,7 +675,7 @@ parsedFilesComplete:
 	// can use the indexes instead of full table scans. During a clean scan no
 	// indexes existed yet, which would make the ref resolution and validator
 	// joins grind to a halt. We commit the bulk-insert tx first, build indexes
-	// in a fresh connection, then run finalizers in a new tx.
+	// on the same tuned writer connection, then run finalizers in a new tx.
 	fmt.Fprintln(os.Stderr, "[scan] committing indexed rows")
 	stageStart := time.Now()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('scan_status','finalizing')
@@ -663,7 +689,7 @@ parsedFilesComplete:
 	if forceClean {
 		fmt.Fprintln(os.Stderr, "[scan] building sqlite indexes")
 		stageStart = time.Now()
-		if err := db.CreateIndexes(ctx); err != nil {
+		if err := createScanIndexes(ctx, writerConn); err != nil {
 			return ScanStats{}, err
 		}
 		stats.TimingsMillis["build_indexes"] = time.Since(stageStart).Milliseconds()
@@ -755,7 +781,7 @@ parsedFilesComplete:
 		if _, err := tx.ExecContext(ctx, `DELETE FROM diagnostics WHERE source='validator'`); err != nil {
 			return ScanStats{}, err
 		}
-		if err := addValidationDiagnostics(ctx, tx, project.Rank, locKeys, objectNames, evidence); err != nil {
+		if err := addValidationDiagnostics(ctx, tx, project.Rank); err != nil {
 			return ScanStats{}, err
 		}
 		if err := refreshTitleIntegrityDiagnostics(ctx, tx); err != nil {
@@ -856,6 +882,10 @@ parsedFilesComplete:
 	stageStart = time.Now()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('index_rule_version',?)
 		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, indexRuleVersion); err != nil {
+		return ScanStats{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('lint_rule_version',?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, lintRuleVersion); err != nil {
 		return ScanStats{}, err
 	}
 	// Record which upstream trees produced these rows so another workspace can
@@ -1050,30 +1080,30 @@ func writeFileResult(ctx context.Context, w scanWriter, res fileResult, stats *S
 			}
 			stats.Diagnostics++
 		}
-		if err := insertSavedScopes(ctx, w.tx, rec.ID, res.savedScopes); err != nil {
+		if err := insertSavedScopes(ctx, w.batches, rec.ID, res.savedScopes); err != nil {
 			return fileRecord{}, err
 		}
-		if err := insertVariables(ctx, w.tx, rec.ID, res.variables); err != nil {
+		if err := insertVariables(ctx, w.batches, rec.ID, res.variables); err != nil {
 			return fileRecord{}, err
 		}
 		for index := range res.objects {
 			res.objects[index].FileID = rec.ID
 		}
-		if err := insertObjectRows(ctx, w.tx, res.objects); err != nil {
+		if err := insertObjectRows(ctx, w.batches, res.objects); err != nil {
 			return fileRecord{}, err
 		}
 		stats.Objects += len(res.objects)
 		for index := range res.refs {
 			res.refs[index].FileID = rec.ID
 		}
-		if err := insertReferenceRows(ctx, w.tx, res.refs); err != nil {
+		if err := insertReferenceRows(ctx, w.batches, res.refs); err != nil {
 			return fileRecord{}, err
 		}
 		stats.References += len(res.refs)
 		for index := range res.objectFields {
 			res.objectFields[index].FileID = rec.ID
 		}
-		if err := insertObjectFieldRows(ctx, w.tx, res.objectFields); err != nil {
+		if err := insertObjectFieldRows(ctx, w.batches, res.objectFields); err != nil {
 			return fileRecord{}, err
 		}
 		stats.ObjectFields += len(res.objectFields)
@@ -1087,14 +1117,14 @@ func writeFileResult(ctx context.Context, w scanWriter, res fileResult, stats *S
 		for _, e := range res.locs {
 			locKeys[e.key] = true
 		}
-		if err := insertLocalizationRows(ctx, w.tx, rec, res.locs); err != nil {
+		if err := insertLocalizationRows(ctx, w.batches, rec, res.locs); err != nil {
 			return fileRecord{}, err
 		}
 		stats.Localization += len(res.locs)
 		for index := range res.refs {
 			res.refs[index].FileID = rec.ID
 		}
-		if err := insertReferenceRows(ctx, w.tx, res.refs); err != nil {
+		if err := insertReferenceRows(ctx, w.batches, res.refs); err != nil {
 			return fileRecord{}, err
 		}
 		stats.References += len(res.refs)
@@ -1369,6 +1399,11 @@ type resourceLookup struct {
 type referenceResolutionEvidence struct {
 	gameLocalization map[string]bool
 	resources        resourceLookup
+	// defines carries the @Namespace|KEY names declared by active
+	// common/defines files. engineDefines stops at the generated 1.19
+	// snapshot, so a mod-added namespace would otherwise resolve as an
+	// unknown engine define everywhere the refs table is read.
+	defines map[string]bool
 }
 
 func loadReferenceResolutionEvidence(ctx context.Context, tx *sql.Tx, locKeys, resources map[string]bool) (referenceResolutionEvidence, error) {
@@ -1376,9 +1411,14 @@ func loadReferenceResolutionEvidence(ctx context.Context, tx *sql.Tx, locKeys, r
 	if err != nil {
 		return referenceResolutionEvidence{}, err
 	}
+	defines, err := activeDefineNames(ctx, tx)
+	if err != nil {
+		return referenceResolutionEvidence{}, err
+	}
 	return referenceResolutionEvidence{
 		gameLocalization: gameLocalization,
 		resources:        newResourceLookup(resources),
+		defines:          defines,
 	}, nil
 }
 
@@ -1517,10 +1557,15 @@ func refreshRefsResolvedGo(ctx context.Context, tx *sql.Tx, objectNames map[stri
 			_, res = engineScopeTransitionsIn[name]
 		case "define":
 			_, res = engineDefines[name]
-		case "flag", "global_var", "variable", "character_flag":
-			res = true
+			if !res {
+				res = evidence.defines[name]
+			}
 		default:
-			res = isNullObjectReference(kind, name) || objectNames[kind+":"+name] || objectNames[name]
+			if isRuntimeSymbolRefKind(kind) {
+				res = true
+			} else {
+				res = isNullObjectReference(kind, name) || objectNames[kind+":"+name] || objectNames[name]
+			}
 		}
 		reason := referenceResolutionReason(kind, res)
 		if (current != 0) == res && currentReason == reason {
@@ -1584,9 +1629,10 @@ func referenceResolutionReason(kind string, resolved bool) string {
 			return "known_engine_sound"
 		case "iterator", "scope_transition", "define":
 			return "known_engine_symbol"
-		case "flag", "global_var", "variable", "character_flag":
-			return "runtime_symbol"
 		default:
+			if isRuntimeSymbolRefKind(kind) {
+				return "runtime_symbol"
+			}
 			return "indexed_definition"
 		}
 	}
@@ -1724,7 +1770,9 @@ type fileJob struct {
 	overrideByRank   int
 	overrideRule     string
 	forceParse       bool
+	verifyContent    bool
 	engineRules      *EngineRuleSet
+	vanillaOnActions *vanillaOnActionIndex
 }
 
 // guiBuiltinTypes are CK3 GUI type-building-block names that appear in
@@ -1986,7 +2034,7 @@ func parseOneFile(j fileJob) fileResult {
 	// Incremental fast path: text is always hashed for correctness. Large
 	// binary resources may trust nanosecond mtime plus size, avoiding repeated
 	// reads of map rasters while still detecting ordinary same-second edits.
-	if !j.forceParse && j.prev.ID != 0 && j.prev.SHA != "" && !j.prev.Overridden &&
+	if !j.forceParse && !j.verifyContent && j.prev.ID != 0 && j.prev.SHA != "" && !j.prev.Overridden &&
 		j.prev.SourceName == j.src.Name && j.prev.SourceRank == j.src.Rank &&
 		j.prev.MTime == info.ModTime().UnixNano() && j.prev.Size == info.Size() && j.prev.Kind == j.kind {
 		if j.kind != "script" && j.kind != "localization" && j.kind != "schema" {
@@ -2048,7 +2096,7 @@ func parseOneFile(j fileJob) fileResult {
 			result.ctxDiags = checkScriptContext(parsed.Nodes, j.rel)
 			result.ctxDiags = append(result.ctxDiags, checkRuntimeContractsWithRules(parsed.Nodes, j.rel, j.engineRules)...)
 		}
-		result.ctxDiags = append(result.ctxDiags, checkScriptLint(parsed.Nodes, j.rel, j.src.Role)...)
+		result.ctxDiags = append(result.ctxDiags, checkScriptLint(parsed.Nodes, j.rel, j.src.Role, j.vanillaOnActions)...)
 		if !isGUI {
 			result.ctxDiags = append(result.ctxDiags, checkScopeTrackerWithRules(parsed.Nodes, j.rel, j.engineRules)...)
 			result.savedScopes = collectSavedScopes(parsed.Nodes)
@@ -2995,11 +3043,15 @@ type refRow struct {
 	Resolved           bool
 }
 
+// local_var and dead_var are the read spellings of set_local_variable and
+// set_dead_character_variable. Without them the read side of those variables
+// was invisible to the index and every consumer looked write-only.
 var prefixTypes = map[string]string{
 	"trait": "trait", "title": "title", "faith": "faith", "culture": "culture",
 	"character": "character", "scope": "scope", "global_var": "global_var", "flag": "flag",
 	"artifact": "artifact", "dynasty": "dynasty", "house": "dynasty_house", "secret": "secret",
 	"geographical_region": "geographical_region",
+	"local_var":           "local_var", "dead_var": "dead_var",
 }
 
 var locKeys = map[string]bool{"title": true, "desc": true, "text": true, "custom_tooltip": true, "tooltip": true, "localization_key": true}
@@ -3858,49 +3910,62 @@ func insertDiag(ctx context.Context, tx *sql.Tx, source, severity, code, msg str
 		source, severity, code, msg, fileID, path, line, col)
 }
 
-func addValidationDiagnostics(ctx context.Context, tx *sql.Tx, projectRank int, locSeen, objSeen map[string]bool, evidence referenceResolutionEvidence) error {
-	rows, err := tx.QueryContext(ctx, `SELECT r.ref_kind,r.ref_name,r.file_id,r.line,r.col,f.path,f.source_rank
-		FROM refs r JOIN files f ON f.id=r.file_id`)
+// refreshRefsResolvedGo has just refreshed resolved/resolution_reason for
+// every ref row against the same symbol tables this function is handed. Reading
+// that column back keeps one resolution rule for the whole finalizer and lets
+// SQLite answer the "project layer, still unresolved" question from
+// idx_refs_resolved instead of materializing every ref in the database --
+// the upstream layers are the overwhelming majority -- only to skip it in Go.
+func addValidationDiagnostics(ctx context.Context, tx *sql.Tx, projectRank int) error {
+	rows, err := tx.QueryContext(ctx, `SELECT r.ref_kind,r.ref_name,r.file_id,r.line,r.col,f.path
+		FROM refs r JOIN files f ON f.id=r.file_id
+		WHERE f.source_rank=? AND r.resolved=0
+		ORDER BY f.path,r.line,r.col`, projectRank)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
+	// Loaded lazily: only a project that uses the @Namespace|KEY engine-define
+	// form needs the active defines files parsed.
+	var defineNames map[string]bool
+	defineNamesLoaded := false
 	for rows.Next() {
 		var kind, name, path string
 		var fileID int64
-		var line, col, sourceRank int
-		if err := rows.Scan(&kind, &name, &fileID, &line, &col, &path, &sourceRank); err != nil {
+		var line, col int
+		if err := rows.Scan(&kind, &name, &fileID, &line, &col, &path); err != nil {
 			return err
-		}
-		if sourceRank != projectRank {
-			continue
 		}
 		switch kind {
 		case "localization":
-			if !locSeen[name] && !evidence.gameLocalization[name] && !isPlaceholderLocalizationKey(name) {
-				insertDiag(ctx, tx, "validator", "warning", "missing_localization", fmt.Sprintf("localization key %q was referenced but not indexed", name), fileID, path, line, col)
-			}
+			insertDiag(ctx, tx, "validator", "warning", "missing_localization", fmt.Sprintf("localization key %q was referenced but not indexed", name), fileID, path, line, col)
 		case "resource":
-			if !evidence.resources.resolved(name) {
-				code, severity := resourceDiagnostic(name)
-				insertDiag(ctx, tx, "validator", severity, code, fmt.Sprintf("resource %q was referenced but not indexed", name), fileID, path, line, col)
-			}
+			code, severity := resourceDiagnostic(name)
+			insertDiag(ctx, tx, "validator", severity, code, fmt.Sprintf("resource %q was referenced but not indexed", name), fileID, path, line, col)
 		case "sound":
-			if !IsSound(name) {
-				insertDiag(ctx, tx, "validator", "warning", "missing_sound", fmt.Sprintf("sound event %q was referenced but not known from game logs", name), fileID, path, line, col)
-			}
+			insertDiag(ctx, tx, "validator", "warning", "missing_sound", fmt.Sprintf("sound event %q was referenced but not known from game logs", name), fileID, path, line, col)
 		case "iterator":
 			// Iterators are engine-level; validated against the iteratorScopeIn map.
-			if _, ok := iteratorScopeIn[name]; !ok {
-				insertDiag(ctx, tx, "validator", "warning", "unknown_iterator", fmt.Sprintf("iterator %q was referenced but not known", name), fileID, path, line, col)
+			insertDiag(ctx, tx, "validator", "warning", "unknown_iterator", fmt.Sprintf("iterator %q was referenced but not known", name), fileID, path, line, col)
+		case "define":
+			// Engine defines are validated, mod-declared ones are not: the
+			// project is allowed to add its own namespaces, so only a define
+			// that neither the engine data nor an active common/defines file
+			// declares is a provable defect.
+			if !defineNamesLoaded {
+				defineNames, err = activeDefineNames(ctx, tx)
+				if err != nil {
+					return err
+				}
+				defineNamesLoaded = true
+			}
+			if !defineNames[name] {
+				insertDiag(ctx, tx, "validator", "warning", "unknown_define", fmt.Sprintf("@define %q is not declared by the current engine data or any active common/defines file", name), fileID, path, line, col)
 			}
 		case "scope_transition":
-			// Scope transitions are engine-level.
-		case "define":
-			// Mods define their own @names; game-engine defines use NAI|xxx format.
-			// Skip validation — too many false positives from mod-custom defines.
+			// Scope transitions are engine-level and already resolved above.
 		default:
-			if isObjectRefKind(kind) && !isNullObjectReference(kind, name) && !objSeen[kind+":"+name] && !objSeen[name] {
+			if isObjectRefKind(kind) && !isNullObjectReference(kind, name) {
 				insertDiag(ctx, tx, "validator", "warning", "missing_object_reference", fmt.Sprintf("%s %q was referenced but not indexed", kind, name), fileID, path, line, col)
 			}
 		}

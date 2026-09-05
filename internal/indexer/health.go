@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 
 	"ck3-index/internal/script"
@@ -49,43 +50,81 @@ func (db *DB) checkEventDecisionLocKeys(ctx context.Context) error {
 		return err
 	}
 
+	// The two EXISTS subqueries below used to run per object, so the query was
+	// O(objects x refs) and carried a LIMIT 5000 to stay affordable. That limit
+	// silently dropped findings past the first 5000 rows and, without an ORDER
+	// BY, dropped a different set on every scan. Both answers are now collected
+	// in one bounded pass each (idx_refs_kind_name / idx_object_fields_field),
+	// which is cheaper than the correlated form and lets the check cover every
+	// active event and decision.
+	locRefs := map[string]bool{}
+	refRows, err := db.sql.QueryContext(ctx, `SELECT r.file_id,r.from_object_type,r.from_object_name
+		FROM refs r WHERE r.ref_kind='localization'`)
+	if err != nil {
+		return err
+	}
+	for refRows.Next() {
+		var fileID int64
+		var objectType, objectName string
+		if err := refRows.Scan(&fileID, &objectType, &objectName); err != nil {
+			refRows.Close()
+			return err
+		}
+		locRefs[objectLocKey(fileID, objectType, objectName)] = true
+	}
+	if err := refRows.Close(); err != nil {
+		return err
+	}
+	hiddenObjects := map[string]bool{}
+	hiddenRows, err := db.sql.QueryContext(ctx, `SELECT of.file_id,of.object_type,of.object_name
+		FROM object_fields of WHERE of.field='hidden' AND LOWER(of.raw) LIKE '%= yes%'`)
+	if err != nil {
+		return err
+	}
+	for hiddenRows.Next() {
+		var fileID int64
+		var objectType, objectName string
+		if err := hiddenRows.Scan(&fileID, &objectType, &objectName); err != nil {
+			hiddenRows.Close()
+			return err
+		}
+		hiddenObjects[objectLocKey(fileID, objectType, objectName)] = true
+	}
+	if err := hiddenRows.Close(); err != nil {
+		return err
+	}
+
 	rows, err := db.sql.QueryContext(ctx, `
-		SELECT o.object_type, o.name, o.path, o.line,
-			EXISTS (
-				SELECT 1 FROM refs r
-				WHERE r.file_id=o.file_id
-				AND r.from_object_type=o.object_type
-				AND r.from_object_name=o.name
-				AND r.ref_kind='localization'
-			),
-			EXISTS (
-				SELECT 1 FROM object_fields of
-				WHERE of.file_id=o.file_id
-				AND of.object_type=o.object_type
-				AND of.object_name=o.name
-				AND of.field='hidden'
-				AND LOWER(of.raw) LIKE '%= yes%'
-			)
+		SELECT o.object_type, o.name, o.path, o.line, o.file_id
 		FROM objects o
 		JOIN files f ON f.id=o.file_id
 		WHERE o.object_type IN ('event','decision')
 		AND f.overridden=0
-		LIMIT 5000`)
+		ORDER BY f.source_rank,o.path,o.line`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
+	// Findings are flushed in one transaction. A project can raise thousands of
+	// them, and one autocommit statement per row made this check the most
+	// expensive step in validate for large indexes.
+	type pendingLoc struct {
+		msg, path string
+		line      int
+	}
+	var pending []pendingLoc
 	for rows.Next() {
 		var typ, name, path string
 		var line int
-		var hasExplicitLoc, hidden int
-		if err := rows.Scan(&typ, &name, &path, &line, &hasExplicitLoc, &hidden); err != nil {
+		var fileID int64
+		if err := rows.Scan(&typ, &name, &path, &line, &fileID); err != nil {
 			return err
 		}
-		if typ == "event" && hidden != 0 {
+		key := objectLocKey(fileID, typ, name)
+		if typ == "event" && hiddenObjects[key] {
 			continue
 		}
-		if hasExplicitLoc != 0 {
+		if locRefs[key] {
 			continue
 		}
 		if typ == "decision" && locKeys[name] && locKeys[name+"_desc"] {
@@ -95,14 +134,46 @@ func (db *DB) checkEventDecisionLocKeys(ctx context.Context) error {
 		if typ == "decision" {
 			expected = fmt.Sprintf("explicit localization or the implicit keys %q and %q", name, name+"_desc")
 		}
-		msg := fmt.Sprintf("%s %q has no usable localization; expected %s", typ, name, strings.TrimSpace(expected))
-		if _, err := db.sql.ExecContext(ctx,
-			`INSERT INTO diagnostics(source,severity,code,message,path,line) VALUES(?,?,?,?,?,?)`,
-			"health", "warning", "missing_event_loc", msg, path, line); err != nil {
+		pending = append(pending, pendingLoc{
+			msg:  fmt.Sprintf("%s %q has no usable localization; expected %s", typ, name, strings.TrimSpace(expected)),
+			path: path,
+			line: line,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.PrepareContext(ctx,
+		`INSERT INTO diagnostics(source,severity,code,message,path,line) VALUES(?,?,?,?,?,?)`)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+	for _, p := range pending {
+		if _, err := stmt.ExecContext(ctx, "health", "warning", "missing_event_loc", p.msg, p.path, p.line); err != nil {
+			stmt.Close()
+			tx.Rollback()
 			return err
 		}
 	}
-	return rows.Err()
+	if err := stmt.Close(); err != nil {
+		tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+// objectLocKey identifies an object within the file that declares it so a
+// set-membership test can replace a correlated EXISTS subquery.
+func objectLocKey(fileID int64, objectType, objectName string) string {
+	return strconv.FormatInt(fileID, 10) + "\x00" + objectType + "\x00" + objectName
 }
 
 // M8: LIOS safety – warn when a mod file overrides a subset of objects

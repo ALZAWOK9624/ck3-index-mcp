@@ -7,8 +7,11 @@ import argparse
 import json
 import os
 from pathlib import Path
+import queue
 import subprocess
 import sys
+import threading
+import time
 
 
 class SmokeError(RuntimeError):
@@ -37,7 +40,7 @@ def request_lines(version: str) -> str:
             "jsonrpc": "2.0",
             "id": 3,
             "method": "tools/call",
-            "params": {"name": "ck3_health", "arguments": {}},
+            "params": {"name": "ck3_health", "arguments": {"mode": "deep"}},
         },
         {
             "jsonrpc": "2.0",
@@ -76,27 +79,99 @@ def invoke(
     environment = os.environ.copy()
     environment["CK3_INDEX_CONFIG"] = str(config)
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             launcher_command(stage, platform),
             cwd=stage,
             env=environment,
-            input=payload,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="strict",
-            check=False,
-            timeout=120,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except OSError as exc:
         raise SmokeError(f"staged launcher failed: {exc}") from exc
-    if completed.returncode != 0:
+
+    if process.stdin is None or process.stdout is None or process.stderr is None:
+        process.kill()
+        raise SmokeError("staged launcher did not expose redirected stdio")
+
+    stdout_lines: queue.Queue[str | None] = queue.Queue()
+    stderr_lines: list[str] = []
+
+    def read_stdout() -> None:
+        try:
+            for line in process.stdout:
+                stdout_lines.put(line)
+        finally:
+            stdout_lines.put(None)
+
+    def read_stderr() -> None:
+        stderr_lines.extend(process.stderr.readlines())
+
+    stdout_thread = threading.Thread(target=read_stdout, daemon=True)
+    stderr_thread = threading.Thread(target=read_stderr, daemon=True)
+    stdout_thread.start()
+    stderr_thread.start()
+
+    expected_responses = sum(
+        1
+        for line in payload.splitlines()
+        if line.strip() and "id" in json.loads(line)
+    )
+    output_lines: list[str] = []
+    deadline = time.monotonic() + 120
+    timed_out = False
+    try:
+        process.stdin.write(payload)
+        process.stdin.flush()
+        while len(output_lines) < expected_responses:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            try:
+                line = stdout_lines.get(timeout=remaining)
+            except queue.Empty:
+                timed_out = True
+                break
+            if line is None:
+                break
+            if line.strip():
+                output_lines.append(line.rstrip("\r\n"))
+    finally:
+        process.stdin.close()
+        process.stdin = None
+
+    exit_timed_out = False
+    try:
+        returncode = process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        exit_timed_out = True
+        process.kill()
+        returncode = process.wait(timeout=10)
+    stdout_thread.join(timeout=1)
+    stderr_thread.join(timeout=1)
+    while True:
+        try:
+            line = stdout_lines.get_nowait()
+        except queue.Empty:
+            break
+        if line is not None and line.strip():
+            output_lines.append(line.rstrip("\r\n"))
+
+    stderr = "".join(stderr_lines).strip()
+    if timed_out:
+        raise SmokeError("staged launcher timed out waiting for MCP responses")
+    if exit_timed_out:
+        raise SmokeError("staged launcher did not exit after its responses were received")
+    if returncode != 0:
         raise SmokeError(
-            f"staged launcher exited {completed.returncode}: {completed.stderr.strip()}"
+            f"staged launcher exited {returncode}: {stderr}"
         )
     responses: list[dict] = []
-    for line in completed.stdout.splitlines():
+    for line in output_lines:
         if not line.strip():
             continue
         try:

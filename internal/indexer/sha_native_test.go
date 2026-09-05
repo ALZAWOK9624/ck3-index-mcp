@@ -5,10 +5,13 @@ package indexer
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -64,7 +67,13 @@ func TestNativeSHA256FileMatchesGo(t *testing.T) {
 		bytesOf(55, 'a'),
 		bytesOf(64, 'b'),
 		bytesOf(65, 'c'),
+		bytesOf((64<<10)-1, 'e'),
+		bytesOf(64<<10, 'f'),
+		bytesOf((64<<10)+1, 'g'),
 		bytesOf(1<<20, 'd'),
+		bytesOf((4<<20)-1, 'h'),
+		bytesOf(4<<20, 'i'),
+		bytesOf((4<<20)+1, 'j'),
 	} {
 		path := filepath.Join(dir, "file-"+string(rune('0'+i))+".bin")
 		if err := os.WriteFile(path, data, 0644); err != nil {
@@ -79,6 +88,32 @@ func TestNativeSHA256FileMatchesGo(t *testing.T) {
 			t.Logf("case %d (len %d): native %s, want %s", i, len(data), got, want)
 			t.Fail()
 		}
+	}
+}
+
+func TestNativeSHA256UnicodeAndInvalidPaths(t *testing.T) {
+	requireNativeSHA(t)
+	dir := t.TempDir()
+	data := []byte("Unicode paths must identify the same file as os.Open")
+	for _, name := range []string{"苹果-地形-🌳.bin", strings.Repeat("苹", 180) + ".bin"} {
+		path := filepath.Join(dir, name)
+		if len(path) >= 260 && !strings.HasPrefix(path, `\\?\`) {
+			path = `\\?\` + path
+		}
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		got, ok, err := sha256FileHex(path)
+		if err != nil || !ok || got != nativeReferenceSum(data) {
+			t.Fatalf("unicode hash: %q %v %v", got, ok, err)
+		}
+		// A NUL suffix must not hash the prefix file and report success.
+		if _, _, err := sha256FileHex(path + "\x00ignored"); !errors.Is(err, fs.ErrInvalid) {
+			t.Fatalf("embedded NUL: %v", err)
+		}
+	}
+	if _, _, err := sha256FileHex(filepath.Join(dir, "missing.bin")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("missing file: %v", err)
 	}
 }
 

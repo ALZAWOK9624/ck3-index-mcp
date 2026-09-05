@@ -37,7 +37,7 @@ func searchFTSCacheMatches(ctx context.Context, queryer contextRowQueryer) (bool
 		return false, nil
 	}
 	var actual int64
-	if err := queryer.QueryRowContext(ctx, `SELECT COUNT(*) FROM search_fts`).Scan(&actual); err != nil {
+	if err := queryer.QueryRowContext(ctx, `SELECT COUNT(*) FROM search_fts_docsize`).Scan(&actual); err != nil {
 		return false, err
 	}
 	if actual != expected {
@@ -77,25 +77,27 @@ type contextRowQueryer interface {
 }
 
 func trigramLocMatches(ctx context.Context, queryer contextRowQueryer) (bool, error) {
-	var localizationRows, trigramRows, missing, orphans int64
+	// FTS5's docsize shadow table contains exactly one primary key per indexed
+	// document, including texts with no tokens. Reading it avoids stepping the
+	// virtual table for every translation. All our FTS tables use columnsize=1.
+	// Equal cardinality plus inclusion proves equality of these unique rowids;
+	// keep the inclusion check so equal-count missing/orphan corruption is found.
+	var localizationRows, trigramRows, missing int64
 	if err := queryer.QueryRowContext(ctx, `
 		SELECT
 			(SELECT COUNT(*) FROM localization),
-			(SELECT COUNT(*) FROM trigram_loc),
-			(SELECT COUNT(*) FROM localization AS l
-				LEFT JOIN trigram_loc AS t ON t.rowid=l.id
-				WHERE t.rowid IS NULL),
-			(SELECT COUNT(*) FROM trigram_loc AS t
-				LEFT JOIN localization AS l ON l.id=t.rowid
-				WHERE l.id IS NULL)`).Scan(&localizationRows, &trigramRows, &missing, &orphans); err != nil {
+			(SELECT COUNT(*) FROM trigram_loc_docsize),
+			EXISTS(SELECT 1 FROM localization AS l
+				LEFT JOIN trigram_loc_docsize AS t ON t.id=l.id
+				WHERE t.id IS NULL LIMIT 1)`).Scan(&localizationRows, &trigramRows, &missing); err != nil {
 		return false, err
 	}
-	return localizationRows == trigramRows && missing == 0 && orphans == 0, nil
+	return localizationRows == trigramRows && missing == 0, nil
 }
 
 func storeSearchFTSRowCount(ctx context.Context, tx *sql.Tx) error {
 	var count int64
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM search_fts`).Scan(&count); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM search_fts_docsize`).Scan(&count); err != nil {
 		return err
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES(?,?)

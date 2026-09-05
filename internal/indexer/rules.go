@@ -34,3 +34,19 @@ var schemeTypeReferenceContext = map[string]bool{
 func isObjectRefKind(kind string) bool {
 	return objectRefKinds[kind]
 }
+
+// runtimeSymbolRefKinds are ref kinds that name runtime state rather than a
+// loadable CK3 definition, so they can never be proven by the objects index.
+// They are always treated as resolved and never produce a missing-reference
+// diagnostic. local_var and dead_var are the read spellings of
+// set_local_variable and set_dead_character_variable; before they were listed
+// here those reads were invisible and every consumer of the variable looked
+// write-only.
+var runtimeSymbolRefKinds = map[string]bool{
+	"flag": true, "global_var": true, "variable": true, "character_flag": true,
+	"local_var": true, "dead_var": true,
+}
+
+func isRuntimeSymbolRefKind(kind string) bool {
+	return runtimeSymbolRefKinds[kind]
+}

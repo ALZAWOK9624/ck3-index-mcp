@@ -233,6 +233,7 @@ func scanStatsOutputSchema(delta map[string]any) map[string]any {
 	properties := map[string]any{
 		"database":                  map[string]any{"type": "string"},
 		"no_op":                     map[string]any{"type": "boolean"},
+		"reused_generation":         map[string]any{"type": "boolean", "description": "Full refresh reused a compatible published snapshot after verifying every source file's content."},
 		"timings_ms":                map[string]any{"type": "object", "additionalProperties": integer},
 		"by_source":                 map[string]any{"type": "object", "additionalProperties": integer},
 		"wal_checkpoint":            nullableObjectSchema(objectSchema(map[string]any{"mode": map[string]any{"type": "string"}, "busy": integer, "log_frames": integer, "checkpointed_frames": integer}, "mode", "busy", "log_frames", "checkpointed_frames")),

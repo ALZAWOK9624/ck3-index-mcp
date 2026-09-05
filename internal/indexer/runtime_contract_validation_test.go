@@ -225,3 +225,65 @@ func TestCourtTypeDefaultContractDetectsDuplicateDefaults(t *testing.T) {
 		t.Fatalf("single court default still reported as duplicate: %d", count)
 	}
 }
+
+// A file can be deleted from disk while the index still holds its row: an
+// incremental refresh only reconciles the paths it was handed. The runtime
+// contract validators read every active file, so a stale row used to abort the
+// whole refresh and leave the index unable to catch up without a full rescan.
+func TestRuntimeContractValidationSkipsIndexedFileDeletedFromDisk(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	db, err := Open(filepath.Join(tempDir, "deleted-indexed-file.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.EnsureSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	writeScript := func(name, contents string) string {
+		t.Helper()
+		path := filepath.Join(tempDir, name)
+		if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	survivorPath := writeScript("survivor.txt", "court_survivor = { default = yes }\n")
+	deletedPath := writeScript("deleted.txt", "court_deleted = { default = yes }\n")
+	for id, entry := range []struct {
+		path string
+		rel  string
+		name string
+	}{
+		{path: survivorPath, rel: "common/court_types/survivor.txt", name: "court_survivor"},
+		{path: deletedPath, rel: "common/court_types/deleted.txt", name: "court_deleted"},
+	} {
+		fileID := id + 1
+		if _, err := db.sql.Exec(`INSERT INTO files(id,source_name,source_rank,path,rel_path,kind,mtime,sha256,overridden)
+			VALUES(?,?,?,?,?,'script',0,?,0)`, fileID, "game", 100, entry.path, entry.rel, entry.name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Remove(deletedPath); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.sql.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := refreshCourtTypeDefaultDiagnostics(ctx, tx); err != nil {
+		tx.Rollback()
+		t.Fatalf("validation failed on an indexed file that no longer exists: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := db.sql.QueryRow(`SELECT COUNT(*) FROM diagnostics WHERE code='court_type_duplicate_default'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("deleted file still counted as an active default: duplicates=%d, want 0", count)
+	}
+}

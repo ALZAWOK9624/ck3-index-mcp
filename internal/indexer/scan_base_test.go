@@ -245,8 +245,16 @@ func TestSeededRefreshMatchesFullScan(t *testing.T) {
 		t.Fatalf("configured base was not used: %+v", stats.BaseSeed)
 	}
 
-	want := indexProjection(t, filepath.Join(fixture.dir, "cache", "full.sqlite"))
-	got := indexProjection(t, filepath.Join(fixture.dir, "cache", "seeded.sqlite"))
+	fullPath, err := ConfiguredDatabasePath(fullCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seededPath, err := ConfiguredDatabasePath(seededCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := indexProjection(t, fullPath)
+	got := indexProjection(t, seededPath)
 	for _, table := range []string{"files", "objects", "refs", "localization", "resources", "object_fields", "diagnostics", "source_layers"} {
 		diffProjections(t, table, want[table], got[table])
 	}
@@ -272,7 +280,7 @@ func TestSeededRefreshMatchesFullScan(t *testing.T) {
 		t.Fatal(err)
 	}
 	base.Close()
-	seeded, err := OpenReadOnly(filepath.Join(fixture.dir, "cache", "seeded.sqlite"))
+	seeded, err := OpenReadOnly(seededPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +364,11 @@ func TestSeededRefreshRejectsMismatchedBase(t *testing.T) {
 
 	// The fallback must have indexed the replacement upstream tree, not the one
 	// the base was built from.
-	projection := indexProjection(t, filepath.Join(fixture.dir, "cache", "mismatched.sqlite"))
+	mismatchedPath, err := ConfiguredDatabasePath(mismatched)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection := indexProjection(t, mismatchedPath)
 	assertProjectionContains(t, projection["objects"], "other_trait")
 	for _, row := range projection["objects"] {
 		if strings.Contains(row, "seed_shared_trait") {

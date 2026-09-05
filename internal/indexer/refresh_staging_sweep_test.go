@@ -40,6 +40,22 @@ func TestOrphanedStagingDatabasesAreReclaimed(t *testing.T) {
 	}
 }
 
+func TestOrphanedStagingSidecarsAreReclaimedWithoutMainFile(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "ck3_index.sqlite")
+	orphan := filepath.Join(dir, ".ck3_index.sqlite.staging-654321.sqlite")
+	writeStagingFile(t, orphan+"-wal", 512, 3*time.Hour)
+	writeStagingFile(t, orphan+"-shm", 256, 3*time.Hour)
+
+	removeOrphanedStagedDatabases(dbPath)
+
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Stat(orphan + suffix); !os.IsNotExist(err) {
+			t.Fatalf("orphaned staging sidecar %s was not removed: %v", suffix, err)
+		}
+	}
+}
+
 func TestRecentStagingDatabaseIsLeftAlone(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "ck3_index.sqlite")

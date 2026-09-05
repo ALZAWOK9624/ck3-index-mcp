@@ -17,6 +17,7 @@ type mcpDatabaseIdentity struct {
 	Epoch            uint64 `json:"epoch"`
 	DatabaseIdentity string `json:"database_identity"`
 	ConfigIdentity   string `json:"config_identity,omitempty"`
+	databasePath     string
 }
 
 type mcpDatabaseSummary struct {
@@ -46,6 +47,26 @@ type mcpDatabaseController interface {
 	List() []mcpDatabaseSummary
 	Current() mcpDatabaseIdentity
 	Switch(context.Context, string) (mcpDatabaseSwitchResult, error)
+}
+
+type mcpDatabaseReload struct {
+	DB       *indexer.DB
+	Config   indexer.Config
+	Identity mcpDatabaseIdentity
+	release  func()
+}
+
+func (reload mcpDatabaseReload) Release() {
+	if reload.release != nil {
+		reload.release()
+	}
+}
+
+// mcpDatabaseReloader is optional so small test controllers and compatibility
+// callers do not need to implement generation rebinding. The real manager uses
+// it after an immutable full publication.
+type mcpDatabaseReloader interface {
+	ReloadCurrent(context.Context) (mcpDatabaseReload, error)
 }
 
 type mcpDatabaseResourceReporter interface {
@@ -87,10 +108,11 @@ type mcpDatabaseSpec struct {
 }
 
 type managedMCPDatabase struct {
-	spec    mcpDatabaseSpec
-	db      *indexer.DB
-	refs    int
-	retired bool
+	spec           mcpDatabaseSpec
+	db             *indexer.DB
+	refs           int
+	retired        bool
+	deleteOnRetire bool
 }
 
 type mcpDatabaseLease struct {
@@ -285,6 +307,7 @@ func (manager *mcpDatabaseManager) identityLocked(database *managedMCPDatabase) 
 		Name: database.spec.name, Epoch: manager.epoch,
 		DatabaseIdentity: redactedMCPPath(database.spec.dbPath),
 		ConfigIdentity:   indexer.DisplayConfigPath(database.spec.config),
+		databasePath:     database.spec.dbPath,
 	}
 }
 
@@ -371,18 +394,117 @@ func (manager *mcpDatabaseManager) Acquire() (mcpDatabaseLease, error) {
 
 func (manager *mcpDatabaseManager) release(database *managedMCPDatabase) {
 	var closeDB *indexer.DB
+	var cleanupSpec *mcpDatabaseSpec
 	manager.mu.Lock()
 	if database.refs > 0 {
 		database.refs--
 	}
-	if database.retired && database.refs == 0 && manager.loaded[database.spec.name] == database {
-		delete(manager.loaded, database.spec.name)
+	if database.retired && database.refs == 0 {
+		if manager.loaded[database.spec.name] == database {
+			delete(manager.loaded, database.spec.name)
+		}
 		closeDB = database.db
+		if database.deleteOnRetire {
+			spec := database.spec
+			cleanupSpec = &spec
+		}
 	}
 	manager.mu.Unlock()
 	if closeDB != nil {
 		_ = closeDB.Close()
 	}
+	if cleanupSpec != nil {
+		_ = indexer.RemoveRetiredDatabaseGeneration(cleanupSpec.config, cleanupSpec.dbPath)
+	}
+}
+
+// ReloadCurrent opens the immutable generation selected by the just-published
+// pointer and atomically makes it active for subsequent leases. Existing
+// requests retain their old DB object until they release it, which is exactly
+// the snapshot behavior the former in-place table copy was trying to provide
+// at much greater I/O cost.
+func (manager *mcpDatabaseManager) ReloadCurrent(ctx context.Context) (mcpDatabaseReload, error) {
+	select {
+	case manager.switchGate <- struct{}{}:
+		defer func() { <-manager.switchGate }()
+	case <-ctx.Done():
+		return mcpDatabaseReload{}, ctx.Err()
+	}
+
+	manager.mu.Lock()
+	if manager.closed || manager.active == nil {
+		manager.mu.Unlock()
+		return mcpDatabaseReload{}, newToolError(ErrorDatabaseSwitchUnavailable, "database", "the MCP database manager is not available", true, nil, nil)
+	}
+	old := manager.active
+	spec := old.spec
+	manager.mu.Unlock()
+
+	publishedPath, err := indexer.ConfiguredDatabasePath(spec.config)
+	if err != nil {
+		return mcpDatabaseReload{}, err
+	}
+	if canonicalMCPDatabasePath(publishedPath) == canonicalMCPDatabasePath(spec.dbPath) {
+		manager.mu.Lock()
+		defer manager.mu.Unlock()
+		if manager.closed || manager.active != old {
+			return mcpDatabaseReload{}, newToolError(ErrorDatabaseSwitchUnavailable, "database", "the active database changed during generation reload", true, nil, nil)
+		}
+		return mcpDatabaseReload{DB: old.db, Config: old.spec.config, Identity: manager.identityLocked(old)}, nil
+	}
+
+	spec.dbPath = publishedPath
+	candidate, err := openManagedMCPDatabase(ctx, spec)
+	if err != nil {
+		return mcpDatabaseReload{}, err
+	}
+	health, err := candidate.db.HealthConfiguredDepth(ctx, candidate.spec.config, indexer.HealthQuick)
+	if err != nil {
+		_ = candidate.db.Close()
+		return mcpDatabaseReload{}, databaseTargetUnavailable(spec.name, "health_check_failed")
+	}
+	if !health.CanServeIndexQueries() {
+		_ = candidate.db.Close()
+		return mcpDatabaseReload{}, databaseTargetHealthUnavailable(spec.name, health)
+	}
+	latestPath, err := indexer.ConfiguredDatabasePath(spec.config)
+	if err != nil {
+		_ = candidate.db.Close()
+		return mcpDatabaseReload{}, err
+	}
+	if canonicalMCPDatabasePath(latestPath) != canonicalMCPDatabasePath(publishedPath) {
+		_ = candidate.db.Close()
+		return mcpDatabaseReload{}, newToolError(ErrorConflictingGeneration, "database", "a newer database generation was published during reload", true, nil,
+			map[string]any{"guidance": "Retry ck3_refresh status so the MCP server can bind the latest published generation."})
+	}
+
+	var closeOld *indexer.DB
+	manager.mu.Lock()
+	if manager.closed || manager.active != old {
+		manager.mu.Unlock()
+		_ = candidate.db.Close()
+		return mcpDatabaseReload{}, newToolError(ErrorDatabaseSwitchUnavailable, "database", "the active database changed during generation reload", true, nil, nil)
+	}
+	old.retired = true
+	old.deleteOnRetire = true
+	candidate.retired = false
+	manager.specs[spec.name] = spec
+	manager.loaded[spec.name] = candidate
+	manager.active = candidate
+	manager.epoch++
+	candidate.refs++ // Pin the rebound runtime until its current tool call ends.
+	var releaseOnce sync.Once
+	releaseCandidate := func() { releaseOnce.Do(func() { manager.release(candidate) }) }
+	identity := manager.identityLocked(candidate)
+	if old.refs == 0 {
+		closeOld = old.db
+	}
+	manager.mu.Unlock()
+	if closeOld != nil {
+		_ = closeOld.Close()
+		_ = indexer.RemoveRetiredDatabaseGeneration(old.spec.config, old.spec.dbPath)
+	}
+	return mcpDatabaseReload{DB: candidate.db, Config: candidate.spec.config, Identity: identity, release: releaseCandidate}, nil
 }
 
 func (manager *mcpDatabaseManager) Switch(ctx context.Context, rawName string) (mcpDatabaseSwitchResult, error) {

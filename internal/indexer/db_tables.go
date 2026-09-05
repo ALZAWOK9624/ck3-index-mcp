@@ -1,9 +1,9 @@
 package indexer
 
 // semanticIndexTableCatalog is the single authoritative list of top-level
-// tables that make up a published index generation. Full reset and staged
-// publication must both use this catalog so a newly added semantic table
-// cannot be silently omitted from either operation.
+// tables that make up a published index generation. Full reset and immutable
+// staged-publication validation must both use this catalog so a newly added
+// semantic table cannot be silently omitted from either operation.
 var semanticIndexTableCatalog = [...]string{
 	"meta",
 	"source_layers",
@@ -53,19 +53,6 @@ var semanticIndexTableCatalog = [...]string{
 	"trigram_loc",
 }
 
-// script_text_fts and trigram_loc are contentless derived caches keyed by
-// files.id and localization.id. Neither can be copied row-for-row because
-// contentless FTS columns deliberately return no stored source text -- a copy
-// would insert NULLs and fresh rowids -- so staged publication rebuilds both
-// from the copied source tables instead.
-//
-// Excluded by name, not by position: appending a table to the catalog used to
-// push the previously-last entry back into the published set silently.
-var contentlessDerivedTables = map[string]bool{
-	"script_text_fts": true,
-	"trigram_loc":     true,
-}
-
 // rebuildPreservedTables hold caller decisions rather than derived index data,
 // so they are created by ensureSchema but belong to neither of the catalog's
 // two jobs: reset must not drop them and staged publication must not copy them.
@@ -86,19 +73,6 @@ func schemaTableNames() []string {
 	out := make([]string, 0, len(semanticIndexTableCatalog)+len(rebuildPreservedTables))
 	out = append(out, semanticIndexTableCatalog[:]...)
 	for table := range rebuildPreservedTables {
-		out = append(out, table)
-	}
-	return out
-}
-
-var publishedIndexTables = publishableTables(semanticIndexTableCatalog[:])
-
-func publishableTables(catalog []string) []string {
-	out := make([]string, 0, len(catalog))
-	for _, table := range catalog {
-		if contentlessDerivedTables[table] {
-			continue
-		}
 		out = append(out, table)
 	}
 	return out

@@ -53,10 +53,7 @@ var chineseToolTexts = map[string]chineseToolText{
 		Title:       "记录 CK3 诊断基线",
 		Description: "记录当前已经存在的诊断，使后续 ck3_diagnostics 只报告此后新出现的问题。save 把索引当前持有的诊断记在一个名字下，覆盖同名的旧快照；list 列出已记录的名字；clear 忘掉一个。在没有任何诊断的工程上记录的基线同样是基线，而且是最有用的那种：此后出现的每一条都是新的。基线不会被 ck3_refresh operation=full 清除，因为重建会原样复现它当初对照的那些诊断。",
 	},
-	"ck3_coat_of_arms": {
-		Title:       "读取并渲染 CK3 纹章",
-		Description: "读取一个生效的纹章并把它画出来。inspect 将纹章的底纹、三种颜色与每个纹饰对照生效的 named_colors 和已索引贴图逐一解析，并报告哪些引用没有任何来源提供；声明了 parent 的定义会先逐层合并父定义，因此返回的是真正会画出来的那份设计；render 合成 CK3 在加框之前构建的纹章本体并返回 PNG；assets 列出纹章定义可以引用的底纹与纹饰贴图名。颜色与贴图均按已配置的载入顺序解析，因此结果是游戏实际会载入的那一份，而不是某一个来源单独声明的内容；visibility=public 下只按公开层的载入顺序解析，响应会明确报告这一点。",
-	},
+
 	"ck3_save": {
 		Title:       "读取 CK3 存档",
 		Description: "读取单个 CK3 存档文件。card 与 compatibility 只读元数据：存档身份——版本、游戏内日期、玩家、主头衔、家族、政体、玩家人数——以及存档声明的 mod、DLC 与游戏规则，供调用方与自己的配置比对。audit 与 character 流式扫描 gamestate：存档携带但已索引来源不再定义的 ID，以及单个角色的属性、特质、家族与头衔。timeline 提取存档记录的带日期事件——头衔继承史与人物记忆。document 走到 gamestate 的任意路径并报告那里有什么，因此没有专门投影的区块同样可读。工具只陈述存档记录的事实，不判断存档能否载入。",
@@ -84,6 +81,10 @@ var chineseToolTexts = map[string]chineseToolText{
 	"ck3_gui": {
 		Title:       "检查 CK3 GUI",
 		Description: "通过现有索引检查生效中的 CK3 GUI 文件，解析跨文件继承、模板和区块覆盖，并输出有界 PNG 或自包含 HTML。检查器支持控件树、裁剪滚动视口、网格布局、英中本地化切换、已索引动态纹理样例与受控行为模拟；model_samples 可从唯一 item 模板实例化有界调用方列表行，绝不执行任意 Jomini 代码。",
+	},
+	"ck3_coat_of_arms": {
+		Title:       "读取并渲染 CK3 纹章",
+		Description: "读取一个生效的纹章并把它画出来。inspect 将纹章的底纹、三种颜色与每个纹饰对照生效的 named_colors 和已索引贴图逐一解析，并报告哪些引用没有任何来源提供；声明了 parent 的定义会先逐层合并父定义，因此返回的是真正会画出来的那份设计；render 合成 CK3 在加框之前构建的纹章本体并返回 PNG；assets 列出纹章定义可以引用的底纹与纹饰贴图名。颜色与贴图均按已配置的载入顺序解析，因此结果是游戏实际会载入的那一份，而不是某一个来源单独声明的内容；visibility=public 下只按公开层的载入顺序解析，响应会明确报告这一点。",
 	},
 	"map_asset_audit": {
 		Title:       "审计 CK3 地图资源",
@@ -334,7 +335,7 @@ var chineseFieldDescriptions = map[string]string{
 	"Exact custom type, template, or named GUI element for preview; type/template operations keep their narrower meaning.": "preview 可使用精确的自定义类型、模板或具名 GUI 控件；type/template 保持原有窄语义。",
 	"Optional preview width in pixels.":  "可选的 GUI 预览宽度（像素）。",
 	"Optional preview height in pixels.": "可选的 GUI 预览高度（像素）。",
-	"Preview representation. png preserves the legacy response; html returns a standalone document; both returns both.":                                                                                                                                                         "预览表示形式：png 保持旧响应；html 返回独立文档；both 同时返回二者。",
+	"Preview representation. png is the diagnostic layout raster; visual approximates the in-game appearance with real textures and text; html returns a standalone document; both returns png and html.":                                                                       "预览表示形式：png 是诊断布局光栅；visual 用真实贴图与文本近似实机观感；html 返回独立文档；both 同时返回 png 与 html。",
 	"HTML behavior. static is script-free; inspector adds a fixed CSP-hashed tree, zoom, search, clipped scrollbox navigation, property inspector, and visual-state simulator. Only valid with format=html or both.":                                                            "HTML 行为模式：static 完全无脚本；inspector 使用固定 CSP 哈希脚本提供控件树、缩放、搜索、裁剪滚动视口、属性检查和视觉状态模拟。仅适用于 format=html 或 both。",
 	"Initial GUI localization view. raw preserves script keys; English, Simplified Chinese, and bilingual values come only from the active localization index. The inspector can switch among embedded variants without network access.":                                        "初始 GUI 本地化视图：raw 保留脚本 key；英文、简体中文和双语值只来自当前生效的本地化索引。检查器可离线切换已嵌入的语言变体。",
 	"Optional caller-provided example results for exact GUI expressions. Values are labeled provided, never observed, and unmatched expressions are reported.":                                                                                                                  "可选的调用方样例表达式结果；数值明确标记为 provided 而非游戏观察事实，未命中的表达式会被报告。",

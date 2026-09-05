@@ -16,6 +16,7 @@ type scopedResolver struct {
 	resCache         map[string]bool
 	missCache        map[string]bool
 	gameLocFileCache map[string]map[string]bool
+	defineNames      map[string]bool
 }
 
 // affectedTypedMarker is an internal bookkeeping prefix. It uses NUL because
@@ -130,10 +131,19 @@ func refreshValidatorDiagnosticsScoped(ctx context.Context, tx *sql.Tx, projectR
 				insertDiag(ctx, tx, "validator", "warning", "missing_sound", fmt.Sprintf("sound event %q was referenced but not known from game logs", name), fileID, path, line, col)
 			}
 		case "iterator":
-			if _, ok := iteratorScopeIn[name]; !ok {
-				insertDiag(ctx, tx, "validator", "warning", "unknown_iterator", fmt.Sprintf("iterator %q was referenced but not known", name), fileID, path, line, col)
+			insertDiag(ctx, tx, "validator", "warning", "unknown_iterator", fmt.Sprintf("iterator %q was referenced but not known", name), fileID, path, line, col)
+		case "define":
+			// Same guard as the global finalizer: only an @Namespace|KEY that
+			// neither the engine data nor an active common/defines file
+			// declares is reported, so mod-added namespaces stay silent.
+			ok, err := resolver.defineResolved(ctx, name)
+			if err != nil {
+				return err
 			}
-		case "scope_transition", "define":
+			if !ok {
+				insertDiag(ctx, tx, "validator", "warning", "unknown_define", fmt.Sprintf("@define %q is not declared by the current engine data or any active common/defines file", name), fileID, path, line, col)
+			}
+		case "scope_transition":
 			continue
 		default:
 			if isObjectRefKind(kind) {
@@ -262,11 +272,14 @@ func (r *scopedResolver) resolved(ctx context.Context, kind, name string) (bool,
 		_, ok := engineScopeTransitionsIn[name]
 		return ok, nil
 	case "define":
-		_, ok := engineDefines[name]
-		return ok, nil
-	case "flag", "global_var", "variable", "character_flag":
-		return true, nil
+		if _, ok := engineDefines[name]; ok {
+			return true, nil
+		}
+		return r.defineResolved(ctx, name)
 	default:
+		if isRuntimeSymbolRefKind(kind) {
+			return true, nil
+		}
 		// Match the global resolver: unknown runtime-looking ref kinds can still
 		// resolve through an indexed object with the same name. That outcome is
 		// rare, but preserving it avoids a scoped refresh changing a reference
@@ -292,6 +305,20 @@ func (r *scopedResolver) resolved(ctx context.Context, kind, name string) (bool,
 		r.objCache[typedKey] = true
 		return true, nil
 	}
+}
+
+// defineResolved mirrors activeDefineNames from the global finalizer. The
+// set is loaded once per refresh and only when a define reference is actually
+// inspected, so the common path pays nothing.
+func (r *scopedResolver) defineResolved(ctx context.Context, name string) (bool, error) {
+	if r.defineNames == nil {
+		names, err := activeDefineNames(ctx, r.tx)
+		if err != nil {
+			return false, err
+		}
+		r.defineNames = names
+	}
+	return r.defineNames[name], nil
 }
 
 func (r *scopedResolver) gameSourceReferencesLocalization(ctx context.Context, name string) (bool, error) {

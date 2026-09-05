@@ -16,7 +16,7 @@ import (
 // tools), accept large file payloads (ck3_review/preflight/impact), or return
 // heavy media (map_render, ck3_gui previews) are deliberately excluded.
 //
-// Two more are excluded for the same reason even though they are read-only:
+// Three more are excluded for the same reason even though they are read-only:
 // ck3_workspace operation=on_action_evidence hashes engine logs and vanilla
 // files off disk, map_province_mapping decodes province rasters off disk, and
 // ck3_coat_of_arms reads the definition, the named_colors files and every

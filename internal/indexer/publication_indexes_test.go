@@ -30,10 +30,9 @@ func declaredIndexNames(t *testing.T, db *DB) []string {
 	return out
 }
 
-// Publication drops every secondary index so the whole-database copy is not
-// filtered through sixty-odd live B-trees. That is only safe if the finished
-// generation has all of them back: an index named in an INDEXED BY clause is
-// load-bearing, and SQLite fails the statement outright when it is missing.
+// Publication promotes the already-complete staged database instead of
+// rebuilding indexes in the live cache. The promoted generation must retain
+// every load-bearing INDEXED BY dependency.
 func TestStagedPublicationRestoresEverySecondaryIndex(t *testing.T) {
 	ctx := context.Background()
 	cfg, reader, sourcePath, dbPath := stagedFullRefreshFixture(t)
@@ -64,7 +63,11 @@ func TestStagedPublicationRestoresEverySecondaryIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	published, err := Open(dbPath)
+	publishedPath, err := ConfiguredDatabasePath(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	published, err := Open(publishedPath)
 	if err != nil {
 		t.Fatal(err)
 	}

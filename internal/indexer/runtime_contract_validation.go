@@ -3,8 +3,10 @@ package indexer
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -21,9 +23,16 @@ import (
 // complete, uniform suffix set, so such a rule would reject valid upstream
 // configurations. Unknown format names are handled by the local modifier
 // definition contract instead.
+// The registration contract is only decidable when the active index actually
+// carries a GOVERNMENT_TYPES block. A workspace whose defines live in an
+// unconfigured upstream layer (a base-Godherja style split) has no such block,
+// and every project government then looks unregistered: that is a source
+// blind spot, not a defect, and reporting it as an error per government buried
+// the real findings. When the evidence is absent the check reports one
+// unverifiable finding instead of N false errors.
 func refreshGovernmentRegistrationDiagnostics(ctx context.Context, tx *sql.Tx, projectRank int) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM diagnostics
-		WHERE source='validator' AND code='unregistered_government_type'`); err != nil {
+		WHERE source='validator' AND code IN ('unregistered_government_type','government_registration_unverifiable')`); err != nil {
 		return err
 	}
 	governments, err := activeProjectGovernments(ctx, tx, projectRank)
@@ -33,9 +42,17 @@ func refreshGovernmentRegistrationDiagnostics(ctx context.Context, tx *sql.Tx, p
 	if len(governments) == 0 {
 		return nil
 	}
-	registered, err := activeGovernmentTypes(ctx, tx)
+	registered, evidenceFound, err := activeGovernmentTypes(ctx, tx)
 	if err != nil {
 		return err
+	}
+	if !evidenceFound {
+		if location, ok := firstContractLocation(governments); ok {
+			insertDiag(ctx, tx, "validator", "warning", "government_registration_unverifiable",
+				"no active common/defines file declares an NGovernment.GOVERNMENT_TYPES block, so government registration cannot be verified from the current sources; add the layer that owns the defines (or a base database) before treating unregistered-government findings as real",
+				location.fileID, location.path, location.line, location.col)
+		}
+		return nil
 	}
 	for name, location := range governments {
 		if registered[name] {
@@ -296,6 +313,16 @@ func activeRuntimeContractFiles(ctx context.Context, tx *sql.Tx, relPrefix strin
 func parseRuntimeContractFile(file runtimeContractFile) ([]*script.Node, error) {
 	data, err := os.ReadFile(file.path)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			// The index still holds a row for a file that has since been deleted
+			// from disk. These validators read every active runtime-contract file,
+			// not just the paths a refresh was asked to reconcile, so one unrelated
+			// stale row must not fail the whole refresh: that would leave the index
+			// permanently unable to catch up without a full rescan. A vanished file
+			// contributes no contract, and its row is reconciled by the next scan
+			// that covers it.
+			return nil, nil
+		}
 		return nil, fmt.Errorf("read indexed script %q for runtime-contract validation: %w", file.path, err)
 	}
 	// Parse errors are already emitted against the source file during the
@@ -333,23 +360,91 @@ func activeProjectGovernments(ctx context.Context, tx *sql.Tx, projectRank int) 
 	return governments, rows.Err()
 }
 
-func activeGovernmentTypes(ctx context.Context, tx *sql.Tx) (map[string]bool, error) {
+// firstContractLocation picks a deterministic representative from a map of
+// contract locations. These validators report a single finding for a
+// workspace-wide condition, and map iteration order would otherwise make the
+// reported file jump between scans of identical input.
+// activeDefineNames collects every @Namespace|KEY that an active
+// common/defines file declares. engineDefines only covers the generated CK3
+// 1.19 snapshot, so a mod that adds its own namespace would otherwise be
+// reported as an unknown engine define; conversely a typo inside a namespace
+// the project does declare is a real, statically provable defect.
+//
+// The parse is bounded by the defines files themselves (vanilla ships 12) and
+// is only reached when a project reference actually uses the @Namespace|KEY
+// form, so workspaces without engine-define references pay nothing.
+func activeDefineNames(ctx context.Context, tx *sql.Tx) (map[string]bool, error) {
 	files, err := activeRuntimeContractFiles(ctx, tx, "common/defines/", 0)
 	if err != nil {
 		return nil, err
 	}
-	registered := map[string]bool{}
+	names := map[string]bool{}
 	for _, file := range files {
 		nodes, err := parseRuntimeContractFile(file)
 		if err != nil {
 			return nil, err
 		}
+		for _, namespace := range nodes {
+			if namespace.Kind != "block" || namespace.Key == "" {
+				continue
+			}
+			for _, member := range namespace.Children {
+				if member.Key == "" {
+					continue
+				}
+				names["@"+namespace.Key+"|"+member.Key] = true
+			}
+		}
+	}
+	return names, nil
+}
+
+func firstContractLocation(locations map[string]runtimeContractLocation) (runtimeContractLocation, bool) {
+	names := make([]string, 0, len(locations))
+	for name := range locations {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	best := runtimeContractLocation{}
+	found := false
+	for _, name := range names {
+		candidate := locations[name]
+		if !found || candidate.path < best.path ||
+			(candidate.path == best.path && (candidate.line < best.line ||
+				(candidate.line == best.line && candidate.col < best.col))) {
+			best = candidate
+			found = true
+		}
+	}
+	return best, found
+}
+
+// activeGovernmentTypes collects the ids registered by every active
+// common/defines file. The second result reports whether any of those files
+// declared a GOVERNMENT_TYPES block at all, which is what separates "this
+// government is unregistered" from "registration evidence is not indexed".
+func activeGovernmentTypes(ctx context.Context, tx *sql.Tx) (map[string]bool, bool, error) {
+	files, err := activeRuntimeContractFiles(ctx, tx, "common/defines/", 0)
+	if err != nil {
+		return nil, false, err
+	}
+	registered := map[string]bool{}
+	evidenceFound := false
+	for _, file := range files {
+		nodes, err := parseRuntimeContractFile(file)
+		if err != nil {
+			return nil, false, err
+		}
 		walkRuntimeContractNodes(nodes, nil, func(node, parent *script.Node) {
-			if parent == nil || parent.Key != "GOVERNMENT_TYPES" || node.Kind != "bare" {
+			if parent == nil || parent.Key != "GOVERNMENT_TYPES" {
+				return
+			}
+			evidenceFound = true
+			if node.Kind != "bare" {
 				return
 			}
 			registered[strings.Trim(node.Key, `"`)] = true
 		})
 	}
-	return registered, nil
+	return registered, evidenceFound, nil
 }

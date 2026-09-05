@@ -1,5 +1,24 @@
 $ErrorActionPreference = 'Stop'
 
+function Get-SHA256Hex {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $digest = $sha256.ComputeHash($stream)
+        }
+        finally {
+            $sha256.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
+    return ([System.BitConverter]::ToString($digest) -replace '-', '').ToLowerInvariant()
+}
+
 $pluginRoot = Split-Path -Parent $PSScriptRoot
 $manifestPath = Join-Path $pluginRoot '.codex-plugin\plugin.json'
 $settingsPath = Join-Path $pluginRoot 'config\settings.json'
@@ -28,7 +47,7 @@ if ($hasGISManifest -and $hasGISBinary) {
     if ($null -eq $platform -or [string]$platform.binary_sha256 -notmatch '^[0-9a-f]{64}$') {
         throw 'Bundled WhiteboxTools manifest lacks a valid windows-x64 executable hash.'
     }
-    $actualHash = (Get-FileHash -LiteralPath $gisBinary -Algorithm SHA256).Hash.ToLowerInvariant()
+    $actualHash = Get-SHA256Hex -Path $gisBinary
     if ($actualHash -ne [string]$platform.binary_sha256) { throw 'Bundled WhiteboxTools SHA-256 does not match the release manifest.' }
     $env:CK3_INDEX_GIS_SIDECAR_PATH = $gisBinary
     $env:CK3_INDEX_GIS_SIDECAR_SHA256 = [string]$platform.binary_sha256

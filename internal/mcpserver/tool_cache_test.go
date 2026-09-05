@@ -213,7 +213,7 @@ func TestDiagnosticBaselineWritesAreNotServedFromTheReadCache(t *testing.T) {
 	if _, err := indexer.Scan(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	db, err := indexer.Open(filepath.Join(dir, "cache", "test.sqlite"))
+	db, err := indexer.OpenReadOnly(filepath.Join(dir, "cache", "test.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}

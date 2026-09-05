@@ -368,7 +368,7 @@ func handleDiagnosticBaseline(ctx context.Context, runtime *Runtime, definition 
 	}
 	switch operation {
 	case "save":
-		saved, err := runtime.DB.SaveDiagnosticBaseline(ctx, args.Baseline)
+		saved, err := indexer.UpdateDiagnosticBaseline(ctx, runtime.Config, args.Baseline, false)
 		if err != nil {
 			return toolOutput{}, err
 		}
@@ -394,7 +394,7 @@ func handleDiagnosticBaseline(ctx context.Context, runtime *Runtime, definition 
 			"baselines": baselines,
 		}, Visibility: "private"}, nil
 	case "clear":
-		cleared, err := runtime.DB.ClearDiagnosticBaseline(ctx, args.Baseline)
+		cleared, err := indexer.UpdateDiagnosticBaseline(ctx, runtime.Config, args.Baseline, true)
 		if err != nil {
 			return toolOutput{}, err
 		}

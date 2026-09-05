@@ -937,6 +937,10 @@ func countyHistoryAnchorDiagnostics(ctx context.Context, tx *sql.Tx, anchors map
 	}
 	counties := sortedStringKeys(anchors)
 	out := make([]mapContractDiagnostic, 0)
+	// A map can contain thousands of counties and hundreds of bookmarks.
+	// Load the relevant history once instead of preparing three SQL queries
+	// per county per bookmark. Date order preserves the effective-value rule.
+	history, historyErr := loadCountyAnchorHistory(ctx, tx)
 	for _, county := range counties {
 		anchor := anchors[county]
 		missingCount := 0
@@ -945,14 +949,18 @@ func countyHistoryAnchorDiagnostics(ctx context.Context, tx *sql.Tx, anchors map
 		for _, date := range bookmarkDates {
 			missing := make([]string, 0, 3)
 			for _, field := range []string{"culture", "religion", "holding"} {
-				var value string
-				err := tx.QueryRowContext(ctx, `SELECT value FROM map_province_history WHERE province_id=? AND field=? AND date_key<=? ORDER BY date_key DESC LIMIT 1`, anchor.ProvinceID, field, date).Scan(&value)
-				if err != nil && err != sql.ErrNoRows {
-					out = append(out, mapContractDiagnostic{Severity: "error", Code: "county_history_anchor_check_failed", Message: err.Error(), Source: anchor.Source, Path: anchor.Path, Line: anchor.Line, Occurrences: 1})
+				if historyErr != nil {
+					out = append(out, mapContractDiagnostic{Severity: "error", Code: "county_history_anchor_check_failed", Message: historyErr.Error(), Source: anchor.Source, Path: anchor.Path, Line: anchor.Line, Occurrences: 1})
 					failed = true
 					break
 				}
-				if err == sql.ErrNoRows || strings.TrimSpace(value) == "" || (field == "holding" && strings.EqualFold(strings.TrimSpace(value), "none")) {
+				values := history[anchor.ProvinceID][field]
+				end := sort.Search(len(values), func(i int) bool { return values[i].date > date })
+				value := ""
+				if end > 0 {
+					value = values[end-1].value
+				}
+				if strings.TrimSpace(value) == "" || (field == "holding" && strings.EqualFold(strings.TrimSpace(value), "none")) {
 					missing = append(missing, field)
 				}
 			}
@@ -976,6 +984,34 @@ func countyHistoryAnchorDiagnostics(ctx context.Context, tx *sql.Tx, anchors map
 		})
 	}
 	return out
+}
+
+type countyAnchorHistoryValue struct {
+	date  int
+	value string
+}
+
+func loadCountyAnchorHistory(ctx context.Context, tx *sql.Tx) (map[int]map[string][]countyAnchorHistoryValue, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT province_id,field,date_key,value FROM map_province_history
+		WHERE field IN ('culture','religion','holding') ORDER BY date_key`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	history := map[int]map[string][]countyAnchorHistoryValue{}
+	for rows.Next() {
+		var province int
+		var field string
+		var value countyAnchorHistoryValue
+		if err := rows.Scan(&province, &field, &value.date, &value.value); err != nil {
+			return nil, err
+		}
+		if history[province] == nil {
+			history[province] = map[string][]countyAnchorHistoryValue{}
+		}
+		history[province][field] = append(history[province][field], value)
+	}
+	return history, rows.Err()
 }
 
 func canonicalDefaultMapField(key string) string {

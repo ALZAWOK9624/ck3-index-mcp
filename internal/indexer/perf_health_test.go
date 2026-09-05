@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"ck3-index/internal/buildinfo"
 	"context"
 	"path/filepath"
 	"testing"
@@ -73,6 +74,9 @@ func TestHealthReportsSQLiteReadMemoryBudget(t *testing.T) {
 	}
 	if report.SQLiteReadConnections != maxReadConnections || report.SQLiteCachePerConnMB != readCacheMiBPerConnection || report.SQLiteCacheBudgetMB != estimatedSQLiteReadCacheBudgetMiB || report.SQLiteMMapLimitMB != readMMapLimitMiB || report.LoadedDatabaseCount != 1 || report.RetiredDatabaseCount != 0 || report.AggregateSQLiteCacheBudgetMB != estimatedSQLiteReadCacheBudgetMiB {
 		t.Fatalf("health SQLite memory budget is incomplete: %+v", report)
+	}
+	if report.BinaryVersion != buildinfo.Version || report.BinaryRevision != buildinfo.Revision {
+		t.Fatalf("health binary identity = %q %q, want %q %q", report.BinaryVersion, report.BinaryRevision, buildinfo.Version, buildinfo.Revision)
 	}
 }
 

@@ -1,0 +1,28 @@
+{
+  "name": "unregistered government is reported only when GOVERNMENT_TYPES evidence is indexed",
+  "files": [
+    {
+      "path": "common/defines/gre_defines.txt",
+      "content": "NGovernment = {\n\tGOVERNMENT_TYPES = {\n\t\tgre_registered_government\n\t}\n}\n"
+    },
+    {
+      "path": "common/governments/gre_governments.txt",
+      "content": "gre_registered_government = {\n\tfallback = 1\n\tmechanic_type = republic\n\tis_mechanic_type_default = yes\n}\ngre_unregistered_government = {\n\tfallback = 2\n}\n"
+    }
+  ],
+  "expect_diagnostics": [
+    {
+      "code": "unregistered_government_type",
+      "contains": "gre_unregistered_government"
+    }
+  ],
+  "reject_diagnostics": [
+    {
+      "code": "unregistered_government_type",
+      "contains": "gre_registered_government"
+    },
+    {
+      "code": "government_registration_unverifiable"
+    }
+  ]
+}

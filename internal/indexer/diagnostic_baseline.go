@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -35,6 +36,103 @@ type DiagnosticBaseline struct {
 }
 
 const defaultDiagnosticBaselineName = "default"
+
+// Baseline writes must follow the current publication pointer while holding
+// the same anchor lock as refresh. MCP query handles are read-only leases.
+func UpdateDiagnosticBaseline(ctx context.Context, cfg Config, name string, clear bool) (DiagnosticBaseline, error) {
+	anchor, err := ConfiguredDatabaseAnchorPath(cfg)
+	if err != nil {
+		return DiagnosticBaseline{}, err
+	}
+	lock, err := acquirePublicationLock(ctx, anchor)
+	if err != nil {
+		return DiagnosticBaseline{}, err
+	}
+	defer lock.Close()
+	path, err := ConfiguredDatabasePath(cfg)
+	if err != nil {
+		return DiagnosticBaseline{}, err
+	}
+	db, err := OpenWithOptions(path, cfg.SQLiteReadOptions())
+	if err != nil {
+		return DiagnosticBaseline{}, err
+	}
+	defer db.Close()
+	if err := db.EnsureSchema(ctx); err != nil {
+		return DiagnosticBaseline{}, err
+	}
+	if clear {
+		return db.ClearDiagnosticBaseline(ctx, name)
+	}
+	return db.SaveDiagnosticBaseline(ctx, name)
+}
+
+// Copy caller decisions from the live workspace, never from an upstream seed.
+// The caller holds the publication lock and a transaction on the staged DB.
+func copyPreservedPublicationTables(ctx context.Context, dst *sql.Conn, livePath string) error {
+	var live *DB
+	if _, err := os.Stat(livePath); err == nil {
+		live, err = OpenReadOnly(livePath)
+		if err != nil {
+			return err
+		}
+		defer live.Close()
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	for table := range rebuildPreservedTables {
+		if _, err := dst.ExecContext(ctx, `DELETE FROM `+quoteSQLiteIdentifier(table)); err != nil {
+			return err
+		}
+		if live == nil || !live.tableExists(ctx, table) {
+			continue
+		}
+		rows, err := live.sql.QueryContext(ctx, `SELECT * FROM `+quoteSQLiteIdentifier(table))
+		if err != nil {
+			return err
+		}
+		cols, err := rows.Columns()
+		if err != nil {
+			rows.Close()
+			return err
+		}
+		quoted := make([]string, len(cols))
+		placeholders := make([]string, len(cols))
+		for i, col := range cols {
+			quoted[i] = quoteSQLiteIdentifier(col)
+			placeholders[i] = "?"
+		}
+		stmt, err := dst.PrepareContext(ctx, `INSERT INTO `+quoteSQLiteIdentifier(table)+`(`+strings.Join(quoted, ",")+`) VALUES(`+strings.Join(placeholders, ",")+`)`)
+		if err != nil {
+			rows.Close()
+			return err
+		}
+		for rows.Next() {
+			values := make([]any, len(cols))
+			pointers := make([]any, len(cols))
+			for i := range values {
+				pointers[i] = &values[i]
+			}
+			if err = rows.Scan(pointers...); err != nil {
+				break
+			}
+			if _, err = stmt.ExecContext(ctx, values...); err != nil {
+				break
+			}
+		}
+		if err == nil {
+			err = rows.Err()
+		}
+		rows.Close()
+		stmt.Close()
+		if err != nil {
+			return err
+		}
+	}
+	// Adopt older snapshots that recorded only entry rows.
+	_, err := dst.ExecContext(ctx, `INSERT OR IGNORE INTO diagnostic_baseline_snapshots(name,created_at) SELECT name,COALESCE(MAX(created_at),'') FROM diagnostic_baselines GROUP BY name`)
+	return err
+}
 
 func normalizeBaselineName(name string) string {
 	trimmed := strings.ToLower(strings.TrimSpace(name))

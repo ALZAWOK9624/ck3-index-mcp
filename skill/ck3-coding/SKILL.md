@@ -260,6 +260,45 @@ When generating events, decisions, traits, modifiers, men-at-arms, traditions, o
 
 Inspect before imitating.
 
+- Before building a story thread, load `references/narrative-design.md`. CK3's
+  narrative unit is the situation, not the plot: state persists and events are
+  windows onto it, so deleting an event must not delete the story. The same file
+  carries the on_action discipline, because a recurring hook's cost is multiplied
+  by the population and it is the most reliable way to make a mod stutter.
+- For prose, concepts and formatting codes, load
+  `references/writing-and-localization.md`. It is short on purpose: event prose is
+  deliberately unspecified, because a template for writing produces writing that
+  reads like a template. The rules that do bind are that any reused term needs a
+  game_concept entry, and that colour codes pick out information rather than
+  decorate.
+- Once a panel is correct, `references/gui-composition.md` is what makes it good.
+  It opens with five counts -- spacing values, alignment baselines, font sizes,
+  colours, contrast -- that are mechanical. A panel failing two of them cannot be
+  rescued by taste; one passing all five looks professional even with mediocre
+  taste.
+- Before choosing where content lives -- which event window, which of the 124
+  scriptable systems, whether it needs a GUI at all -- load
+  `references/systems-and-surfaces.md`. Picking the system whose shape already
+  matches the content inherits its interface, AI and player habits; building a
+  decision plus a custom panel for something that is an activity, a scheme or a
+  contract is the commonest and most expensive mistake in a mod.
+- Before designing a new mechanic -- not scripting one, designing one -- load
+  `references/design-methodology.md`. It is a position rather than a survey: what
+  makes something a mechanic instead of upkeep with a UI, why a zero-sum shape asks
+  what the player becomes while an additive one only asks how much they have, and a
+  seven-question review to run in order, stopping at the first failure.
+- Before writing or reviewing a decision, load `references/decisions.md`. It carries
+  the vanilla field-frequency table, which reads as a specification: a field on 86%
+  of 431 vanilla decisions is close to mandatory, one on 1% is a privilege. It also
+  covers cooldowns that start when a chain ends rather than begins, and the failure
+  reporting that decides whether a blocked decision is a goal or a mystery.
+- To judge how a GUI **looks** rather than what it resolves to, call `ck3_gui` with
+  `operation=preview` and `format=visual`, then read the PNG and iterate. Load
+  `references/gui-visual-design.md` first: it covers the render loop, the five CSS
+  reflexes that are wrong in jomini, and why a vanilla template's contrast does not
+  travel with it. The bullets below describe the diagnostic and HTML outputs, which
+  answer what is provable, not what is well composed.
+
 - Call `ck3_gui` with `operation=summary`, then narrow with `file`, `type`, or `template` instead of treating raw GUI text as a flat format.
 - After changing a named widget or custom type, call `ck3_gui` with `operation=preview`, `format=both`, `html_mode=inspector`, and the appropriate `language` (`raw`, `english`, `simp_chinese`, or `bilingual`). Use the PNG for immediate visual review and the self-contained inspector for tree browsing, zoom, search, localization switching, property inspection, and controlled visual-state simulation. Use `html_mode=static` only when a script-free artifact is required.
 - Read `preview.nodes`, `semantics`, `textures`, `approximate`, and `warnings` before claiming fidelity. Runtime `visible`, `enabled`, numeric `value`, `down`, `selected`, `datacontext`, repeated `onclick`, localization, effects, and dynamic textures are preserved as expressions. The bounded preview evaluator may compose `And`, `Or`, `Not`, and typed comparisons from explicit `runtime_facts`; direct numeric facts or literals may drive bounded progress values. It never executes arbitrary Jomini code or invents missing facts.

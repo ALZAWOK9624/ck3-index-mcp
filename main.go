@@ -181,9 +181,8 @@ func run(ctx context.Context, args []string) error {
 			}
 			return printJSON(stats)
 		}
-		// Every user-visible full scan uses staged publication. --clean remains
-		// accepted for CLI compatibility; the staging database is always a clean
-		// rebuild and replaces the live generation only after finalization.
+		// Full scans verify source content in an isolated staged generation.
+		// --clean bypasses both published-generation and shared-base reuse.
 		cfg.ForceClean = clean
 		stats, err := indexer.ScanFullStaged(ctx, cfg)
 		if err != nil {
@@ -262,143 +261,70 @@ func run(ctx context.Context, args []string) error {
 		return printJSON(result)
 	case "gui":
 		if len(args) < 1 {
-			return errors.New("usage: ck3-index gui <summary|file|type|template|preview> [path-or-symbol] [path-prefix] [--format png|html|both] [--html-mode static|inspector] [--language raw|english|simp_chinese|bilingual] [--width px] [--height px] [--limit nodes] [--scenario samples.json] [--out file] [--html-out file.html]")
+			return errors.New("usage: ck3-index gui <summary|file|type|template|preview> [path-or-symbol] [path-prefix] [--format png|visual|html|both] [--html-mode static|inspector] [--language raw|english|simp_chinese|bilingual] [--width px] [--height px] [--limit nodes] [--scenario samples.json] [--out file] [--html-out file.html]")
 		}
 		options := indexer.GUIQueryOptions{Operation: args[0], AllowProject: true}
 		previewOutput := ""
 		htmlOutput := ""
-		switch args[0] {
+		// The usage line above offers these flags for every gui operation, and
+		// --limit is the one that decides how much of a tree file, type, and
+		// template return. Parsing them inside the preview branch alone left the
+		// other operations reading a flag as a positional path: `gui summary
+		// --limit 4` came back as `GUI path "--limit" must be under gui/`, and
+		// `gui file x --limit 4` dropped the limit without saying anything.
+		positional, err := parseGUIQueryFlags(args, &options, &previewOutput, &htmlOutput)
+		if err != nil {
+			return err
+		}
+		switch positional[0] {
 		case "summary":
-			if len(args) > 1 {
-				options.PathPrefix = args[1]
+			if len(positional) > 2 {
+				return fmt.Errorf("unexpected GUI summary argument %q", positional[2])
+			}
+			if len(positional) > 1 {
+				options.PathPrefix = positional[1]
 			}
 		case "file":
-			if len(args) < 2 {
+			if len(positional) < 2 {
 				return errors.New("usage: ck3-index gui file <gui/path.gui>")
 			}
-			options.Path = args[1]
-		case "type", "template":
-			if len(args) < 2 {
-				return fmt.Errorf("usage: ck3-index gui %s <symbol> [gui/path-prefix]", args[0])
+			if len(positional) > 2 {
+				return fmt.Errorf("unexpected GUI file argument %q", positional[2])
 			}
-			options.Symbol = args[1]
-			if len(args) > 2 {
-				options.PathPrefix = args[2]
+			options.Path = positional[1]
+		case "type", "template":
+			if len(positional) < 2 {
+				return fmt.Errorf("usage: ck3-index gui %s <symbol> [gui/path-prefix]", positional[0])
+			}
+			if len(positional) > 3 {
+				return fmt.Errorf("unexpected GUI %s argument %q", positional[0], positional[3])
+			}
+			options.Symbol = positional[1]
+			if len(positional) > 2 {
+				options.PathPrefix = positional[2]
 			}
 		case "preview":
-			if len(args) < 2 {
-				return errors.New("usage: ck3-index gui preview <type-template-or-element> [gui/path-prefix] [--format png|html|both] [--html-mode static|inspector] [--language raw|english|simp_chinese|bilingual] [--width px] [--height px] [--limit nodes] [--scenario samples.json] [--out file] [--html-out file.html]")
+			if len(positional) < 2 {
+				return errors.New("usage: ck3-index gui preview <type-template-or-element> [gui/path-prefix] [--format png|visual|html|both] [--html-mode static|inspector] [--language raw|english|simp_chinese|bilingual] [--width px] [--height px] [--limit nodes] [--scenario samples.json] [--out file] [--html-out file.html]")
 			}
-			options.Symbol = args[1]
-			for index := 2; index < len(args); index++ {
-				if args[index] == "--out" {
-					if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
-						return errors.New("usage: ck3-index gui preview <type-template-or-element> [gui/path-prefix] [--format png|html|both] [--html-mode static|inspector] [--language raw|english|simp_chinese|bilingual] [--out file] [--html-out file.html]")
-					}
-					previewOutput = args[index+1]
-					index++
-					continue
-				}
-				if args[index] == "--html-out" {
-					if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
-						return errors.New("usage: ck3-index gui preview <type-template-or-element> [gui/path-prefix] [--format png|html|both] [--html-mode static|inspector] [--language raw|english|simp_chinese|bilingual] [--out file] [--html-out file.html]")
-					}
-					htmlOutput = args[index+1]
-					index++
-					continue
-				}
-				if args[index] == "--format" {
-					if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
-						return errors.New("GUI preview --format requires png, html, or both")
-					}
-					options.Format = args[index+1]
-					index++
-					continue
-				}
-				if args[index] == "--html-mode" {
-					if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
-						return errors.New("GUI preview --html-mode requires static or inspector")
-					}
-					options.HTMLMode = args[index+1]
-					index++
-					continue
-				}
-				if args[index] == "--language" {
-					if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
-						return errors.New("GUI preview --language requires raw, english, simp_chinese, or bilingual")
-					}
-					options.Language = args[index+1]
-					index++
-					continue
-				}
-				if args[index] == "--width" || args[index] == "--height" || args[index] == "--limit" {
-					flag := args[index]
-					if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
-						return fmt.Errorf("GUI preview %s requires an integer value", flag)
-					}
-					value, err := strconv.Atoi(args[index+1])
-					if err != nil {
-						return fmt.Errorf("GUI preview %s requires an integer value: %w", flag, err)
-					}
-					switch flag {
-					case "--width":
-						if value < 64 || value > indexer.GUIPreviewMaxWidth {
-							return fmt.Errorf("GUI preview --width must be between 64 and %d", indexer.GUIPreviewMaxWidth)
-						}
-						options.Width = value
-					case "--height":
-						if value < 64 || value > indexer.GUIPreviewMaxHeight {
-							return fmt.Errorf("GUI preview --height must be between 64 and %d", indexer.GUIPreviewMaxHeight)
-						}
-						options.Height = value
-					case "--limit":
-						if value < 1 || value > 500 {
-							return errors.New("GUI preview --limit must be between 1 and 500")
-						}
-						options.Limit = value
-					}
-					index++
-					continue
-				}
-				if args[index] == "--scenario" {
-					if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
-						return errors.New("GUI preview --scenario requires a JSON file containing sample_values, model_samples, runtime_facts, and/or action_effects")
-					}
-					data, err := os.ReadFile(args[index+1])
-					if err != nil {
-						return fmt.Errorf("read GUI scenario: %w", err)
-					}
-					var spec struct {
-						SampleValues  []indexer.GUIScenarioSample           `json:"sample_values"`
-						ModelSamples  []indexer.GUIModelSampleCollection    `json:"model_samples"`
-						RuntimeFacts  []indexer.GUIRuntimeFactInput         `json:"runtime_facts"`
-						ActionEffects []indexer.GUIRuntimeActionEffectInput `json:"action_effects"`
-					}
-					decoder := json.NewDecoder(bytes.NewReader(data))
-					decoder.DisallowUnknownFields()
-					if err := decoder.Decode(&spec); err != nil {
-						return fmt.Errorf("decode GUI scenario: %w", err)
-					}
-					if err := decoder.Decode(&struct{}{}); err != io.EOF {
-						return errors.New("decode GUI scenario: expected one JSON object")
-					}
-					options.Samples = spec.SampleValues
-					options.ModelSamples = spec.ModelSamples
-					options.RuntimeFacts = spec.RuntimeFacts
-					options.ActionEffects = spec.ActionEffects
-					index++
-					continue
-				}
-				if options.PathPrefix != "" {
-					return fmt.Errorf("unexpected GUI preview argument %q", args[index])
-				}
-				options.PathPrefix = args[index]
+			if len(positional) > 3 {
+				return fmt.Errorf("unexpected GUI preview argument %q", positional[3])
+			}
+			options.Symbol = positional[1]
+			if len(positional) > 2 {
+				options.PathPrefix = positional[2]
 			}
 			if htmlOutput != "" && (options.Format == "" || strings.EqualFold(options.Format, "png")) {
 				options.Format = "both"
 			}
 		default:
-			return errors.New("usage: ck3-index gui <summary|file|type|template|preview> [path-or-symbol] [path-prefix] [--format png|html|both] [--html-mode static|inspector] [--language raw|english|simp_chinese|bilingual] [--width px] [--height px] [--limit nodes] [--scenario samples.json] [--out file] [--html-out file.html]")
+			return errors.New("usage: ck3-index gui <summary|file|type|template|preview> [path-or-symbol] [path-prefix] [--format png|visual|html|both] [--html-mode static|inspector] [--language raw|english|simp_chinese|bilingual] [--width px] [--height px] [--limit nodes] [--scenario samples.json] [--out file] [--html-out file.html]")
+		}
+		// --out and --html-out write a rendered preview, so naming them for an
+		// operation that produces none is a mistake worth reporting rather than
+		// a file the caller never receives.
+		if positional[0] != "preview" && (previewOutput != "" || htmlOutput != "") {
+			return errors.New("GUI --out and --html-out are only valid for operation=preview")
 		}
 		db, err := openReadOnlyDB(cfgPath)
 		if err != nil {
@@ -1375,6 +1301,114 @@ func openDB(ctx context.Context, cfgPath string) (*indexer.DB, error) {
 		return nil, err
 	}
 	return db, nil
+}
+
+// parseGUIQueryFlags splits the documented gui flags from the positional
+// operation arguments, returning the positionals with the operation still at
+// index 0.
+//
+// Every gui operation is offered the same flag set and QueryGUI is the one
+// that decides which of them an operation honours — it already rejects, for
+// instance, a language on anything but preview. The parser's only job is to
+// keep a flag from being mistaken for a path, and to name an unknown flag
+// instead of quietly treating it as one.
+func parseGUIQueryFlags(args []string, options *indexer.GUIQueryOptions, previewOutput, htmlOutput *string) ([]string, error) {
+	positional := make([]string, 0, len(args))
+	if len(args) > 0 {
+		positional = append(positional, args[0])
+	}
+	for index := 1; index < len(args); index++ {
+		flag := args[index]
+		if !strings.HasPrefix(flag, "--") {
+			positional = append(positional, flag)
+			continue
+		}
+		value := ""
+		if index+1 < len(args) {
+			value = args[index+1]
+		}
+		switch flag {
+		case "--out", "--html-out":
+			if strings.TrimSpace(value) == "" {
+				return nil, fmt.Errorf("GUI %s requires a file path", flag)
+			}
+			if flag == "--out" {
+				*previewOutput = value
+			} else {
+				*htmlOutput = value
+			}
+		case "--format":
+			if strings.TrimSpace(value) == "" {
+				return nil, errors.New("GUI --format requires png, html, or both")
+			}
+			options.Format = value
+		case "--html-mode":
+			if strings.TrimSpace(value) == "" {
+				return nil, errors.New("GUI --html-mode requires static or inspector")
+			}
+			options.HTMLMode = value
+		case "--language":
+			if strings.TrimSpace(value) == "" {
+				return nil, errors.New("GUI --language requires raw, english, simp_chinese, or bilingual")
+			}
+			options.Language = value
+		case "--width", "--height", "--limit":
+			if strings.TrimSpace(value) == "" {
+				return nil, fmt.Errorf("GUI %s requires an integer value", flag)
+			}
+			number, err := strconv.Atoi(value)
+			if err != nil {
+				return nil, fmt.Errorf("GUI %s requires an integer value: %w", flag, err)
+			}
+			switch flag {
+			case "--width":
+				if number < 64 || number > indexer.GUIPreviewMaxWidth {
+					return nil, fmt.Errorf("GUI --width must be between 64 and %d", indexer.GUIPreviewMaxWidth)
+				}
+				options.Width = number
+			case "--height":
+				if number < 64 || number > indexer.GUIPreviewMaxHeight {
+					return nil, fmt.Errorf("GUI --height must be between 64 and %d", indexer.GUIPreviewMaxHeight)
+				}
+				options.Height = number
+			case "--limit":
+				if number < 1 || number > indexer.GUIPreviewMaxNodes {
+					return nil, fmt.Errorf("GUI --limit must be between 1 and %d", indexer.GUIPreviewMaxNodes)
+				}
+				options.Limit = number
+			}
+		case "--scenario":
+			if strings.TrimSpace(value) == "" {
+				return nil, errors.New("GUI --scenario requires a JSON file containing sample_values, model_samples, runtime_facts, and/or action_effects")
+			}
+			data, err := os.ReadFile(value)
+			if err != nil {
+				return nil, fmt.Errorf("read GUI scenario: %w", err)
+			}
+			var spec struct {
+				SampleValues  []indexer.GUIScenarioSample           `json:"sample_values"`
+				ModelSamples  []indexer.GUIModelSampleCollection    `json:"model_samples"`
+				RuntimeFacts  []indexer.GUIRuntimeFactInput         `json:"runtime_facts"`
+				ActionEffects []indexer.GUIRuntimeActionEffectInput `json:"action_effects"`
+			}
+			decoder := json.NewDecoder(bytes.NewReader(data))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&spec); err != nil {
+				return nil, fmt.Errorf("decode GUI scenario: %w", err)
+			}
+			if err := decoder.Decode(&struct{}{}); err != io.EOF {
+				return nil, errors.New("decode GUI scenario: expected one JSON object")
+			}
+			options.Samples = spec.SampleValues
+			options.ModelSamples = spec.ModelSamples
+			options.RuntimeFacts = spec.RuntimeFacts
+			options.ActionEffects = spec.ActionEffects
+		default:
+			return nil, fmt.Errorf("unknown GUI flag %q", flag)
+		}
+		index++
+	}
+	return positional, nil
 }
 
 func openReadOnlyDB(cfgPath string) (*indexer.DB, error) {

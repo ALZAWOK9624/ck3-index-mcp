@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-const stagedFullScanSchema = "staged_full_scan"
-
 // ErrConflictingGeneration is returned when a staged full scan was built from
 // a publication base that is no longer current. Callers may retry from a fresh
 // base; the live index is left untouched.
@@ -24,6 +22,10 @@ type PublicationBase struct {
 	Generation int64
 	Revision   string
 	Status     string
+	// DatabasePath pins the immutable generation from which the staged rebuild
+	// started. The numeric generation can repeat after a clean rebuild, so the
+	// path participates in the publication compare-and-swap when available.
+	DatabasePath string
 }
 
 type PublicationConflictError struct {
@@ -112,19 +114,19 @@ func redactHostPaths(text string, hostPaths []string) string {
 
 // ScanFullStaged performs a full rebuild without exposing a partial cache to
 // readers. It scans into a sibling temporary SQLite database, verifies that
-// snapshot reached ready, then publishes its complete table set to the live
-// database in one transaction. A failure or cancellation before commit only
-// removes the staging database, preserving the last published generation.
+// snapshot reached ready, then promotes that complete file as a new immutable
+// generation with one atomic pointer replacement. A failure or cancellation
+// before the pointer commit preserves the last published generation.
 func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 	normalized, err := NormalizeConfig(cfg)
 	if err != nil {
 		return ScanStats{}, err
 	}
-	dbPath, err := ConfiguredDatabasePath(normalized)
+	anchorPath, err := ConfiguredDatabaseAnchorPath(normalized)
 	if err != nil {
 		return ScanStats{}, err
 	}
-	lock, err := acquirePublicationLock(ctx, dbPath)
+	lock, err := acquirePublicationLock(ctx, anchorPath)
 	if err != nil {
 		recordStagedFullScanFailure(normalized, err)
 		return ScanStats{}, err
@@ -132,22 +134,31 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 	defer lock.Close()
 	// Swept under the publication lock, before a new stage is created: at this
 	// point no other full refresh can be holding one.
-	removeOrphanedStagedDatabases(dbPath)
+	removeOrphanedStagedDatabases(anchorPath)
+	removeOrphanedPublishedDatabaseGenerations(anchorPath)
 	if err := ctx.Err(); err != nil {
 		recordStagedFullScanFailure(normalized, err)
+		return ScanStats{}, err
+	}
+	dbPath, err := ConfiguredDatabasePath(normalized)
+	if err != nil {
 		return ScanStats{}, err
 	}
 	base, err := readPublicationBase(ctx, dbPath, normalized.SQLiteReadOptions())
 	if err != nil {
 		return ScanStats{}, err
 	}
-	stagePath, err := stagedFullScanPath(dbPath)
+	stagePath, err := stagedFullScanPath(anchorPath)
 	if err != nil {
 		err = sanitizeStagedFullScanFailure(err, scanRedactionPaths(normalized, dbPath, ""))
 		recordStagedFullScanFailure(normalized, err)
 		return ScanStats{}, err
 	}
-	defer removeStagedDatabase(stagePath)
+	defer func() {
+		if cleanupErr := removeStagedDatabase(stagePath); cleanupErr != nil {
+			fmt.Fprintf(os.Stderr, "[scan] could not remove staging cache %s: %v\n", filepath.Base(stagePath), cleanupErr)
+		}
+	}()
 
 	engineLoadStart := time.Now()
 	engineBundle, err := LoadEngineBundle(ctx, normalized.EngineLogs)
@@ -157,7 +168,21 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 		return ScanStats{}, err
 	}
 	engineLoadElapsed := time.Since(engineLoadStart)
-	seeded, seedRejection := seedStagedScanFromBase(ctx, normalized, stagePath, engineBundle.Fingerprint)
+	seedStart := time.Now()
+	reused := false
+	if !normalized.ForceClean {
+		reused = seedStagedScanFromPublished(ctx, normalized, dbPath, stagePath, engineBundle.Fingerprint)
+	}
+	seeded, seedRejection := false, ""
+	if !normalized.ForceClean && !reused {
+		seeded, seedRejection = seedStagedScanFromBase(ctx, normalized, stagePath, engineBundle.Fingerprint)
+	}
+	seedElapsed := time.Since(seedStart)
+	if reused {
+		seedRejection = "reused the compatible published generation instead"
+	} else if normalized.ForceClean {
+		seedRejection = "clean rebuild requested"
+	}
 	seedResult := &BaseSeedResult{
 		Configured: strings.TrimSpace(normalized.BaseDatabase) != "",
 		Used:       seeded,
@@ -170,12 +195,13 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 	// incrementally: a clean rebuild would discard exactly the work the base was
 	// there to supply. Without a base the stage starts empty and a clean scan is
 	// both correct and marginally cheaper.
-	stageConfig.ForceClean = !seeded
+	stageConfig.ForceClean = !seeded && !reused
+	stageConfig.verifyContent = reused
 	// Reuse the exact bundle whose fingerprint admitted the optional base.
 	// Reloading here doubles log parsing and creates a TOCTOU window where the
 	// stage can be seeded against one bundle and scanned against another.
-	scanStart := time.Now().Add(-engineLoadElapsed)
-	stats, err := scanWithPreparedEngineBundle(ctx, stageConfig, !seeded, false, engineBundle, engineLoadElapsed, scanStart)
+	scanStart := time.Now().Add(-engineLoadElapsed - seedElapsed)
+	stats, err := scanWithPreparedEngineBundle(ctx, stageConfig, stageConfig.ForceClean, false, engineBundle, engineLoadElapsed, scanStart)
 	if err != nil {
 		err = sanitizeStagedFullScanFailure(err, scanRedactionPaths(normalized, dbPath, stagePath))
 		recordStagedFullScanFailure(normalized, err)
@@ -191,7 +217,11 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 		recordStagedFullScanFailure(normalized, err)
 		return ScanStats{}, err
 	}
-	live, err := OpenReadOnlyWithOptions(dbPath, normalized.SQLiteReadOptions())
+	publishedPath, err := ConfiguredDatabasePath(normalized)
+	if err != nil {
+		return ScanStats{}, err
+	}
+	live, err := OpenReadOnlyWithOptions(publishedPath, normalized.SQLiteReadOptions())
 	if err != nil {
 		return ScanStats{}, err
 	}
@@ -207,29 +237,37 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 		stats.TimingsMillis = map[string]int64{}
 	}
 	stats.TimingsMillis["publish_staged"] = time.Since(publishStart).Milliseconds()
+	stats.TimingsMillis["seed_staged"] = seedElapsed.Milliseconds()
+	stats.ReusedGeneration = reused
+	stats.ElapsedMillis = time.Since(scanStart).Milliseconds()
 	if seedResult.Configured {
 		stats.BaseSeed = seedResult
 	}
 	// The staging location is an implementation detail and must never become
 	// the apparent published database in refresh output.
-	stats.Database = dbPath
+	stats.Database = anchorPath
 	return stats, nil
 }
 
 func readPublicationBase(ctx context.Context, dbPath string, options SQLiteReadOptions) (PublicationBase, error) {
-	db, err := OpenWithOptions(dbPath, options)
+	base := PublicationBase{DatabasePath: filepath.Clean(dbPath)}
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		return base, nil
+	} else if err != nil {
+		return PublicationBase{}, err
+	}
+	db, err := OpenReadOnlyWithOptions(dbPath, options)
 	if err != nil {
 		return PublicationBase{}, err
 	}
 	defer db.Close()
-	if err := db.ensureSchema(ctx); err != nil {
-		return PublicationBase{}, err
-	}
 	state, err := db.IndexState(ctx)
 	if err != nil {
 		return PublicationBase{}, err
 	}
-	return publicationBaseFromState(state), nil
+	base = publicationBaseFromState(state)
+	base.DatabasePath = filepath.Clean(dbPath)
+	return base, nil
 }
 
 func publicationBaseFromState(state IndexState) PublicationBase {
@@ -259,10 +297,15 @@ func stagedFullScanPath(dbPath string) (string, error) {
 	return path, nil
 }
 
-func removeStagedDatabase(path string) {
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		_ = os.Remove(path + suffix)
+func removeStagedDatabase(path string) error {
+	var removalErrors []error
+	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+		candidate := path + suffix
+		if err := os.Remove(candidate); err != nil && !os.IsNotExist(err) {
+			removalErrors = append(removalErrors, fmt.Errorf("remove %s: %w", filepath.Base(candidate), err))
+		}
 	}
+	return errors.Join(removalErrors...)
 }
 
 // orphanedStagedDatabaseAge keeps the sweep away from a staging cache that a
@@ -277,26 +320,55 @@ const orphanedStagedDatabaseAge = time.Hour
 // loss. Nothing else ever reclaimed them, so each interrupted full refresh
 // silently cost multiple gigabytes until someone went looking.
 //
-// Deletion is the lock test. On Windows an open SQLite file cannot be removed
-// and the attempt simply fails; on Unix the unlink is safe by construction
-// because a reader keeps its inode. Either way a failure is not an error worth
-// interrupting the scan for.
+// Deletion is the lock test. On Windows an open SQLite file cannot be removed;
+// on Unix the unlink is safe by construction because a reader keeps its inode.
+// Cleanup failure does not interrupt the next scan, but it is reported instead
+// of silently turning every killed refresh into another multi-gigabyte leak.
 func removeOrphanedStagedDatabases(dbPath string) {
 	dir := filepath.Dir(dbPath)
 	base := filepath.Base(dbPath)
-	matches, err := filepath.Glob(filepath.Join(dir, "."+base+".staging-*.sqlite"))
+	matches, err := filepath.Glob(filepath.Join(dir, "."+base+".staging-*.sqlite*"))
 	if err != nil {
 		return
 	}
-	var reclaimed int64
-	for _, path := range matches {
-		info, statErr := os.Stat(path)
-		if statErr != nil || time.Since(info.ModTime()) < orphanedStagedDatabaseAge {
+	roots := make(map[string]struct{}, len(matches))
+	for _, match := range matches {
+		name := filepath.Base(match)
+		marker := strings.LastIndex(name, ".sqlite")
+		if marker < 0 {
 			continue
 		}
-		size := info.Size()
-		removeStagedDatabase(path)
-		if _, stillThere := os.Stat(path); stillThere == nil {
+		roots[filepath.Join(dir, name[:marker+len(".sqlite")])] = struct{}{}
+	}
+	var reclaimed int64
+	for path := range roots {
+		var size int64
+		var newest time.Time
+		for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+			info, statErr := os.Stat(path + suffix)
+			if statErr != nil {
+				continue
+			}
+			size += info.Size()
+			if info.ModTime().After(newest) {
+				newest = info.ModTime()
+			}
+		}
+		if newest.IsZero() || time.Since(newest) < orphanedStagedDatabaseAge {
+			continue
+		}
+		if err := removeStagedDatabase(path); err != nil {
+			fmt.Fprintf(os.Stderr, "[scan] could not remove orphaned staging cache %s: %v\n", filepath.Base(path), err)
+			continue
+		}
+		stillPresent := false
+		for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+			if _, statErr := os.Stat(path + suffix); statErr == nil {
+				stillPresent = true
+				break
+			}
+		}
+		if stillPresent {
 			continue
 		}
 		reclaimed += size
@@ -330,6 +402,10 @@ func recordStagedFullScanFailure(cfg Config, scanErr error) {
 }
 
 func publishStagedFullScan(ctx context.Context, cfg Config, stagePath string, base PublicationBase) error {
+	anchorPath, err := ConfiguredDatabaseAnchorPath(cfg)
+	if err != nil {
+		return err
+	}
 	dbPath, err := ConfiguredDatabasePath(cfg)
 	if err != nil {
 		return err
@@ -347,34 +423,64 @@ func publishStagedFullScan(ctx context.Context, cfg Config, stagePath string, ba
 		return fmt.Errorf("staged full scan did not publish a ready generation")
 	}
 
-	db, err := OpenWithOptions(dbPath, cfg.SQLiteReadOptions())
+	// Validate both sides before touching the staged file. The previous
+	// implementation attached the stage to the live database, deleted every
+	// published row, and copied the whole cache back inside one WAL transaction.
+	// On a multi-gigabyte index that necessarily created a multi-gigabyte live
+	// WAL and could make the machine appear frozen. A completed stage already is
+	// the replacement database, so publication only needs a schema/CAS check and
+	// an atomic pointer move.
+	current := PublicationBase{DatabasePath: filepath.Clean(dbPath)}
+	if _, statErr := os.Stat(dbPath); statErr == nil {
+		live, openErr := OpenReadOnlyWithOptions(dbPath, cfg.SQLiteReadOptions())
+		if openErr != nil {
+			return openErr
+		}
+		currentState, stateErr := live.IndexState(ctx)
+		closeErr := live.Close()
+		if stateErr != nil {
+			return stateErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		current = publicationBaseFromState(currentState)
+		current.DatabasePath = filepath.Clean(dbPath)
+	} else if !os.IsNotExist(statErr) {
+		return statErr
+	}
+	if !samePublicationBase(current, base) {
+		return &PublicationConflictError{Base: base, Current: current}
+	}
+	stage, err = OpenReadOnlyWithOptions(stagePath, cfg.SQLiteReadOptions())
 	if err != nil {
 		return err
 	}
-	defer db.Close()
-	if err := db.ensureSchema(ctx); err != nil {
+	defer stage.Close()
+	for _, table := range semanticIndexTableCatalog {
+		if err := verifyImmutablePublicationTable(ctx, stage, table); err != nil {
+			return err
+		}
+	}
+	if err := stage.Close(); err != nil {
 		return err
 	}
 
-	// ATTACH is connection-local in SQLite. Pin both attachment and transaction
-	// to one connection so a pooled database/sql connection cannot lose sight
-	// of the staged schema between DELETE and INSERT.
-	conn, err := db.sql.Conn(ctx)
+	nextGeneration := current.Generation + 1
+	if nextGeneration < 1 {
+		nextGeneration = 1
+	}
+	stageWriter, err := OpenWithOptions(stagePath, cfg.SQLiteReadOptions())
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, `PRAGMA busy_timeout=60000`); err != nil {
+	defer stageWriter.Close()
+	conn, err := stageWriter.sql.Conn(ctx)
+	if err != nil {
 		return err
 	}
-	if _, err := conn.ExecContext(ctx, `ATTACH DATABASE ? AS `+stagedFullScanSchema, stagePath); err != nil {
-		return err
-	}
-	defer func() {
-		_, _ = conn.ExecContext(context.Background(), `DETACH DATABASE `+stagedFullScanSchema)
-	}()
-
 	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		_ = conn.Close()
 		return err
 	}
 	committed := false
@@ -382,86 +488,16 @@ func publishStagedFullScan(ctx context.Context, cfg Config, stagePath string, ba
 		if !committed {
 			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
 		}
+		_ = conn.Close()
 	}()
-	currentState, err := readIndexState(ctx, conn)
-	if err != nil {
+	if err := copyPreservedPublicationTables(ctx, conn, dbPath); err != nil {
+		return fmt.Errorf("preserve diagnostic baselines: %w", err)
+	}
+	// A staged publication is a new physical snapshot even when its contents
+	// were seeded from a previous generation. Do not inherit that snapshot's
+	// revision identity (used by pinned readers and stale-generation checks).
+	if _, err := conn.ExecContext(ctx, `DELETE FROM meta WHERE key='scan_revision'`); err != nil {
 		return err
-	}
-	current := publicationBaseFromState(currentState)
-	if current != base {
-		return &PublicationConflictError{Base: base, Current: current}
-	}
-	for _, table := range publishedIndexTables {
-		if err := verifyStagedTable(ctx, conn, table); err != nil {
-			return err
-		}
-	}
-	// A live cache may have reached the current schema through ALTER TABLE,
-	// while a clean staging cache was created directly from the latest CREATE
-	// TABLE declaration. SQLite preserves those different physical column
-	// orders. Build every copy from explicit names before deleting anything so
-	// publication cannot silently shift values when a migration appends a new
-	// column (and cannot partially publish an incompatible future schema).
-	publicationColumns := make(map[string]string, len(publishedIndexTables))
-	for _, table := range publishedIndexTables {
-		columns, err := stagedPublicationColumnList(ctx, conn, table)
-		if err != nil {
-			return err
-		}
-		publicationColumns[table] = columns
-	}
-	// Publication refills every published table from scratch, which is the same
-	// shape as the clean bulk load reset() performs -- and reset() already
-	// established the rule that a bulk load runs without secondary indexes and
-	// builds them afterwards. Publication was the one place that kept
-	// maintaining all sixty-odd live B-trees a row at a time while copying a
-	// whole database through them.
-	//
-	// Clearing and refilling files would likewise drive the script-text
-	// triggers once per deleted and once per inserted row, maintaining an FTS
-	// table that rebuildScriptTextFTS replaces wholesale a few statements
-	// later. All of this DDL sits inside the publication transaction, so a
-	// rollback restores the indexes and triggers along with everything else.
-	restoreIndexes, err := dropSecondaryIndexes(ctx, conn)
-	if err != nil {
-		return err
-	}
-	if err := dropScriptTextTriggers(ctx, conn); err != nil {
-		return err
-	}
-	if err := dropTrigramLocTriggers(ctx, conn); err != nil {
-		return err
-	}
-	for _, table := range publishedIndexTables {
-		if _, err := conn.ExecContext(ctx, `DELETE FROM `+qualifiedSQLiteIdentifier("main", table)); err != nil {
-			return fmt.Errorf("clear published table %s: %w", table, err)
-		}
-	}
-	for _, table := range publishedIndexTables {
-		columns := publicationColumns[table]
-		if _, err := conn.ExecContext(ctx, `INSERT INTO `+qualifiedSQLiteIdentifier("main", table)+` (`+columns+`) SELECT `+columns+` FROM `+qualifiedSQLiteIdentifier(stagedFullScanSchema, table)); err != nil {
-			return fmt.Errorf("copy staged table %s: %w", table, err)
-		}
-	}
-	if err := rebuildScriptTextFTS(ctx, conn); err != nil {
-		return err
-	}
-	if err := rebuildTrigramLoc(ctx, conn); err != nil {
-		return err
-	}
-	if err := createScriptTextTriggers(ctx, conn); err != nil {
-		return err
-	}
-	if err := createTrigramLocTriggers(ctx, conn); err != nil {
-		return err
-	}
-	if err := restoreIndexes(ctx); err != nil {
-		return err
-	}
-
-	nextGeneration := current.Generation + 1
-	if nextGeneration < 1 {
-		nextGeneration = 1
 	}
 	if err := ensureScanRevision(ctx, conn); err != nil {
 		return err
@@ -475,7 +511,7 @@ func publishStagedFullScan(ctx context.Context, cfg Config, stagePath string, ba
 	if _, err := conn.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('scan_status','ready') ON CONFLICT(key) DO UPDATE SET value=excluded.value`); err != nil {
 		return err
 	}
-	if _, err := conn.ExecContext(ctx, `DELETE FROM meta WHERE key IN ('last_scan_error_code','last_scan_error_at')`); err != nil {
+	if _, err := conn.ExecContext(ctx, `DELETE FROM meta WHERE key IN ('last_scan_error_code','last_scan_error_at','last_scan_error_detail')`); err != nil {
 		return err
 	}
 	if err := clearIndexStaleMarkers(ctx, conn); err != nil {
@@ -485,52 +521,74 @@ func publishStagedFullScan(ctx context.Context, cfg Config, stagePath string, ba
 		return err
 	}
 	committed = true
+	if err := conn.Close(); err != nil {
+		return err
+	}
+	state, err := stageWriter.IndexState(ctx)
+	if err != nil {
+		return err
+	}
+	checkpoint, err := stageWriter.CheckpointWAL(ctx, "TRUNCATE")
+	if err != nil {
+		return err
+	}
+	if !checkpoint.FullyCheckpointed() {
+		return fmt.Errorf("staged database WAL could not be fully checkpointed before publication")
+	}
+	if err := stageWriter.Close(); err != nil {
+		return err
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Stat(stagePath + suffix); err == nil {
+			return fmt.Errorf("staged database retained a SQLite sidecar after checkpoint")
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
+	generationPath := publishedDatabaseGenerationPath(anchorPath, nextGeneration, state.Revision)
+	if _, err := os.Stat(generationPath); err == nil {
+		return fmt.Errorf("published database generation already exists")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Rename(stagePath, generationPath); err != nil {
+		return fmt.Errorf("promote staged database generation: %w", err)
+	}
+	if err := publishDatabasePointer(anchorPath, generationPath); err != nil {
+		return fmt.Errorf("publish database generation pointer: %w", err)
+	}
+	// The pointer commit is the publication boundary. Reclaiming the retired
+	// generation is best-effort: an MCP lease may still hold it on Windows, and
+	// the database manager retries after the last such lease is released.
+	if cleanupErr := RemoveRetiredDatabaseGeneration(cfg, dbPath); cleanupErr != nil {
+		fmt.Fprintf(os.Stderr, "[scan] retired database generation cleanup deferred: %v\n", cleanupErr)
+	}
 	return nil
 }
 
-type stagedTableQueryer interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-}
-
-type stagedTableColumnQueryer interface {
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-}
-
-func verifyStagedTable(ctx context.Context, queryer stagedTableQueryer, table string) error {
-	var count int
-	if err := queryer.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+stagedFullScanSchema+`.sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
-		return err
+func samePublicationBase(current, base PublicationBase) bool {
+	if current.Generation != base.Generation || current.Revision != base.Revision || current.Status != base.Status {
+		return false
 	}
-	if count != 1 {
+	if strings.TrimSpace(base.DatabasePath) == "" {
+		return true
+	}
+	return canonicalConfigPath(current.DatabasePath) == canonicalConfigPath(base.DatabasePath)
+}
+
+func verifyImmutablePublicationTable(ctx context.Context, stage *DB, table string) error {
+	stageColumns, err := sqliteTableColumns(ctx, stage.sql, "main", table)
+	if err != nil {
+		return fmt.Errorf("inspect staged table %s columns: %w", table, err)
+	}
+	if len(stageColumns) == 0 {
 		return fmt.Errorf("staged full scan is missing table %q", table)
 	}
 	return nil
 }
 
-func stagedPublicationColumnList(ctx context.Context, queryer stagedTableColumnQueryer, table string) (string, error) {
-	mainColumns, err := sqliteTableColumns(ctx, queryer, "main", table)
-	if err != nil {
-		return "", fmt.Errorf("inspect published table %s columns: %w", table, err)
-	}
-	stagedColumns, err := sqliteTableColumns(ctx, queryer, stagedFullScanSchema, table)
-	if err != nil {
-		return "", fmt.Errorf("inspect staged table %s columns: %w", table, err)
-	}
-	if len(mainColumns) == 0 || len(mainColumns) != len(stagedColumns) {
-		return "", fmt.Errorf("staged full scan table %q columns do not match the published schema", table)
-	}
-	staged := make(map[string]bool, len(stagedColumns))
-	for _, column := range stagedColumns {
-		staged[column] = true
-	}
-	quoted := make([]string, 0, len(mainColumns))
-	for _, column := range mainColumns {
-		if !staged[column] {
-			return "", fmt.Errorf("staged full scan table %q is missing column %q", table, column)
-		}
-		quoted = append(quoted, quoteSQLiteIdentifier(column))
-	}
-	return strings.Join(quoted, ","), nil
+type stagedTableColumnQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
 func sqliteTableColumns(ctx context.Context, queryer stagedTableColumnQueryer, schema, table string) ([]string, error) {
@@ -550,10 +608,6 @@ func sqliteTableColumns(ctx context.Context, queryer stagedTableColumnQueryer, s
 		columns = append(columns, name)
 	}
 	return columns, rows.Err()
-}
-
-func qualifiedSQLiteIdentifier(schema, table string) string {
-	return quoteSQLiteIdentifier(schema) + "." + quoteSQLiteIdentifier(table)
 }
 
 func quoteSQLiteIdentifier(value string) string {

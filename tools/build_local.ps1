@@ -13,12 +13,19 @@
 
 [CmdletBinding()]
 param(
-    [string]$Output = "bin/ck3-index.exe"
+    [string]$Output = "bin/ck3-index.exe",
+    [switch]$Native
 )
 
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
+
+# Keep the opt-in native executable separate from the ordinary local build.
+# Both tags are required: the native SQLite driver needs its FTS5 extension.
+if ($Native -and -not $PSBoundParameters.ContainsKey('Output')) {
+    $Output = 'bin/ck3-index-native.exe'
+}
 
 $version = (Get-Content (Join-Path $repo "VERSION") -Raw).Trim()
 
@@ -39,10 +46,18 @@ $target = Join-Path $repo $Output
 New-Item -ItemType Directory -Force (Split-Path -Parent $target) | Out-Null
 
 Write-Host "building $version ($revision) -> $Output"
-& go build -trimpath -buildvcs=false `
-    -ldflags "-s -w -X ck3-index/internal/buildinfo.Version=$version -X ck3-index/internal/buildinfo.Revision=$revision" `
-    -o $target .
-if ($LASTEXITCODE -ne 0) { throw "go build failed with exit code $LASTEXITCODE" }
+$buildArgs = @('build', '-trimpath', '-buildvcs=false')
+if ($Native) { $buildArgs += @('-tags', 'ck3_native sqlite_fts5') }
+$buildArgs += @('-ldflags', "-s -w -X ck3-index/internal/buildinfo.Version=$version -X ck3-index/internal/buildinfo.Revision=$revision", '-o', $target, '.')
+$previousCGO = $env:CGO_ENABLED
+try {
+    if ($Native) { $env:CGO_ENABLED = '1' }
+    & go @buildArgs
+    if ($LASTEXITCODE -ne 0) { throw "go build failed with exit code $LASTEXITCODE" }
+}
+finally {
+    $env:CGO_ENABLED = $previousCGO
+}
 
 Write-Host "ok: $target"
 Write-Host "restart the MCP client so it picks up the new binary."

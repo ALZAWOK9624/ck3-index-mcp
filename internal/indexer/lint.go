@@ -20,11 +20,11 @@ import (
 //	M6  鈥?nested iterator explosion detection
 //	M20 鈥?scripted effect self-recursion
 //	M17 鈥?event has at least one option
-func checkScriptLint(nodes []*script.Node, relPath string, sourceRole SourceRole) []ctxDiag {
+func checkScriptLint(nodes []*script.Node, relPath string, sourceRole SourceRole, vanilla *vanillaOnActionIndex) []ctxDiag {
 	var out []ctxDiag
 	// Structural checks: run on all sources.
 	out = append(out, checkTriggerElseTerminator(nodes, relPath)...)
-	out = append(out, checkOnActionOverride(nodes, relPath, sourceRole)...)
+	out = append(out, checkOnActionOverride(nodes, relPath, sourceRole, vanilla)...)
 	out = append(out, checkGUISafety(nodes, relPath)...)
 	// Iterator nesting is a review heuristic, not an engine illegality. Keep it
 	// scoped to the writable project instead of reporting vanilla/dependency
@@ -77,9 +77,12 @@ func checkTriggerElseTerminator(nodes []*script.Node, relPath string) []ctxDiag 
 	return out
 }
 
-// M9: On_action files. Only flag effect/trigger blocks directly inside
-// KNOWN vanilla on_actions (which would shadow the originals). Custom
-// on_actions with effect blocks are the correct CK3 pattern.
+// M9: On_action files. Only flag effect/trigger blocks directly inside KNOWN
+// vanilla on_actions, and only when the block differs from the game's own.
+// Custom on_actions with effect blocks are the correct CK3 pattern, and so is
+// carrying vanilla's block along unchanged: overriding an on_action file means
+// copying it, so most blocks in an override are the vanilla block verbatim and
+// shadow the original with itself.
 var vanillaOnActions = map[string]bool{
 	"on_birth": true, "on_death": true, "on_marriage": true,
 	"on_concubinage": true, "on_divorce": true, "on_betrothal": true,
@@ -97,7 +100,7 @@ var vanillaOnActions = map[string]bool{
 	"on_game_start": true, "on_game_start_after_lobby": true,
 }
 
-func checkOnActionOverride(nodes []*script.Node, relPath string, sourceRole SourceRole) []ctxDiag {
+func checkOnActionOverride(nodes []*script.Node, relPath string, sourceRole SourceRole, vanilla *vanillaOnActionIndex) []ctxDiag {
 	if !strings.Contains(relPath, "on_action") || sourceRole == SourceRoleGame {
 		return nil
 	}
@@ -108,18 +111,31 @@ func checkOnActionOverride(nodes []*script.Node, relPath string, sourceRole Sour
 		}
 		for _, c := range n.Children {
 			_, generatedVanilla := engineOnActions[strings.ToLower(n.Key)]
-			// Every non-accumulating on_action field takes the last writer, so
-			// weight_multiplier and fallback replace vanilla's just as silently
-			// as effect and trigger do.
-			if onActionSingleSlotFields[strings.ToLower(c.Key)] && (vanillaOnActions[n.Key] || generatedVanilla) {
-				out = append(out, ctxDiag{
-					severity: "warning",
-					code:     "on_action_direct_override",
-					msg: fmt.Sprintf("direct %q block in vanilla on_action %q overwrites originals; use a custom on_action instead",
-						c.Key, n.Key),
-					line: c.Line, col: c.Col,
-				})
+			if !onActionSingleSlotFields[strings.ToLower(c.Key)] {
+				continue
 			}
+			if !vanillaOnActions[n.Key] && !generatedVanilla {
+				continue
+			}
+			original, ok := vanilla.block(n.Key, c.Key)
+			if !ok {
+				// The game declares no such block here, so this one adds
+				// behaviour rather than replacing any.
+				continue
+			}
+			if sameScriptShape(original, c) {
+				// A verbatim copy of vanilla's block. Overriding the file
+				// requires carrying it, and it replaces the original with an
+				// identical original.
+				continue
+			}
+			out = append(out, ctxDiag{
+				severity: "warning",
+				code:     "on_action_direct_override",
+				msg: fmt.Sprintf("direct %q block in vanilla on_action %q replaces the game's own %s; move the change into a custom on_action instead",
+					c.Key, n.Key, c.Key),
+				line: c.Line, col: c.Col,
+			})
 		}
 	}
 	return out

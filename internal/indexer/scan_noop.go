@@ -44,6 +44,34 @@ func probePublishedUnchanged(ctx context.Context, cfg Config, path string, base 
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM meta WHERE key='last_scan_error_code' AND value<>''`).Scan(&failed); err != nil || failed != 0 {
 		return stats, false, err
 	}
+	loadStart := time.Now()
+	existing, err := loadExistingScanFiles(ctx, tx)
+	stats.TimingsMillis["load_existing_index"] = time.Since(loadStart).Milliseconds()
+	if err != nil {
+		return stats, false, err
+	}
+	walkStart := time.Now()
+	jobs, overridden, metadataCurrent, err := collectScanFileJobs(ctx, cfg, existing, true)
+	stats.TimingsMillis["walk_sources"] = time.Since(walkStart).Milliseconds()
+	if err != nil {
+		return stats, false, err
+	}
+	if len(jobs) != len(existing) || !metadataCurrent {
+		return stats, false, nil
+	}
+	for i := range jobs {
+		j := &jobs[i]
+		p := j.prev
+		if p.ID == 0 || p.SHA == "" || p.RelPath != j.rel || p.Kind != j.kind ||
+			p.SourceName != j.src.Name || p.SourceRank != j.src.Rank || p.Overridden != j.overridden ||
+			p.OverrideReason != j.overrideReason || p.OverrideBySource != j.overrideBySource ||
+			p.OverrideByRank != j.overrideByRank || p.OverrideRule != j.overrideRule {
+			return stats, false, nil
+		}
+		j.verifyContent = true
+		j.verifyOnly = true
+	}
+	stats.Overridden = overridden
 	current, err := scanSchemaCurrent(ctx, tx)
 	if err != nil || !current {
 		return stats, false, err
@@ -67,43 +95,6 @@ func probePublishedUnchanged(ctx context.Context, cfg Config, path string, base 
 	if stored != fingerprint {
 		return stats, false, nil
 	}
-	loadStart := time.Now()
-	existing, err := loadExistingScanFiles(ctx, tx)
-	stats.TimingsMillis["load_existing_index"] = time.Since(loadStart).Milliseconds()
-	if err != nil {
-		return stats, false, err
-	}
-	walkStart := time.Now()
-	jobs, overridden, err := collectScanFileJobs(ctx, cfg, existing)
-	stats.TimingsMillis["walk_sources"] = time.Since(walkStart).Milliseconds()
-	if err != nil {
-		return stats, false, err
-	}
-	if len(jobs) != len(existing) {
-		return stats, false, nil
-	}
-	for i := range jobs {
-		j := &jobs[i]
-		p := j.prev
-		if p.ID == 0 || p.SHA == "" || p.RelPath != j.rel || p.Kind != j.kind ||
-			p.SourceName != j.src.Name || p.SourceRank != j.src.Rank || p.Overridden != j.overridden ||
-			p.OverrideReason != j.overrideReason || p.OverrideBySource != j.overrideBySource ||
-			p.OverrideByRank != j.overrideByRank || p.OverrideRule != j.overrideRule {
-			return stats, false, nil
-		}
-		info, err := sourceRegularFileInfo(j.path)
-		if err != nil {
-			return stats, false, err
-		}
-		// This is only a cheap rejection, never proof that content is unchanged.
-		// Metadata-only updates still use the existing durable scan transaction.
-		if info.Size() != p.Size || info.ModTime().UnixNano() != p.MTime {
-			return stats, false, nil
-		}
-		j.verifyContent = true
-		j.verifyOnly = true
-	}
-	stats.Overridden = overridden
 	if ok, err := verifyUnchangedScanJobs(ctx, jobs, &stats); err != nil || !ok {
 		return stats, false, err
 	}

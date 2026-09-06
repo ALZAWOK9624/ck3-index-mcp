@@ -36,7 +36,8 @@ func loadExistingScanFiles(ctx context.Context, queryer scanFileQueryer) (map[st
 
 // The write scan and read-only no-change proof share the exact file selection,
 // pruning, source precedence and descriptor override rules.
-func collectScanFileJobs(ctx context.Context, cfg Config, existing map[string]fileRecord) ([]fileJob, int, error) {
+func collectScanFileJobs(ctx context.Context, cfg Config, existing map[string]fileRecord, checkMetadata bool) ([]fileJob, int, bool, error) {
+	metadataCurrent := true
 	var jobs []fileJob
 	for _, src := range cfg.Sources {
 		if src.Name == "" || src.Path == "" {
@@ -67,6 +68,17 @@ func collectScanFileJobs(ctx context.Context, cfg Config, existing map[string]fi
 			if kind == "" || (src.ResourceOnly && kind != "resource") {
 				return nil
 			}
+			// Windows directory enumeration already carries size and mtime.
+			// These are only rejection hints: acceptance still requires fresh
+			// byte hashes and the before/after file identity checks.
+			if checkMetadata && metadataCurrent {
+				info, err := d.Info()
+				if err != nil {
+					return err
+				}
+				previous := existing[path]
+				metadataCurrent = previous.ID != 0 && info.Size() == previous.Size && info.ModTime().UnixNano() == previous.MTime
+			}
 			jobs = append(jobs, fileJob{
 				src:           src,
 				path:          path,
@@ -77,7 +89,7 @@ func collectScanFileJobs(ctx context.Context, cfg Config, existing map[string]fi
 			})
 			return nil
 		}); err != nil {
-			return nil, 0, fmt.Errorf("scan source %q: %w", src.Name, err)
+			return nil, 0, false, fmt.Errorf("scan source %q: %w", src.Name, err)
 		}
 	}
 
@@ -86,7 +98,7 @@ func collectScanFileJobs(ctx context.Context, cfg Config, existing map[string]fi
 	// are skipped entirely (only a file record is stored, no parsing).
 	replacePaths, err := collectSourceReplacePaths(cfg.Sources)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, false, err
 	}
 	overrideWinners := map[string]Source{} // rel_path -> highest-priority source
 	for _, j := range jobs {
@@ -117,5 +129,5 @@ func collectScanFileJobs(ctx context.Context, cfg Config, existing map[string]fi
 			overriddenCount++
 		}
 	}
-	return jobs, overriddenCount, nil
+	return jobs, overriddenCount, metadataCurrent, nil
 }

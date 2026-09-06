@@ -385,7 +385,7 @@ func scanWithPreparedEngineBundle(ctx context.Context, cfg Config, forceClean, p
 
 	// Collect file jobs first, then parse them concurrently.
 	walkStart := time.Now()
-	jobs, overriddenCount, err := collectScanFileJobs(ctx, cfg, existing)
+	jobs, overriddenCount, _, err := collectScanFileJobs(ctx, cfg, existing, false)
 	if err != nil {
 		return ScanStats{}, err
 	}

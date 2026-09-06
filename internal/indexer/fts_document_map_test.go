@@ -11,8 +11,12 @@ func TestSearchDocumentMapPreciseDeletionAndRollback(t *testing.T) {
 	db, files := newScriptTextFTSHealthFixture(t)
 	// Include a zero-token document, an engine row, and multiple rows per file.
 	for i, file := range []int64{0, files[0], files[1], files[1]} {
+		kind, name, source := "object", fmt.Sprintf("needle%d", i), "project"
+		if i == 3 {
+			kind, name, source = "", "", ""
+		}
 		if _, err := db.sql.Exec(`INSERT INTO search_fts(rowid,kind,name,text,source,path,file_id)
-			VALUES(?, 'object', ?, '', 'project', '', ?)`, i+1, fmt.Sprintf("needle%d", i), file); err != nil {
+			VALUES(?, ?, ?, '', ?, '', ?)`, i+1, kind, name, source, file); err != nil {
 			t.Fatal(err)
 		}
 	}

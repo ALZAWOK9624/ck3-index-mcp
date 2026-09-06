@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 type EngineRuleSet struct {
@@ -510,7 +511,10 @@ func splitScopesWithNone(s string, keepNone bool) []string {
 	return out
 }
 
-func rebuildSearchFTS(ctx context.Context, tx *sql.Tx) error {
+func rebuildSearchFTS(ctx context.Context, tx *sql.Tx, timings map[string]int64) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM search_documents`); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS search_fts`); err != nil {
 		return fmt.Errorf("FTS5 unavailable: %w", err)
 	}
@@ -524,17 +528,29 @@ func rebuildSearchFTS(ctx context.Context, tx *sql.Tx) error {
 		`INSERT INTO search_fts(kind,name,text,source,path,file_id) SELECT 'localization',l.key,l.key||' '||l.value,l.source_name,f.rel_path,f.id FROM localization l JOIN files f ON f.id=l.file_id WHERE f.overridden=0 AND (lower(l.language) LIKE '%english%' OR lower(l.language) LIKE '%simp%')`,
 		`INSERT INTO search_fts(kind,name,text,source,path,file_id) SELECT 'datatype',name,signature||' '||COALESCE(description,'')||' '||COALESCE(return_type,''),'engine_logs',source_path,0 FROM engine_datatypes`,
 	}
-	for _, s := range stmts {
-		if _, err := tx.ExecContext(ctx, s); err != nil {
+	kinds := []string{"objects", "resources", "script_keys", "localization", "datatypes"}
+	for i, statement := range stmts {
+		started := time.Now()
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("FTS5 rebuild failed: %w", err)
 		}
+		timings["fts_"+kinds[i]] = time.Since(started).Milliseconds()
 	}
+	started := time.Now()
 	if err := rebuildScriptTextFTS(ctx, tx); err != nil {
 		return err
 	}
+	timings["fts_script_text"] = time.Since(started).Milliseconds()
+	started = time.Now()
+	if err := appendSearchDocumentMap(ctx, tx, 0); err != nil {
+		return err
+	}
+	timings["fts_document_map"] = time.Since(started).Milliseconds()
+	started = time.Now()
 	if err := rebuildTrigramLoc(ctx, tx); err != nil {
 		return err
 	}
+	timings["fts_trigram"] = time.Since(started).Milliseconds()
 	return nil
 }
 

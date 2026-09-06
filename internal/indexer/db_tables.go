@@ -49,6 +49,7 @@ var semanticIndexTableCatalog = [...]string{
 	"engine_datatypes",
 	"engine_scope_rules",
 	"search_fts",
+	"search_documents",
 	"script_text_fts",
 	"trigram_loc",
 }

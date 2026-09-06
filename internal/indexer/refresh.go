@@ -61,7 +61,7 @@ func (db *DB) RefreshStatus(ctx context.Context, cfg Config) (RefreshStatus, err
 	status := RefreshStatus{
 		Project:           RefreshProjectStatus{Configured: true, Private: project.Private},
 		FullScanAvailable: true,
-		FullScanGuidance:  "Call ck3_refresh with operation=full to rebuild in a staged cache. The previous ready generation remains readable until the replacement commits.",
+		FullScanGuidance:  "Call ck3_refresh with operation=full to verify all input content. A healthy unchanged index is reused; changes are staged and atomically published while the previous ready generation remains readable.",
 	}
 	if info, rootErr := os.Stat(project.Path); rootErr == nil && info.IsDir() {
 		status.Project.Accessible = validateSourceRoots([]Source{project}) == nil

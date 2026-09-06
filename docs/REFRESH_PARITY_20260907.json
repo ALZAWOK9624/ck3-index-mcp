@@ -1,0 +1,513 @@
+{
+  "candidate": "2ec0271d2e629785c708d1104504d64d8a7af138",
+  "semantic": {
+    "files": {
+      "before": {
+        "rows": 69823,
+        "sha256": "e3b3b87d4ae23a57f23e3f8c9ac8edfb5e78b64fa6a5a29846c7b3c722043c71"
+      },
+      "after": {
+        "rows": 69823,
+        "sha256": "e3b3b87d4ae23a57f23e3f8c9ac8edfb5e78b64fa6a5a29846c7b3c722043c71"
+      },
+      "equal": true
+    },
+    "objects": {
+      "before": {
+        "rows": 239099,
+        "sha256": "82c9502cab81e42e287264aadbe5b74c4c3f91a46a2a73fb757e93465fdc03ba"
+      },
+      "after": {
+        "rows": 239099,
+        "sha256": "82c9502cab81e42e287264aadbe5b74c4c3f91a46a2a73fb757e93465fdc03ba"
+      },
+      "equal": true
+    },
+    "refs": {
+      "before": {
+        "rows": 1086588,
+        "sha256": "60ac0ab865d1db6e5fe9ed4b1f62159a33e5205eda3c4dd283039eb01a54bcef"
+      },
+      "after": {
+        "rows": 1086588,
+        "sha256": "60ac0ab865d1db6e5fe9ed4b1f62159a33e5205eda3c4dd283039eb01a54bcef"
+      },
+      "equal": true
+    },
+    "localization": {
+      "before": {
+        "rows": 2694942,
+        "sha256": "9f6a708bd9432833ad565fa17e645194fa42d2e713b73f2cbaa6d58cb3b6a998"
+      },
+      "after": {
+        "rows": 2694942,
+        "sha256": "9f6a708bd9432833ad565fa17e645194fa42d2e713b73f2cbaa6d58cb3b6a998"
+      },
+      "equal": true
+    },
+    "resources": {
+      "before": {
+        "rows": 43902,
+        "sha256": "ed9afba04d7b35b0fe861c2fb73cd76c43bcafb8ee9af5d5314ac5eb934e303c"
+      },
+      "after": {
+        "rows": 43902,
+        "sha256": "ed9afba04d7b35b0fe861c2fb73cd76c43bcafb8ee9af5d5314ac5eb934e303c"
+      },
+      "equal": true
+    },
+    "schema_fields": {
+      "before": {
+        "rows": 2489,
+        "sha256": "fec493ccfc98c739cfdc68946ca01ef366b70f6ab7bfa70a7d937b8c47962768"
+      },
+      "after": {
+        "rows": 2489,
+        "sha256": "fec493ccfc98c739cfdc68946ca01ef366b70f6ab7bfa70a7d937b8c47962768"
+      },
+      "equal": true
+    },
+    "object_fields": {
+      "before": {
+        "rows": 764970,
+        "sha256": "66dc8008012ee255b4555fb88ea23b58a3ee2284af4660d3959b298f3f3967fb"
+      },
+      "after": {
+        "rows": 764970,
+        "sha256": "66dc8008012ee255b4555fb88ea23b58a3ee2284af4660d3959b298f3f3967fb"
+      },
+      "equal": true
+    },
+    "diagnostics": {
+      "before": {
+        "rows": 1815,
+        "sha256": "4b09d079d49a5b1c15f87a20d93140355af56005335391d1c8966c25a02683e2"
+      },
+      "after": {
+        "rows": 1815,
+        "sha256": "4b09d079d49a5b1c15f87a20d93140355af56005335391d1c8966c25a02683e2"
+      },
+      "equal": true
+    },
+    "saved_scopes": {
+      "before": {
+        "rows": 13573,
+        "sha256": "3990c7259404eed77d6d840a7025861c81833c2a023576b60fb0f364c8005dca"
+      },
+      "after": {
+        "rows": 13573,
+        "sha256": "3990c7259404eed77d6d840a7025861c81833c2a023576b60fb0f364c8005dca"
+      },
+      "equal": true
+    },
+    "variables": {
+      "before": {
+        "rows": 6285,
+        "sha256": "c6d4cb42b366a53977e68e33546fe87b9a0a492900390d4a82f9c453f88f636a"
+      },
+      "after": {
+        "rows": 6285,
+        "sha256": "c6d4cb42b366a53977e68e33546fe87b9a0a492900390d4a82f9c453f88f636a"
+      },
+      "equal": true
+    },
+    "map_provinces": {
+      "before": {
+        "rows": 9886,
+        "sha256": "1c15d95e049fce6c7ef2be41abac0d692d5e0266b241b7036c3db667fa94ab9d"
+      },
+      "after": {
+        "rows": 9886,
+        "sha256": "1c15d95e049fce6c7ef2be41abac0d692d5e0266b241b7036c3db667fa94ab9d"
+      },
+      "equal": true
+    },
+    "map_province_geometry": {
+      "before": {
+        "rows": 9886,
+        "sha256": "bb70597e595bb3af53fbee72ff361845c2313a2f0f752617c510151394b61268"
+      },
+      "after": {
+        "rows": 9886,
+        "sha256": "bb70597e595bb3af53fbee72ff361845c2313a2f0f752617c510151394b61268"
+      },
+      "equal": true
+    },
+    "map_physical_rasters": {
+      "before": {
+        "rows": 5,
+        "sha256": "2140c946bfbf2674befd6c2ad068932b29742d308202e28f5dab79159ed9898e"
+      },
+      "after": {
+        "rows": 5,
+        "sha256": "2140c946bfbf2674befd6c2ad068932b29742d308202e28f5dab79159ed9898e"
+      },
+      "equal": true
+    },
+    "map_province_physical": {
+      "before": {
+        "rows": 9886,
+        "sha256": "b9879807d2c52ab8eb541ffecdc7b280dffcd2928c90616e809789c1f2802b71"
+      },
+      "after": {
+        "rows": 9886,
+        "sha256": "b9879807d2c52ab8eb541ffecdc7b280dffcd2928c90616e809789c1f2802b71"
+      },
+      "equal": true
+    },
+    "map_physical_water_bodies": {
+      "before": {
+        "rows": 149,
+        "sha256": "f0a9ba56dacadd38be06bca52ae92f545976aee25726a70dd2f1262685730196"
+      },
+      "after": {
+        "rows": 149,
+        "sha256": "f0a9ba56dacadd38be06bca52ae92f545976aee25726a70dd2f1262685730196"
+      },
+      "equal": true
+    },
+    "map_physical_water_body_provinces": {
+      "before": {
+        "rows": 691,
+        "sha256": "0143b2b1822e28f7cb62b4ede271f98db24dec87b62a651e646a2bbf5b0f1d1e"
+      },
+      "after": {
+        "rows": 691,
+        "sha256": "0143b2b1822e28f7cb62b4ede271f98db24dec87b62a651e646a2bbf5b0f1d1e"
+      },
+      "equal": true
+    },
+    "map_major_river_edges": {
+      "before": {
+        "rows": 41,
+        "sha256": "eb398d074cdef46534022be7ccb03c8e488dec2e821ff6465006e342fc4a06b2"
+      },
+      "after": {
+        "rows": 41,
+        "sha256": "eb398d074cdef46534022be7ccb03c8e488dec2e821ff6465006e342fc4a06b2"
+      },
+      "equal": true
+    },
+    "map_surface_rasters": {
+      "before": {
+        "rows": 2,
+        "sha256": "5164d4db125e9ce5340d10856ff3e6f592201e127d60423cc968059990b35da3"
+      },
+      "after": {
+        "rows": 2,
+        "sha256": "5164d4db125e9ce5340d10856ff3e6f592201e127d60423cc968059990b35da3"
+      },
+      "equal": true
+    },
+    "map_surface_materials": {
+      "before": {
+        "rows": 152,
+        "sha256": "03f4722d89ae194f130aac008c803798f1faea42951625e9caf7123e9a0d6967"
+      },
+      "after": {
+        "rows": 152,
+        "sha256": "03f4722d89ae194f130aac008c803798f1faea42951625e9caf7123e9a0d6967"
+      },
+      "equal": true
+    },
+    "map_province_materials": {
+      "before": {
+        "rows": 31892,
+        "sha256": "fc58d08162b4068e2bbdaef822adc47a69254d27e1f8bfb2f34c38232674080d"
+      },
+      "after": {
+        "rows": 31892,
+        "sha256": "fc58d08162b4068e2bbdaef822adc47a69254d27e1f8bfb2f34c38232674080d"
+      },
+      "equal": true
+    },
+    "map_object_instances": {
+      "before": {
+        "rows": 10692,
+        "sha256": "7e84529fe1278abb305c9c2d3a50cd6302d224bff04b6f989e89ce19dfc42a3f"
+      },
+      "after": {
+        "rows": 10692,
+        "sha256": "7e84529fe1278abb305c9c2d3a50cd6302d224bff04b6f989e89ce19dfc42a3f"
+      },
+      "equal": true
+    },
+    "map_adjacencies": {
+      "before": {
+        "rows": 56830,
+        "sha256": "a4de96d8b1f50d081304b69307d250ec4aa5ed4703776daea97dfe0f8724d3df"
+      },
+      "after": {
+        "rows": 56830,
+        "sha256": "a4de96d8b1f50d081304b69307d250ec4aa5ed4703776daea97dfe0f8724d3df"
+      },
+      "equal": true
+    },
+    "map_strategic_adjacencies": {
+      "before": {
+        "rows": 783,
+        "sha256": "5cda782e339a0f2c4f72d096bc9e2b2c9607570f756b96814d874036a703e081"
+      },
+      "after": {
+        "rows": 783,
+        "sha256": "5cda782e339a0f2c4f72d096bc9e2b2c9607570f756b96814d874036a703e081"
+      },
+      "equal": true
+    },
+    "map_water_bodies": {
+      "before": {
+        "rows": 136,
+        "sha256": "38a74bb398b80f7a0a640a41d886209a789e404f687b9d1037ead0f6f337847d"
+      },
+      "after": {
+        "rows": 136,
+        "sha256": "38a74bb398b80f7a0a640a41d886209a789e404f687b9d1037ead0f6f337847d"
+      },
+      "equal": true
+    },
+    "map_water_body_provinces": {
+      "before": {
+        "rows": 138,
+        "sha256": "9bb8af203e8c919ae2bf86588589f0cea35412c325ad05794bcd852a32aa9eb1"
+      },
+      "after": {
+        "rows": 138,
+        "sha256": "9bb8af203e8c919ae2bf86588589f0cea35412c325ad05794bcd852a32aa9eb1"
+      },
+      "equal": true
+    },
+    "map_water_body_shores": {
+      "before": {
+        "rows": 693,
+        "sha256": "0638657ab1529e94d42de76e258dca25b9f8efbf27ce1a210d809f34e091bb28"
+      },
+      "after": {
+        "rows": 693,
+        "sha256": "0638657ab1529e94d42de76e258dca25b9f8efbf27ce1a210d809f34e091bb28"
+      },
+      "equal": true
+    },
+    "map_title_adjacencies": {
+      "before": {
+        "rows": 44848,
+        "sha256": "550b5f807531289a740f95a79a0466c25cab401d8e26d5c0d0bf5c2cd92efaff"
+      },
+      "after": {
+        "rows": 44848,
+        "sha256": "550b5f807531289a740f95a79a0466c25cab401d8e26d5c0d0bf5c2cd92efaff"
+      },
+      "equal": true
+    },
+    "map_titles": {
+      "before": {
+        "rows": 12524,
+        "sha256": "0122fb53f335493783b9a191e7e0311af490b003e6480921b4402c3f2edd633e"
+      },
+      "after": {
+        "rows": 12524,
+        "sha256": "77a04bea1f47af5c36c145411834570d560b294ef959c386d7d9307ff414b406"
+      },
+      "equal": false,
+      "float_comparison": {
+        "only_center_roundoff": true,
+        "max_absolute_difference": 6.821210263296962e-12,
+        "different_values": 1565
+      },
+      "equivalent": true
+    },
+    "map_title_provinces": {
+      "before": {
+        "rows": 44758,
+        "sha256": "6a4acf61e82954d98f123a2986e6fdd6c7e4f50bfc8fb64b867641c507fed6cc"
+      },
+      "after": {
+        "rows": 44758,
+        "sha256": "6a4acf61e82954d98f123a2986e6fdd6c7e4f50bfc8fb64b867641c507fed6cc"
+      },
+      "equal": true
+    },
+    "map_integrity_issues": {
+      "before": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "after": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "equal": true
+    },
+    "map_province_history": {
+      "before": {
+        "rows": 21208,
+        "sha256": "bd3f8f869690515447da6ae957c8f0d7ab5e29b1d24a709180807a80bff5d3e1"
+      },
+      "after": {
+        "rows": 21208,
+        "sha256": "bd3f8f869690515447da6ae957c8f0d7ab5e29b1d24a709180807a80bff5d3e1"
+      },
+      "equal": true
+    },
+    "map_title_history": {
+      "before": {
+        "rows": 16536,
+        "sha256": "53476588648b310733611dc79181c0c00b61fb5a34103fb06e43c907cc569c01"
+      },
+      "after": {
+        "rows": 16536,
+        "sha256": "53476588648b310733611dc79181c0c00b61fb5a34103fb06e43c907cc569c01"
+      },
+      "equal": true
+    },
+    "map_characters": {
+      "before": {
+        "rows": 26407,
+        "sha256": "9f9edfb75dc0dc402b0ed48c52e12d4815ea2a1dfc7dfa9fa20f59956218ccab"
+      },
+      "after": {
+        "rows": 26407,
+        "sha256": "9f9edfb75dc0dc402b0ed48c52e12d4815ea2a1dfc7dfa9fa20f59956218ccab"
+      },
+      "equal": true
+    },
+    "map_character_history": {
+      "before": {
+        "rows": 81395,
+        "sha256": "136f864daaea8f12c4e52ea4428373191d1a6493ccf1be8b6a1f47d1d2b8586a"
+      },
+      "after": {
+        "rows": 81395,
+        "sha256": "136f864daaea8f12c4e52ea4428373191d1a6493ccf1be8b6a1f47d1d2b8586a"
+      },
+      "equal": true
+    },
+    "map_holy_sites": {
+      "before": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "after": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "equal": true
+    },
+    "map_holy_site_faiths": {
+      "before": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "after": {
+        "rows": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "equal": true
+    },
+    "map_province_regions": {
+      "before": {
+        "rows": 212166,
+        "sha256": "d13aa866bda9ab03159a33330a7f8ef1be99e2257f1c1d8d92e106692a6ad93f"
+      },
+      "after": {
+        "rows": 212166,
+        "sha256": "d13aa866bda9ab03159a33330a7f8ef1be99e2257f1c1d8d92e106692a6ad93f"
+      },
+      "equal": true
+    },
+    "source_layers": {
+      "before": {
+        "rows": 7,
+        "sha256": "95a98e172f5a3e1f7793d0eb84e36a4918fc9038b44f9df12ff6e3a836adf29d"
+      },
+      "after": {
+        "rows": 7,
+        "sha256": "95a98e172f5a3e1f7793d0eb84e36a4918fc9038b44f9df12ff6e3a836adf29d"
+      },
+      "equal": true
+    },
+    "search_fts": {
+      "before": {
+        "rows": 1588641,
+        "sha256": "d8cdc4fd3c7b1432ac466de0f6456698e84a2716271f8f7326717c9b8110ebe5"
+      },
+      "after": {
+        "rows": 1588641,
+        "sha256": "d8cdc4fd3c7b1432ac466de0f6456698e84a2716271f8f7326717c9b8110ebe5"
+      },
+      "equal": true
+    },
+    "search_documents": {
+      "rows": 1588641,
+      "fts_rows": 1588641,
+      "equal": true
+    }
+  },
+  "search": [
+    {
+      "query": "Aversaria",
+      "hits": 20,
+      "equal": true,
+      "old_ms": 33.07,
+      "new_ms": 38.21
+    },
+    {
+      "query": "Crusader Kings",
+      "hits": 20,
+      "equal": true,
+      "old_ms": 21.43,
+      "new_ms": 25.8
+    },
+    {
+      "query": "vassal",
+      "hits": 20,
+      "equal": true,
+      "old_ms": 58.57,
+      "new_ms": 59.56
+    },
+    {
+      "query": "character",
+      "hits": 20,
+      "equal": true,
+      "old_ms": 210.12,
+      "new_ms": 214.31
+    },
+    {
+      "query": "统治者",
+      "hits": 20,
+      "equal": true,
+      "old_ms": 8.9,
+      "new_ms": 9.53
+    },
+    {
+      "query": "的角色",
+      "hits": 20,
+      "equal": true,
+      "old_ms": 3.75,
+      "new_ms": 4.79
+    },
+    {
+      "query": "[GetPlayer",
+      "hits": 20,
+      "equal": true,
+      "old_ms": 59.9,
+      "new_ms": 65.47
+    },
+    {
+      "query": "\"",
+      "hits": 20,
+      "equal": true
+    },
+    {
+      "query": "an apple",
+      "hits": 3,
+      "equal": true,
+      "old_ms": 12.11,
+      "new_ms": 13.36
+    }
+  ],
+  "fanout": {
+    "consumers": 501,
+    "cases": 5,
+    "resolved_flags_and_complete_diagnostics_equal": true
+  }
+}

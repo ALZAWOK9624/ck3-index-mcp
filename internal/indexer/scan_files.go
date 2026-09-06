@@ -401,25 +401,25 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 			if err := refreshValidatorDiagnosticsScoped(ctx, tx, src.Rank, newFileIDs, affected); err != nil {
 				return ScanStats{}, err
 			}
-			if err := refreshTitleIntegrityDiagnostics(ctx, tx); err != nil {
+			if err := timeScanPhase(stats.TimingsMillis, "validator_title_integrity", func() error { return refreshTitleIntegrityDiagnostics(ctx, tx) }); err != nil {
 				return ScanStats{}, err
 			}
-			if err := refreshGovernmentRegistrationDiagnostics(ctx, tx, src.Rank); err != nil {
+			if err := timeScanPhase(stats.TimingsMillis, "validator_government_registration", func() error { return refreshGovernmentRegistrationDiagnostics(ctx, tx, src.Rank) }); err != nil {
 				return ScanStats{}, err
 			}
-			if err := refreshGovernmentFallbackDiagnostics(ctx, tx); err != nil {
+			if err := timeScanPhase(stats.TimingsMillis, "validator_government_fallback", func() error { return refreshGovernmentFallbackDiagnostics(ctx, tx) }); err != nil {
 				return ScanStats{}, err
 			}
-			if err := refreshGovernmentMechanicDefaultDiagnostics(ctx, tx); err != nil {
+			if err := timeScanPhase(stats.TimingsMillis, "validator_government_defaults", func() error { return refreshGovernmentMechanicDefaultDiagnostics(ctx, tx) }); err != nil {
 				return ScanStats{}, err
 			}
-			if err := refreshCourtTypeDefaultDiagnostics(ctx, tx); err != nil {
+			if err := timeScanPhase(stats.TimingsMillis, "validator_court_defaults", func() error { return refreshCourtTypeDefaultDiagnostics(ctx, tx) }); err != nil {
 				return ScanStats{}, err
 			}
-			if err := refreshFolderSchemaDiagnostics(ctx, tx, src.Rank); err != nil {
+			if err := timeScanPhase(stats.TimingsMillis, "validator_folder_schema", func() error { return refreshFolderSchemaDiagnostics(ctx, tx, src.Rank) }); err != nil {
 				return ScanStats{}, err
 			}
-			if err := refreshErrorLogContractDiagnostics(ctx, tx, src.Rank); err != nil {
+			if err := timeScanPhase(stats.TimingsMillis, "validator_error_log_contract", func() error { return refreshErrorLogContractDiagnostics(ctx, tx, src.Rank) }); err != nil {
 				return ScanStats{}, err
 			}
 			stats.TimingsMillis["validator"] = time.Since(stageStart).Milliseconds()
@@ -456,25 +456,25 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 			if err := addValidationDiagnostics(ctx, tx, src.Rank); err != nil {
 				return ScanStats{}, err
 			}
-			if err := refreshTitleIntegrityDiagnostics(ctx, tx); err != nil {
+			if err := timeScanPhase(stats.TimingsMillis, "validator_title_integrity", func() error { return refreshTitleIntegrityDiagnostics(ctx, tx) }); err != nil {
 				return ScanStats{}, err
 			}
-			if err := refreshGovernmentRegistrationDiagnostics(ctx, tx, src.Rank); err != nil {
+			if err := timeScanPhase(stats.TimingsMillis, "validator_government_registration", func() error { return refreshGovernmentRegistrationDiagnostics(ctx, tx, src.Rank) }); err != nil {
 				return ScanStats{}, err
 			}
-			if err := refreshGovernmentFallbackDiagnostics(ctx, tx); err != nil {
+			if err := timeScanPhase(stats.TimingsMillis, "validator_government_fallback", func() error { return refreshGovernmentFallbackDiagnostics(ctx, tx) }); err != nil {
 				return ScanStats{}, err
 			}
-			if err := refreshGovernmentMechanicDefaultDiagnostics(ctx, tx); err != nil {
+			if err := timeScanPhase(stats.TimingsMillis, "validator_government_defaults", func() error { return refreshGovernmentMechanicDefaultDiagnostics(ctx, tx) }); err != nil {
 				return ScanStats{}, err
 			}
-			if err := refreshCourtTypeDefaultDiagnostics(ctx, tx); err != nil {
+			if err := timeScanPhase(stats.TimingsMillis, "validator_court_defaults", func() error { return refreshCourtTypeDefaultDiagnostics(ctx, tx) }); err != nil {
 				return ScanStats{}, err
 			}
-			if err := refreshFolderSchemaDiagnostics(ctx, tx, src.Rank); err != nil {
+			if err := timeScanPhase(stats.TimingsMillis, "validator_folder_schema", func() error { return refreshFolderSchemaDiagnostics(ctx, tx, src.Rank) }); err != nil {
 				return ScanStats{}, err
 			}
-			if err := refreshErrorLogContractDiagnostics(ctx, tx, src.Rank); err != nil {
+			if err := timeScanPhase(stats.TimingsMillis, "validator_error_log_contract", func() error { return refreshErrorLogContractDiagnostics(ctx, tx, src.Rank) }); err != nil {
 				return ScanStats{}, err
 			}
 			stats.TimingsMillis["validator"] = time.Since(stageStart).Milliseconds()
@@ -487,7 +487,7 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 			if err != nil {
 				return ScanStats{}, err
 			}
-			if err := rebuildMapCache(ctx, tx, cfg, mapManifest); err != nil {
+			if err := rebuildMapCache(ctx, tx, cfg, mapManifest, stats.TimingsMillis); err != nil {
 				return ScanStats{}, err
 			}
 		}
@@ -501,7 +501,7 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 		}
 		stats.TimingsMillis["semantic_fts_scoped"] = time.Since(stageStart).Milliseconds()
 	} else {
-		if err := rebuildSearchFTS(ctx, tx); err != nil {
+		if err := rebuildSearchFTS(ctx, tx, stats.TimingsMillis); err != nil {
 			return ScanStats{}, err
 		}
 		stats.TimingsMillis["semantic_fts_rebuild"] = time.Since(stageStart).Milliseconds()

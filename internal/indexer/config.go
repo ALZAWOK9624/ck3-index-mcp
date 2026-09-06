@@ -74,9 +74,10 @@ type Config struct {
 	ForceClean             bool
 	// Full staged refreshes verify all file bytes before reusing derived rows.
 	// This is internal execution state, never a TOML option.
-	verifyContent   bool
-	disposableStage bool
-	afterScanCommit func() // optional internal fault-injection hook, never loaded from TOML
+	verifyContent      bool
+	disposableStage    bool
+	afterScanCommit    func() // optional internal fault-injection hook, never loaded from TOML
+	afterFullNoopProbe func() // optional publication-conflict test hook
 }
 
 type MCPDatabaseTarget struct {

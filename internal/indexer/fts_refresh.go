@@ -43,6 +43,15 @@ func searchFTSCacheMatches(ctx context.Context, queryer contextRowQueryer) (bool
 	if actual != expected {
 		return false, nil
 	}
+	// The accelerator and FTS are maintained in the same transaction. A lost
+	// or incomplete map must force a rebuild, never silently leave stale rows.
+	var mapped int64
+	if err := queryer.QueryRowContext(ctx, `SELECT COUNT(*) FROM search_documents`).Scan(&mapped); err != nil {
+		return false, err
+	}
+	if mapped != actual {
+		return false, nil
+	}
 
 	// The dedicated contentless full-text index has exactly one rowid for every
 	// active script. The source text remains only in files.search_text.
@@ -116,14 +125,36 @@ func refreshSearchFTSForFiles(ctx context.Context, tx *sql.Tx, oldFileIDs, newFi
 			end = len(oldIDs)
 		}
 		clause, args := ftsIDClause(oldIDs[start:end])
-		if _, err := tx.ExecContext(ctx, `DELETE FROM search_fts WHERE file_id IN (`+clause+`)`, args...); err != nil {
+		// Validate each selected mapping by primary key before deleting it. A
+		// damaged accelerator must never delete another file's or engine's row.
+		var invalid int
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+			SELECT 1 FROM search_documents AS d
+			LEFT JOIN search_fts AS s ON s.rowid=d.fts_rowid
+			WHERE d.file_id IN (`+clause+`) AND (s.rowid IS NULL OR s.file_id<>d.file_id))`, args...).Scan(&invalid); err != nil {
+			return err
+		}
+		if invalid != 0 {
+			return fmt.Errorf("semantic FTS document mapping is inconsistent; run a clean rebuild")
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM search_fts WHERE rowid IN
+			(SELECT fts_rowid FROM search_documents WHERE file_id IN (`+clause+`))`, args...); err != nil {
 			return fmt.Errorf("remove stale semantic FTS rows: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM search_documents WHERE file_id IN (`+clause+`)`, args...); err != nil {
+			return err
 		}
 	}
 
 	newIDs := sortedFTSFileIDs(newFileIDs)
 	if len(newIDs) == 0 {
 		return nil
+	}
+	// Read the high rowid after deletion: SQLite may reuse deleted tail ids.
+	// All inserts below allocate ids above this boundary in this transaction.
+	var lastRowID int64
+	if err := tx.QueryRowContext(ctx, `SELECT rowid FROM search_fts ORDER BY rowid DESC LIMIT 1`).Scan(&lastRowID); err != nil && err != sql.ErrNoRows {
+		return err
 	}
 	for start := 0; start < len(newIDs); start += ftsRefreshBatchSize {
 		end := start + ftsRefreshBatchSize
@@ -152,7 +183,16 @@ func refreshSearchFTSForFiles(ctx context.Context, tx *sql.Tx, oldFileIDs, newFi
 			}
 		}
 	}
-	return nil
+	return appendSearchDocumentMap(ctx, tx, lastRowID)
+}
+
+// Capture just the new rowid interval. Filtering the UNINDEXED file_id column
+// on search_fts would scan the entire virtual table even for a one-file edit.
+// This ordinary relation is owned by the indexer, not an FTS shadow table.
+func appendSearchDocumentMap(ctx context.Context, tx *sql.Tx, after int64) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO search_documents(fts_rowid,file_id)
+		SELECT rowid,file_id FROM search_fts WHERE rowid>?`, after)
+	return err
 }
 
 func sortedFTSFileIDs(ids map[int64]bool) []int64 {

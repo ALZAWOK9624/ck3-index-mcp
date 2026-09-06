@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Full refresh reuse and indexed FTS maintenance (2026-09-07)
+
+- Prove unchanged full-refresh inputs before copying the database: hash every indexed file, verify source/override/rule/map dependencies and cache state, then retain the existing publication identity. Changed or uncertain inputs use the staged rebuild; clean builds always start from zero.
+- Maintain a transactional file-to-FTS-rowid relation so a small refresh deletes its own search documents by indexed rowid. Preserve engine rows, rebuild missing maps, and reject inconsistent selected mappings before deletion.
+- Report no-op completion without claiming a new commit, account for rejected preflight reads, and expose separate FTS, map, and validator phase timings. Synchronize refresh guidance and the declared response fields.
+
 ### Validate generated code before answering (2026-09-06)
 
 - Bundle the independent `ck3_check` service alongside the semantic index. Generated code is checked, repaired and rechecked before delivery without database or project access.

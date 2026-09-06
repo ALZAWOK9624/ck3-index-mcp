@@ -1,0 +1,5344 @@
+{
+  "base_main": "3aab61803854893c6209dc8a3dd3002639cd1053",
+  "candidate": "2ec0271d2e629785c708d1104504d64d8a7af138",
+  "backend": "windows/amd64, ck3_native sqlite_fts5",
+  "notes": [
+    "Paired cold series measures 71aeb44; final preflight metadata optimization is measured in final-* cases. The final-profile-clean run includes CPU profiling and is not a cold median.",
+    "Cold means no existing index reused, not an OS-cache flush. Measurements run serially without local builds or tests.",
+    "process.cpu_ms comes from GetProcessTimes; per-worker *_cpu_total fields are historical elapsed-sum aliases, not CPU measurements.",
+    "Process IO is logical Windows process IO and includes SQLite, map reads and report output. FilesHashed/BytesHashed describe semantic scan jobs; map-manifest reads are additional."
+  ],
+  "summary": {
+    "final-full-noop": {
+      "before": {
+        "n": 5,
+        "samples_ms": [
+          28286,
+          18258,
+          17866,
+          17899,
+          17907
+        ],
+        "median_ms": 17907,
+        "min_ms": 17866,
+        "max_ms": 28286,
+        "median_peak_rss_bytes": 502288384,
+        "median_process_cpu_ms": 40968.75,
+        "median_read_bytes": 28728363305,
+        "median_write_bytes": 2532739762,
+        "median_database_bytes": 2532671488
+      },
+      "after": {
+        "n": 5,
+        "samples_ms": [
+          12722,
+          12822,
+          12667,
+          12597,
+          13299
+        ],
+        "median_ms": 12722,
+        "min_ms": 12597,
+        "max_ms": 13299,
+        "median_peak_rss_bytes": 327512064,
+        "median_process_cpu_ms": 34968.75,
+        "median_read_bytes": 26243080286,
+        "median_write_bytes": 4237,
+        "median_database_bytes": 2571067392
+      }
+    },
+    "final-full-changed": {
+      "before": {
+        "n": 5,
+        "samples_ms": [
+          19661,
+          21264,
+          19758,
+          25115,
+          20152
+        ],
+        "median_ms": 20152,
+        "min_ms": 19661,
+        "max_ms": 25115,
+        "median_peak_rss_bytes": 537976832,
+        "median_process_cpu_ms": 45437.5,
+        "median_read_bytes": 29384663916,
+        "median_write_bytes": 2533107761,
+        "median_database_bytes": 2532671488
+      },
+      "after": {
+        "n": 5,
+        "samples_ms": [
+          23078,
+          20917,
+          23496,
+          20250,
+          27079
+        ],
+        "median_ms": 23078,
+        "min_ms": 20250,
+        "max_ms": 27079,
+        "median_peak_rss_bytes": 553312256,
+        "median_process_cpu_ms": 45046.875,
+        "median_read_bytes": 29203299659,
+        "median_write_bytes": 2571643704,
+        "median_database_bytes": 2571067392
+      }
+    },
+    "final-changed": {
+      "before": {
+        "n": 5,
+        "samples_ms": [
+          2802,
+          2147,
+          2101,
+          2117,
+          2161
+        ],
+        "median_ms": 2147,
+        "min_ms": 2101,
+        "max_ms": 2802,
+        "median_peak_rss_bytes": 497975296,
+        "median_process_cpu_ms": 2218.75,
+        "median_read_bytes": 914779747,
+        "median_write_bytes": 331872,
+        "median_database_bytes": 2532671488
+      },
+      "after": {
+        "n": 5,
+        "samples_ms": [
+          1757,
+          1752,
+          1730,
+          1768,
+          1752
+        ],
+        "median_ms": 1752,
+        "min_ms": 1730,
+        "max_ms": 1768,
+        "median_peak_rss_bytes": 499929088,
+        "median_process_cpu_ms": 1796.875,
+        "median_read_bytes": 620822114,
+        "median_write_bytes": 389658,
+        "median_database_bytes": 2571067392
+      }
+    },
+    "final-unchanged": {
+      "before": {
+        "n": 5,
+        "samples_ms": [
+          329,
+          308,
+          308,
+          308,
+          320
+        ],
+        "median_ms": 308,
+        "min_ms": 308,
+        "max_ms": 329,
+        "median_peak_rss_bytes": 80822272,
+        "median_process_cpu_ms": 359.375,
+        "median_read_bytes": 220156860,
+        "median_write_bytes": 1947,
+        "median_database_bytes": 2532671488
+      },
+      "after": {
+        "n": 5,
+        "samples_ms": [
+          334,
+          322,
+          323,
+          323,
+          325
+        ],
+        "median_ms": 323,
+        "min_ms": 322,
+        "max_ms": 334,
+        "median_peak_rss_bytes": 80728064,
+        "median_process_cpu_ms": 359.375,
+        "median_read_bytes": 237937595,
+        "median_write_bytes": 1951,
+        "median_database_bytes": 2571067392
+      }
+    },
+    "paired-clean": {
+      "before": {
+        "n": 3,
+        "samples_ms": [
+          88971,
+          91520,
+          93495
+        ],
+        "median_ms": 91520,
+        "min_ms": 88971,
+        "max_ms": 93495,
+        "median_peak_rss_bytes": 848220160,
+        "median_process_cpu_ms": 155140.625,
+        "median_read_bytes": 38698528253,
+        "median_write_bytes": 5436668470,
+        "median_database_bytes": 2532552704
+      },
+      "after": {
+        "n": 3,
+        "samples_ms": [
+          94836,
+          92359,
+          95730
+        ],
+        "median_ms": 94836,
+        "min_ms": 92359,
+        "max_ms": 95730,
+        "median_peak_rss_bytes": 867999744,
+        "median_process_cpu_ms": 151375.0,
+        "median_read_bytes": 39015181258,
+        "median_write_bytes": 5512223513,
+        "median_database_bytes": 2569703424
+      }
+    },
+    "fanout": {
+      "before": {
+        "n": 5,
+        "samples_ms": [
+          17202,
+          5162,
+          5148,
+          5093,
+          5213
+        ],
+        "median_ms": 5162,
+        "min_ms": 5093,
+        "max_ms": 17202,
+        "median_peak_rss_bytes": 577728512,
+        "median_process_cpu_ms": 5296.875,
+        "median_read_bytes": 1691677466,
+        "median_write_bytes": 899444,
+        "median_database_bytes": 2533736448
+      },
+      "after": {
+        "n": 5,
+        "samples_ms": [
+          5303,
+          4789,
+          4702,
+          4695,
+          4787
+        ],
+        "median_ms": 4787,
+        "min_ms": 4695,
+        "max_ms": 5303,
+        "median_peak_rss_bytes": 576901120,
+        "median_process_cpu_ms": 5000.0,
+        "median_read_bytes": 1398698781,
+        "median_write_bytes": 883303,
+        "median_database_bytes": 2571067392
+      }
+    }
+  },
+  "records": [
+    {
+      "mode": "files",
+      "wall_ms": 1757,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 1,
+        "bytes_read": 41,
+        "bytes_hashed": 41,
+        "peak_queued_results": 1,
+        "elapsed_ms": 1729,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 17,
+          "load_existing_index": 34,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0,
+          "resolve_refs": 0,
+          "resolve_refs_scoped": 0,
+          "semantic_fts": 23,
+          "semantic_fts_scoped": 0,
+          "sqlite_write": 0,
+          "validator": 429,
+          "validator_court_defaults": 2,
+          "validator_error_log_contract": 325,
+          "validator_folder_schema": 62,
+          "validator_government_defaults": 1,
+          "validator_government_fallback": 0,
+          "validator_government_registration": 4,
+          "validator_scoped": 429,
+          "validator_title_integrity": 34
+        },
+        "by_source": {
+          "project": 1
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "changed_files": 1,
+        "path_outcomes": [
+          {
+            "path": "common/scripted_triggers/zz_perf_refresh_20260907.txt",
+            "status": "refreshed"
+          }
+        ],
+        "changed_symbols": [
+          "scripted_trigger:perf_refresh_probe"
+        ],
+        "diagnostic_delta": {
+          "added": 0,
+          "resolved": 0,
+          "remaining": 312
+        }
+      },
+      "process": {
+        "wall_ms": 1822,
+        "peak_rss_bytes": 499929088,
+        "io": {
+          "read_ops": 148340,
+          "write_ops": 612,
+          "other_ops": 4136,
+          "read_bytes": 622467836,
+          "write_bytes": 389658,
+          "other_bytes": 136912
+        },
+        "cpu_ms": 1796.875,
+        "gc_cycles": 12
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-final-changed-0",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 1752,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 1,
+        "bytes_read": 41,
+        "bytes_hashed": 41,
+        "peak_queued_results": 1,
+        "elapsed_ms": 1724,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 19,
+          "load_existing_index": 34,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0,
+          "resolve_refs": 0,
+          "resolve_refs_scoped": 0,
+          "semantic_fts": 22,
+          "semantic_fts_scoped": 0,
+          "sqlite_write": 0,
+          "validator": 438,
+          "validator_court_defaults": 3,
+          "validator_error_log_contract": 331,
+          "validator_folder_schema": 62,
+          "validator_government_defaults": 0,
+          "validator_government_fallback": 0,
+          "validator_government_registration": 4,
+          "validator_scoped": 438,
+          "validator_title_integrity": 35
+        },
+        "by_source": {
+          "project": 1
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "changed_files": 1,
+        "path_outcomes": [
+          {
+            "path": "common/scripted_triggers/zz_perf_refresh_20260907.txt",
+            "status": "refreshed"
+          }
+        ],
+        "changed_symbols": [
+          "scripted_trigger:perf_refresh_probe"
+        ],
+        "diagnostic_delta": {
+          "added": 0,
+          "resolved": 0,
+          "remaining": 312
+        }
+      },
+      "process": {
+        "wall_ms": 1821,
+        "peak_rss_bytes": 500817920,
+        "io": {
+          "read_ops": 146726,
+          "write_ops": 612,
+          "other_ops": 4131,
+          "read_bytes": 615693922,
+          "write_bytes": 389666,
+          "other_bytes": 136838
+        },
+        "cpu_ms": 2000.0,
+        "gc_cycles": 12
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-final-changed-1",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 1730,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 1,
+        "bytes_read": 41,
+        "bytes_hashed": 41,
+        "peak_queued_results": 1,
+        "elapsed_ms": 1704,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 19,
+          "load_existing_index": 34,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0,
+          "resolve_refs": 0,
+          "resolve_refs_scoped": 0,
+          "semantic_fts": 22,
+          "semantic_fts_scoped": 0,
+          "sqlite_write": 0,
+          "validator": 423,
+          "validator_court_defaults": 3,
+          "validator_error_log_contract": 316,
+          "validator_folder_schema": 63,
+          "validator_government_defaults": 0,
+          "validator_government_fallback": 0,
+          "validator_government_registration": 5,
+          "validator_scoped": 423,
+          "validator_title_integrity": 33
+        },
+        "by_source": {
+          "project": 1
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "changed_files": 1,
+        "path_outcomes": [
+          {
+            "path": "common/scripted_triggers/zz_perf_refresh_20260907.txt",
+            "status": "refreshed"
+          }
+        ],
+        "changed_symbols": [
+          "scripted_trigger:perf_refresh_probe"
+        ],
+        "diagnostic_delta": {
+          "added": 0,
+          "resolved": 0,
+          "remaining": 312
+        }
+      },
+      "process": {
+        "wall_ms": 1823,
+        "peak_rss_bytes": 498905088,
+        "io": {
+          "read_ops": 147955,
+          "write_ops": 594,
+          "other_ops": 4131,
+          "read_bytes": 620727906,
+          "write_bytes": 340350,
+          "other_bytes": 136838
+        },
+        "cpu_ms": 1765.625,
+        "gc_cycles": 12
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-final-changed-2",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 1768,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 1,
+        "bytes_read": 41,
+        "bytes_hashed": 41,
+        "peak_queued_results": 1,
+        "elapsed_ms": 1741,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 20,
+          "load_existing_index": 33,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0,
+          "resolve_refs": 1,
+          "resolve_refs_scoped": 1,
+          "semantic_fts": 22,
+          "semantic_fts_scoped": 0,
+          "sqlite_write": 0,
+          "validator": 426,
+          "validator_court_defaults": 3,
+          "validator_error_log_contract": 320,
+          "validator_folder_schema": 63,
+          "validator_government_defaults": 0,
+          "validator_government_fallback": 0,
+          "validator_government_registration": 4,
+          "validator_scoped": 426,
+          "validator_title_integrity": 33
+        },
+        "by_source": {
+          "project": 1
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "changed_files": 1,
+        "path_outcomes": [
+          {
+            "path": "common/scripted_triggers/zz_perf_refresh_20260907.txt",
+            "status": "refreshed"
+          }
+        ],
+        "changed_symbols": [
+          "scripted_trigger:perf_refresh_probe"
+        ],
+        "diagnostic_delta": {
+          "added": 0,
+          "resolved": 0,
+          "remaining": 312
+        }
+      },
+      "process": {
+        "wall_ms": 1823,
+        "peak_rss_bytes": 500379648,
+        "io": {
+          "read_ops": 148146,
+          "write_ops": 594,
+          "other_ops": 4131,
+          "read_bytes": 621510242,
+          "write_bytes": 340357,
+          "other_bytes": 136838
+        },
+        "cpu_ms": 1843.75,
+        "gc_cycles": 12
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-final-changed-3",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 1752,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 1,
+        "bytes_read": 41,
+        "bytes_hashed": 41,
+        "peak_queued_results": 1,
+        "elapsed_ms": 1725,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 1,
+          "lint_worker_elapsed_sum": 1,
+          "load_engine_bundle": 19,
+          "load_existing_index": 34,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0,
+          "resolve_refs": 0,
+          "resolve_refs_scoped": 0,
+          "semantic_fts": 23,
+          "semantic_fts_scoped": 1,
+          "sqlite_write": 1,
+          "validator": 430,
+          "validator_court_defaults": 3,
+          "validator_error_log_contract": 322,
+          "validator_folder_schema": 64,
+          "validator_government_defaults": 0,
+          "validator_government_fallback": 0,
+          "validator_government_registration": 5,
+          "validator_scoped": 430,
+          "validator_title_integrity": 34
+        },
+        "by_source": {
+          "project": 1
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "changed_files": 1,
+        "path_outcomes": [
+          {
+            "path": "common/scripted_triggers/zz_perf_refresh_20260907.txt",
+            "status": "refreshed"
+          }
+        ],
+        "changed_symbols": [
+          "scripted_trigger:perf_refresh_probe"
+        ],
+        "diagnostic_delta": {
+          "added": 0,
+          "resolved": 0,
+          "remaining": 312
+        }
+      },
+      "process": {
+        "wall_ms": 1821,
+        "peak_rss_bytes": 497803264,
+        "io": {
+          "read_ops": 147978,
+          "write_ops": 657,
+          "other_ops": 4131,
+          "read_bytes": 620822114,
+          "write_bytes": 512880,
+          "other_bytes": 136838
+        },
+        "cpu_ms": 1765.625,
+        "gc_cycles": 12
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-final-changed-4",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "full",
+      "wall_ms": 23078,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 1,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "elapsed_ms": 23077,
+        "timings_ms": {
+          "begin_finalize_tx": 0,
+          "checkpoint_wal": 4,
+          "commit_finalize": 0,
+          "commit_indexed_rows": 0,
+          "count_diagnostics": 990,
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 7212,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 20,
+          "load_existing_index": 168,
+          "map_context": 1422,
+          "map_context_reused": 1422,
+          "noop_probe": 670,
+          "noop_probe_hash_files_wall": 0,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "publish_staged": 149,
+          "read_hash_worker_cpu_total": 109332,
+          "read_hash_worker_elapsed_sum": 109332,
+          "resolve_refs": 0,
+          "resolve_refs_scoped": 0,
+          "seed_staged": 11228,
+          "semantic_fts": 23,
+          "semantic_fts_scoped": 1,
+          "sqlite_write": 11,
+          "validator": 392,
+          "validator_court_defaults": 4,
+          "validator_error_log_contract": 314,
+          "validator_folder_schema": 41,
+          "validator_government_defaults": 0,
+          "validator_government_fallback": 0,
+          "validator_government_registration": 5,
+          "validator_scoped": 392,
+          "validator_title_integrity": 27,
+          "walk_sources": 433
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "base_seed": {
+          "configured": true,
+          "used": false,
+          "reason": "reused the compatible published generation instead"
+        },
+        "reused_generation": true
+      },
+      "process": {
+        "wall_ms": 23143,
+        "peak_rss_bytes": 553312256,
+        "io": {
+          "read_ops": 964199,
+          "write_ops": 629213,
+          "other_ops": 856442,
+          "read_bytes": 29264421041,
+          "write_bytes": 2571693272,
+          "other_bytes": 69264986
+        },
+        "cpu_ms": 45046.875,
+        "gc_cycles": 31
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-final-full-changed-0",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "full",
+      "wall_ms": 20917,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 1,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "elapsed_ms": 20917,
+        "timings_ms": {
+          "begin_finalize_tx": 0,
+          "checkpoint_wal": 4,
+          "commit_finalize": 0,
+          "commit_indexed_rows": 0,
+          "count_diagnostics": 957,
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 8089,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 19,
+          "load_existing_index": 196,
+          "map_context": 1432,
+          "map_context_reused": 1432,
+          "noop_probe": 719,
+          "noop_probe_hash_files_wall": 0,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "publish_staged": 153,
+          "read_hash_worker_cpu_total": 123498,
+          "read_hash_worker_elapsed_sum": 123498,
+          "resolve_refs": 0,
+          "resolve_refs_scoped": 0,
+          "seed_staged": 8153,
+          "semantic_fts": 24,
+          "semantic_fts_scoped": 0,
+          "sqlite_write": 12,
+          "validator": 391,
+          "validator_court_defaults": 3,
+          "validator_error_log_contract": 316,
+          "validator_folder_schema": 40,
+          "validator_government_defaults": 0,
+          "validator_government_fallback": 0,
+          "validator_government_registration": 5,
+          "validator_scoped": 391,
+          "validator_title_integrity": 26,
+          "walk_sources": 468
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "base_seed": {
+          "configured": true,
+          "used": false,
+          "reason": "reused the compatible published generation instead"
+        },
+        "reused_generation": true
+      },
+      "process": {
+        "wall_ms": 20995,
+        "peak_rss_bytes": 556961792,
+        "io": {
+          "read_ops": 949237,
+          "write_ops": 629116,
+          "other_ops": 856440,
+          "read_bytes": 29203299659,
+          "write_bytes": 2571643704,
+          "other_bytes": 69263988
+        },
+        "cpu_ms": 42015.625,
+        "gc_cycles": 29
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-final-full-changed-1",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "full",
+      "wall_ms": 23496,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 1,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "elapsed_ms": 23496,
+        "timings_ms": {
+          "begin_finalize_tx": 0,
+          "checkpoint_wal": 4,
+          "commit_finalize": 0,
+          "commit_indexed_rows": 1,
+          "count_diagnostics": 973,
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 7141,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 19,
+          "load_existing_index": 198,
+          "map_context": 1454,
+          "map_context_reused": 1454,
+          "noop_probe": 647,
+          "noop_probe_hash_files_wall": 0,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "publish_staged": 148,
+          "read_hash_worker_cpu_total": 107679,
+          "read_hash_worker_elapsed_sum": 107679,
+          "resolve_refs": 0,
+          "resolve_refs_scoped": 0,
+          "seed_staged": 11661,
+          "semantic_fts": 28,
+          "semantic_fts_scoped": 1,
+          "sqlite_write": 13,
+          "validator": 410,
+          "validator_court_defaults": 4,
+          "validator_error_log_contract": 322,
+          "validator_folder_schema": 40,
+          "validator_government_defaults": 1,
+          "validator_government_fallback": 0,
+          "validator_government_registration": 7,
+          "validator_scoped": 410,
+          "validator_title_integrity": 35,
+          "walk_sources": 491
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "base_seed": {
+          "configured": true,
+          "used": false,
+          "reason": "reused the compatible published generation instead"
+        },
+        "reused_generation": true
+      },
+      "process": {
+        "wall_ms": 23559,
+        "peak_rss_bytes": 565841920,
+        "io": {
+          "read_ops": 949196,
+          "write_ops": 629170,
+          "other_ops": 856436,
+          "read_bytes": 29203131723,
+          "write_bytes": 2571471530,
+          "other_bytes": 69263990
+        },
+        "cpu_ms": 44953.125,
+        "gc_cycles": 32
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-final-full-changed-2",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "full",
+      "wall_ms": 20250,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 1,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "elapsed_ms": 20250,
+        "timings_ms": {
+          "begin_finalize_tx": 0,
+          "checkpoint_wal": 4,
+          "commit_finalize": 0,
+          "commit_indexed_rows": 1,
+          "count_diagnostics": 1051,
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 7273,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 21,
+          "load_existing_index": 184,
+          "map_context": 1570,
+          "map_context_reused": 1570,
+          "noop_probe": 657,
+          "noop_probe_hash_files_wall": 0,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "publish_staged": 148,
+          "read_hash_worker_cpu_total": 109755,
+          "read_hash_worker_elapsed_sum": 109755,
+          "resolve_refs": 0,
+          "resolve_refs_scoped": 0,
+          "seed_staged": 8126,
+          "semantic_fts": 25,
+          "semantic_fts_scoped": 0,
+          "sqlite_write": 18,
+          "validator": 471,
+          "validator_court_defaults": 3,
+          "validator_error_log_contract": 390,
+          "validator_folder_schema": 43,
+          "validator_government_defaults": 1,
+          "validator_government_fallback": 0,
+          "validator_government_registration": 5,
+          "validator_scoped": 471,
+          "validator_title_integrity": 29,
+          "walk_sources": 417
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "base_seed": {
+          "configured": true,
+          "used": false,
+          "reason": "reused the compatible published generation instead"
+        },
+        "reused_generation": true
+      },
+      "process": {
+        "wall_ms": 20349,
+        "peak_rss_bytes": 521703424,
+        "io": {
+          "read_ops": 949196,
+          "write_ops": 629209,
+          "other_ops": 856441,
+          "read_bytes": 29203131723,
+          "write_bytes": 2571471648,
+          "other_bytes": 69263988
+        },
+        "cpu_ms": 47250.0,
+        "gc_cycles": 33
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-final-full-changed-3",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "full",
+      "wall_ms": 27079,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 1,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "elapsed_ms": 27079,
+        "timings_ms": {
+          "begin_finalize_tx": 0,
+          "checkpoint_wal": 6,
+          "commit_finalize": 1,
+          "commit_indexed_rows": 0,
+          "count_diagnostics": 943,
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 8011,
+          "lint_worker_cpu_total": 1,
+          "lint_worker_elapsed_sum": 1,
+          "load_engine_bundle": 19,
+          "load_existing_index": 176,
+          "map_context": 1468,
+          "map_context_reused": 1468,
+          "noop_probe": 2044,
+          "noop_probe_hash_files_wall": 0,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "publish_staged": 146,
+          "read_hash_worker_cpu_total": 122112,
+          "read_hash_worker_elapsed_sum": 122112,
+          "resolve_refs": 0,
+          "resolve_refs_scoped": 0,
+          "seed_staged": 13097,
+          "semantic_fts": 26,
+          "semantic_fts_scoped": 2,
+          "sqlite_write": 15,
+          "validator": 398,
+          "validator_court_defaults": 1,
+          "validator_error_log_contract": 321,
+          "validator_folder_schema": 42,
+          "validator_government_defaults": 0,
+          "validator_government_fallback": 0,
+          "validator_government_registration": 5,
+          "validator_scoped": 398,
+          "validator_title_integrity": 26,
+          "walk_sources": 443
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "base_seed": {
+          "configured": true,
+          "used": false,
+          "reason": "reused the compatible published generation instead"
+        },
+        "reused_generation": true
+      },
+      "process": {
+        "wall_ms": 27181,
+        "peak_rss_bytes": 532025344,
+        "io": {
+          "read_ops": 949445,
+          "write_ops": 629482,
+          "other_ops": 856441,
+          "read_bytes": 29204151627,
+          "write_bytes": 2572325989,
+          "other_bytes": 69263952
+        },
+        "cpu_ms": 46875.0,
+        "gc_cycles": 32
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-final-full-changed-4",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "full",
+      "wall_ms": 12722,
+      "stats": {
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 0,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "no_op": true,
+        "elapsed_ms": 12722,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 10342,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 20,
+          "load_existing_index": 173,
+          "map_context_reused": 1426,
+          "noop_probe": 12699,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "publish_staged": 0,
+          "read_hash_worker_cpu_total": 95681,
+          "read_hash_worker_elapsed_sum": 95681,
+          "seed_staged": 0,
+          "walk_sources": 431
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "base_seed": {
+          "configured": true,
+          "used": false,
+          "reason": "the published generation is already current"
+        },
+        "reused_generation": true
+      },
+      "process": {
+        "wall_ms": 12824,
+        "peak_rss_bytes": 307396608,
+        "io": {
+          "read_ops": 229008,
+          "write_ops": 898,
+          "other_ops": 1918767,
+          "read_bytes": 26243080286,
+          "write_bytes": 4237,
+          "other_bytes": 82431026
+        },
+        "cpu_ms": 34703.125,
+        "gc_cycles": 23
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-final-full-noop-0",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "full",
+      "wall_ms": 12822,
+      "stats": {
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 0,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "no_op": true,
+        "elapsed_ms": 12822,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 10481,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 19,
+          "load_existing_index": 174,
+          "map_context_reused": 1402,
+          "noop_probe": 12801,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "publish_staged": 0,
+          "read_hash_worker_cpu_total": 98889,
+          "read_hash_worker_elapsed_sum": 98889,
+          "seed_staged": 0,
+          "walk_sources": 427
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "base_seed": {
+          "configured": true,
+          "used": false,
+          "reason": "the published generation is already current"
+        },
+        "reused_generation": true
+      },
+      "process": {
+        "wall_ms": 12871,
+        "peak_rss_bytes": 337940480,
+        "io": {
+          "read_ops": 229007,
+          "write_ops": 898,
+          "other_ops": 1918765,
+          "read_bytes": 26242960691,
+          "write_bytes": 4228,
+          "other_bytes": 82432060
+        },
+        "cpu_ms": 35062.5,
+        "gc_cycles": 23
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-final-full-noop-1",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "full",
+      "wall_ms": 12667,
+      "stats": {
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 0,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "no_op": true,
+        "elapsed_ms": 12667,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 10320,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 19,
+          "load_existing_index": 174,
+          "map_context_reused": 1393,
+          "noop_probe": 12646,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "publish_staged": 0,
+          "read_hash_worker_cpu_total": 96381,
+          "read_hash_worker_elapsed_sum": 96381,
+          "seed_staged": 0,
+          "walk_sources": 442
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "base_seed": {
+          "configured": true,
+          "used": false,
+          "reason": "the published generation is already current"
+        },
+        "reused_generation": true
+      },
+      "process": {
+        "wall_ms": 12769,
+        "peak_rss_bytes": 334798848,
+        "io": {
+          "read_ops": 229008,
+          "write_ops": 898,
+          "other_ops": 1918771,
+          "read_bytes": 26243127757,
+          "write_bytes": 4217,
+          "other_bytes": 82432134
+        },
+        "cpu_ms": 34968.75,
+        "gc_cycles": 23
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-final-full-noop-2",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "full",
+      "wall_ms": 12597,
+      "stats": {
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 0,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "no_op": true,
+        "elapsed_ms": 12597,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 10258,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 19,
+          "load_existing_index": 174,
+          "map_context_reused": 1400,
+          "noop_probe": 12576,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "publish_staged": 0,
+          "read_hash_worker_cpu_total": 94596,
+          "read_hash_worker_elapsed_sum": 94596,
+          "seed_staged": 0,
+          "walk_sources": 426
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "base_seed": {
+          "configured": true,
+          "used": false,
+          "reason": "the published generation is already current"
+        },
+        "reused_generation": true
+      },
+      "process": {
+        "wall_ms": 12666,
+        "peak_rss_bytes": 324403200,
+        "io": {
+          "read_ops": 229007,
+          "write_ops": 1015,
+          "other_ops": 1918764,
+          "read_bytes": 26242960691,
+          "write_bytes": 4555,
+          "other_bytes": 82432060
+        },
+        "cpu_ms": 35406.25,
+        "gc_cycles": 26
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-final-full-noop-3",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "full",
+      "wall_ms": 13299,
+      "stats": {
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 0,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "no_op": true,
+        "elapsed_ms": 13298,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 10680,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 20,
+          "load_existing_index": 177,
+          "map_context_reused": 1681,
+          "noop_probe": 13276,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "publish_staged": 0,
+          "read_hash_worker_cpu_total": 98043,
+          "read_hash_worker_elapsed_sum": 98043,
+          "seed_staged": 0,
+          "walk_sources": 420
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "base_seed": {
+          "configured": true,
+          "used": false,
+          "reason": "the published generation is already current"
+        },
+        "reused_generation": true
+      },
+      "process": {
+        "wall_ms": 13373,
+        "peak_rss_bytes": 327512064,
+        "io": {
+          "read_ops": 229008,
+          "write_ops": 1015,
+          "other_ops": 1918769,
+          "read_bytes": 26243127757,
+          "write_bytes": 4560,
+          "other_bytes": 82432134
+        },
+        "cpu_ms": 34906.25,
+        "gc_cycles": 26
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-final-full-noop-4",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "clean",
+      "wall_ms": 99332,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 21180,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "elapsed_ms": 99331,
+        "timings_ms": {
+          "begin_finalize_tx": 0,
+          "build_indexes": 13422,
+          "checkpoint_wal": 487,
+          "commit_finalize": 3933,
+          "commit_indexed_rows": 3938,
+          "count_diagnostics": 1486,
+          "extract_worker_cpu_total": 17617,
+          "extract_worker_elapsed_sum": 17617,
+          "fts_datatypes": 58,
+          "fts_document_map": 929,
+          "fts_localization": 3376,
+          "fts_objects": 572,
+          "fts_resources": 159,
+          "fts_script_keys": 1568,
+          "fts_script_text": 1405,
+          "fts_trigram": 16508,
+          "hash_files_wall": 23960,
+          "lint_worker_cpu_total": 19456,
+          "lint_worker_elapsed_sum": 19456,
+          "load_engine_bundle": 18,
+          "load_existing_index": 0,
+          "load_symbols": 2223,
+          "map_context": 19522,
+          "map_context_rebuild": 19522,
+          "map_contract_inputs": 1789,
+          "map_derived_layers": 8604,
+          "map_geometry": 1047,
+          "map_geometry_fingerprint": 2,
+          "map_history": 762,
+          "map_holy_sites_regions": 365,
+          "map_physical": 4865,
+          "map_province_image_decode": 192,
+          "map_province_image_geometry": 851,
+          "map_terrain_titles": 39,
+          "map_write_static": 308,
+          "parse_files_wall": 18103,
+          "parse_worker_cpu_total": 8518,
+          "parse_worker_elapsed_sum": 8518,
+          "publish_staged": 1605,
+          "read_hash_worker_cpu_total": 195535,
+          "read_hash_worker_elapsed_sum": 195535,
+          "resolve_refs": 2364,
+          "seed_staged": 0,
+          "semantic_fts": 24668,
+          "semantic_fts_rebuild": 24578,
+          "sqlite_write": 12354,
+          "validator": 436,
+          "validator_court_defaults": 3,
+          "validator_error_log_contract": 279,
+          "validator_folder_schema": 74,
+          "validator_government_defaults": 0,
+          "validator_government_fallback": 0,
+          "validator_government_registration": 4,
+          "validator_title_integrity": 30,
+          "walk_sources": 407
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        }
+      },
+      "process": {
+        "wall_ms": 99443,
+        "peak_rss_bytes": 852148224,
+        "io": {
+          "read_ops": 3173957,
+          "write_ops": 2548205,
+          "other_ops": 815643,
+          "read_bytes": 39020640350,
+          "write_bytes": 5514835364,
+          "other_bytes": 54647970
+        },
+        "cpu_ms": 165234.375,
+        "gc_cycles": 225
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-final-profile-clean",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 334,
+      "stats": {
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 0,
+        "references": 0,
+        "localization": 0,
+        "resources": 0,
+        "schema_fields": 0,
+        "object_fields": 0,
+        "diagnostics": 0,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 0,
+        "bytes_read": 41,
+        "bytes_hashed": 41,
+        "peak_queued_results": 1,
+        "no_op": true,
+        "elapsed_ms": 330,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 18,
+          "load_existing_index": 41,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0
+        },
+        "by_source": {
+          "project": 1
+        },
+        "path_outcomes": [
+          {
+            "path": "common/scripted_triggers/zz_perf_refresh_20260907.txt",
+            "status": "unchanged"
+          }
+        ]
+      },
+      "process": {
+        "wall_ms": 412,
+        "peak_rss_bytes": 80084992,
+        "io": {
+          "read_ops": 56989,
+          "write_ops": 274,
+          "other_ops": 1769,
+          "read_bytes": 237937595,
+          "write_bytes": 1951,
+          "other_bytes": 63254
+        },
+        "cpu_ms": 359.375,
+        "gc_cycles": 7
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-final-unchanged-0",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 322,
+      "stats": {
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 0,
+        "references": 0,
+        "localization": 0,
+        "resources": 0,
+        "schema_fields": 0,
+        "object_fields": 0,
+        "diagnostics": 0,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 0,
+        "bytes_read": 41,
+        "bytes_hashed": 41,
+        "peak_queued_results": 1,
+        "no_op": true,
+        "elapsed_ms": 319,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 21,
+          "load_existing_index": 35,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0
+        },
+        "by_source": {
+          "project": 1
+        },
+        "path_outcomes": [
+          {
+            "path": "common/scripted_triggers/zz_perf_refresh_20260907.txt",
+            "status": "unchanged"
+          }
+        ]
+      },
+      "process": {
+        "wall_ms": 411,
+        "peak_rss_bytes": 79982592,
+        "io": {
+          "read_ops": 56989,
+          "write_ops": 274,
+          "other_ops": 1772,
+          "read_bytes": 237937595,
+          "write_bytes": 1943,
+          "other_bytes": 63254
+        },
+        "cpu_ms": 343.75,
+        "gc_cycles": 7
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-final-unchanged-1",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 323,
+      "stats": {
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 0,
+        "references": 0,
+        "localization": 0,
+        "resources": 0,
+        "schema_fields": 0,
+        "object_fields": 0,
+        "diagnostics": 0,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 0,
+        "bytes_read": 41,
+        "bytes_hashed": 41,
+        "peak_queued_results": 1,
+        "no_op": true,
+        "elapsed_ms": 318,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 18,
+          "load_existing_index": 34,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0
+        },
+        "by_source": {
+          "project": 1
+        },
+        "path_outcomes": [
+          {
+            "path": "common/scripted_triggers/zz_perf_refresh_20260907.txt",
+            "status": "unchanged"
+          }
+        ]
+      },
+      "process": {
+        "wall_ms": 411,
+        "peak_rss_bytes": 81412096,
+        "io": {
+          "read_ops": 56989,
+          "write_ops": 274,
+          "other_ops": 1771,
+          "read_bytes": 237937595,
+          "write_bytes": 1967,
+          "other_bytes": 63254
+        },
+        "cpu_ms": 390.625,
+        "gc_cycles": 7
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-final-unchanged-2",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 323,
+      "stats": {
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 0,
+        "references": 0,
+        "localization": 0,
+        "resources": 0,
+        "schema_fields": 0,
+        "object_fields": 0,
+        "diagnostics": 0,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 0,
+        "bytes_read": 41,
+        "bytes_hashed": 41,
+        "peak_queued_results": 1,
+        "no_op": true,
+        "elapsed_ms": 320,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 21,
+          "load_existing_index": 34,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0
+        },
+        "by_source": {
+          "project": 1
+        },
+        "path_outcomes": [
+          {
+            "path": "common/scripted_triggers/zz_perf_refresh_20260907.txt",
+            "status": "unchanged"
+          }
+        ]
+      },
+      "process": {
+        "wall_ms": 413,
+        "peak_rss_bytes": 82644992,
+        "io": {
+          "read_ops": 56989,
+          "write_ops": 313,
+          "other_ops": 1772,
+          "read_bytes": 237937595,
+          "write_bytes": 2068,
+          "other_bytes": 63254
+        },
+        "cpu_ms": 421.875,
+        "gc_cycles": 8
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-final-unchanged-3",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 325,
+      "stats": {
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 0,
+        "references": 0,
+        "localization": 0,
+        "resources": 0,
+        "schema_fields": 0,
+        "object_fields": 0,
+        "diagnostics": 0,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 0,
+        "bytes_read": 41,
+        "bytes_hashed": 41,
+        "peak_queued_results": 1,
+        "no_op": true,
+        "elapsed_ms": 321,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 20,
+          "load_existing_index": 35,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0
+        },
+        "by_source": {
+          "project": 1
+        },
+        "path_outcomes": [
+          {
+            "path": "common/scripted_triggers/zz_perf_refresh_20260907.txt",
+            "status": "unchanged"
+          }
+        ]
+      },
+      "process": {
+        "wall_ms": 410,
+        "peak_rss_bytes": 80728064,
+        "io": {
+          "read_ops": 56989,
+          "write_ops": 274,
+          "other_ops": 1771,
+          "read_bytes": 237937595,
+          "write_bytes": 1949,
+          "other_bytes": 63254
+        },
+        "cpu_ms": 359.375,
+        "gc_cycles": 7
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-final-unchanged-4",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 2802,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 1,
+        "bytes_read": 41,
+        "bytes_hashed": 41,
+        "peak_queued_results": 1,
+        "elapsed_ms": 2775,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 20,
+          "load_existing_index": 37,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0,
+          "resolve_refs": 0,
+          "resolve_refs_scoped": 0,
+          "semantic_fts": 411,
+          "semantic_fts_scoped": 387,
+          "sqlite_write": 1,
+          "validator": 431,
+          "validator_scoped": 431
+        },
+        "by_source": {
+          "project": 1
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "changed_files": 1,
+        "path_outcomes": [
+          {
+            "path": "common/scripted_triggers/zz_perf_refresh_20260907.txt",
+            "status": "refreshed"
+          }
+        ],
+        "changed_symbols": [
+          "scripted_trigger:perf_refresh_probe"
+        ],
+        "diagnostic_delta": {
+          "added": 0,
+          "resolved": 0,
+          "remaining": 312
+        }
+      },
+      "process": {
+        "wall_ms": 2886,
+        "peak_rss_bytes": 496816128,
+        "io": {
+          "read_ops": 220329,
+          "write_ops": 1464,
+          "other_ops": 4136,
+          "read_bytes": 917350145,
+          "write_bytes": 2722708,
+          "other_bytes": 136928
+        },
+        "cpu_ms": 2218.75,
+        "gc_cycles": 12
+      },
+      "database_bytes": 2532671488,
+      "sample": "before-final-changed-0",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 2147,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 1,
+        "bytes_read": 41,
+        "bytes_hashed": 41,
+        "peak_queued_results": 1,
+        "elapsed_ms": 2120,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 19,
+          "load_existing_index": 34,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0,
+          "resolve_refs": 0,
+          "resolve_refs_scoped": 0,
+          "semantic_fts": 380,
+          "semantic_fts_scoped": 358,
+          "sqlite_write": 1,
+          "validator": 455,
+          "validator_scoped": 455
+        },
+        "by_source": {
+          "project": 1
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "changed_files": 1,
+        "path_outcomes": [
+          {
+            "path": "common/scripted_triggers/zz_perf_refresh_20260907.txt",
+            "status": "refreshed"
+          }
+        ],
+        "changed_symbols": [
+          "scripted_trigger:perf_refresh_probe"
+        ],
+        "diagnostic_delta": {
+          "added": 0,
+          "resolved": 0,
+          "remaining": 312
+        }
+      },
+      "process": {
+        "wall_ms": 2225,
+        "peak_rss_bytes": 499523584,
+        "io": {
+          "read_ops": 218119,
+          "write_ops": 597,
+          "other_ops": 4131,
+          "read_bytes": 908119651,
+          "write_bytes": 348278,
+          "other_bytes": 136852
+        },
+        "cpu_ms": 2171.875,
+        "gc_cycles": 12
+      },
+      "database_bytes": 2532671488,
+      "sample": "before-final-changed-1",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 2101,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 1,
+        "bytes_read": 41,
+        "bytes_hashed": 41,
+        "peak_queued_results": 1,
+        "elapsed_ms": 2074,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 19,
+          "load_existing_index": 33,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0,
+          "resolve_refs": 0,
+          "resolve_refs_scoped": 0,
+          "semantic_fts": 387,
+          "semantic_fts_scoped": 364,
+          "sqlite_write": 1,
+          "validator": 427,
+          "validator_scoped": 427
+        },
+        "by_source": {
+          "project": 1
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "changed_files": 1,
+        "path_outcomes": [
+          {
+            "path": "common/scripted_triggers/zz_perf_refresh_20260907.txt",
+            "status": "refreshed"
+          }
+        ],
+        "changed_symbols": [
+          "scripted_trigger:perf_refresh_probe"
+        ],
+        "diagnostic_delta": {
+          "added": 0,
+          "resolved": 0,
+          "remaining": 312
+        }
+      },
+      "process": {
+        "wall_ms": 2178,
+        "peak_rss_bytes": 497975296,
+        "io": {
+          "read_ops": 219745,
+          "write_ops": 591,
+          "other_ops": 4131,
+          "read_bytes": 914779747,
+          "write_bytes": 331872,
+          "other_bytes": 136852
+        },
+        "cpu_ms": 2484.375,
+        "gc_cycles": 12
+      },
+      "database_bytes": 2532671488,
+      "sample": "before-final-changed-2",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 2117,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 1,
+        "bytes_read": 41,
+        "bytes_hashed": 41,
+        "peak_queued_results": 1,
+        "elapsed_ms": 2092,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 18,
+          "load_existing_index": 34,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0,
+          "resolve_refs": 0,
+          "resolve_refs_scoped": 0,
+          "semantic_fts": 383,
+          "semantic_fts_scoped": 361,
+          "sqlite_write": 1,
+          "validator": 424,
+          "validator_scoped": 424
+        },
+        "by_source": {
+          "project": 1
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "changed_files": 1,
+        "path_outcomes": [
+          {
+            "path": "common/scripted_triggers/zz_perf_refresh_20260907.txt",
+            "status": "refreshed"
+          }
+        ],
+        "changed_symbols": [
+          "scripted_trigger:perf_refresh_probe"
+        ],
+        "diagnostic_delta": {
+          "added": 0,
+          "resolved": 0,
+          "remaining": 312
+        }
+      },
+      "process": {
+        "wall_ms": 2176,
+        "peak_rss_bytes": 497455104,
+        "io": {
+          "read_ops": 219741,
+          "write_ops": 591,
+          "other_ops": 4131,
+          "read_bytes": 914763363,
+          "write_bytes": 331853,
+          "other_bytes": 136852
+        },
+        "cpu_ms": 2156.25,
+        "gc_cycles": 12
+      },
+      "database_bytes": 2532671488,
+      "sample": "before-final-changed-3",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 2161,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 1,
+        "bytes_read": 41,
+        "bytes_hashed": 41,
+        "peak_queued_results": 1,
+        "elapsed_ms": 2135,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 19,
+          "load_existing_index": 37,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0,
+          "resolve_refs": 0,
+          "resolve_refs_scoped": 0,
+          "semantic_fts": 382,
+          "semantic_fts_scoped": 359,
+          "sqlite_write": 1,
+          "validator": 452,
+          "validator_scoped": 452
+        },
+        "by_source": {
+          "project": 1
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "changed_files": 1,
+        "path_outcomes": [
+          {
+            "path": "common/scripted_triggers/zz_perf_refresh_20260907.txt",
+            "status": "refreshed"
+          }
+        ],
+        "changed_symbols": [
+          "scripted_trigger:perf_refresh_probe"
+        ],
+        "diagnostic_delta": {
+          "added": 0,
+          "resolved": 0,
+          "remaining": 312
+        }
+      },
+      "process": {
+        "wall_ms": 2228,
+        "peak_rss_bytes": 498192384,
+        "io": {
+          "read_ops": 219794,
+          "write_ops": 591,
+          "other_ops": 4130,
+          "read_bytes": 914980451,
+          "write_bytes": 331846,
+          "other_bytes": 136852
+        },
+        "cpu_ms": 2265.625,
+        "gc_cycles": 12
+      },
+      "database_bytes": 2532671488,
+      "sample": "before-final-changed-4",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "full",
+      "wall_ms": 19661,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 1,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "elapsed_ms": 19658,
+        "timings_ms": {
+          "begin_finalize_tx": 0,
+          "checkpoint_wal": 3,
+          "commit_finalize": 0,
+          "commit_indexed_rows": 0,
+          "count_diagnostics": 1000,
+          "extract_worker_cpu_total": 1,
+          "extract_worker_elapsed_sum": 1,
+          "hash_files_wall": 7176,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 20,
+          "load_existing_index": 185,
+          "map_context": 1413,
+          "map_context_reused": 1413,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "publish_staged": 158,
+          "read_hash_worker_cpu_total": 108099,
+          "read_hash_worker_elapsed_sum": 108099,
+          "resolve_refs": 1,
+          "resolve_refs_scoped": 1,
+          "seed_staged": 8204,
+          "semantic_fts": 385,
+          "semantic_fts_scoped": 363,
+          "sqlite_write": 14,
+          "validator": 389,
+          "validator_scoped": 389,
+          "walk_sources": 413
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "base_seed": {
+          "configured": true,
+          "used": false,
+          "reason": "reused the compatible published generation instead"
+        },
+        "reused_generation": true
+      },
+      "process": {
+        "wall_ms": 19748,
+        "peak_rss_bytes": 537976832,
+        "io": {
+          "read_ops": 993511,
+          "write_ops": 619500,
+          "other_ops": 812780,
+          "read_bytes": 29384514254,
+          "write_bytes": 2533115412,
+          "other_bytes": 54430472
+        },
+        "cpu_ms": 45437.5,
+        "gc_cycles": 24
+      },
+      "database_bytes": 2532671488,
+      "sample": "before-final-full-changed-0",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "full",
+      "wall_ms": 21264,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 1,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "elapsed_ms": 21261,
+        "timings_ms": {
+          "begin_finalize_tx": 0,
+          "checkpoint_wal": 3,
+          "commit_finalize": 0,
+          "commit_indexed_rows": 0,
+          "count_diagnostics": 960,
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 7071,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 20,
+          "load_existing_index": 186,
+          "map_context": 1416,
+          "map_context_reused": 1416,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "publish_staged": 143,
+          "read_hash_worker_cpu_total": 107112,
+          "read_hash_worker_elapsed_sum": 107112,
+          "resolve_refs": 0,
+          "resolve_refs_scoped": 0,
+          "seed_staged": 9794,
+          "semantic_fts": 389,
+          "semantic_fts_scoped": 366,
+          "sqlite_write": 22,
+          "validator": 419,
+          "validator_scoped": 419,
+          "walk_sources": 535
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "base_seed": {
+          "configured": true,
+          "used": false,
+          "reason": "reused the compatible published generation instead"
+        },
+        "reused_generation": true
+      },
+      "process": {
+        "wall_ms": 21355,
+        "peak_rss_bytes": 541212672,
+        "io": {
+          "read_ops": 993512,
+          "write_ops": 619691,
+          "other_ops": 812786,
+          "read_bytes": 29384696684,
+          "write_bytes": 2533107761,
+          "other_bytes": 54429722
+        },
+        "cpu_ms": 46656.25,
+        "gc_cycles": 29
+      },
+      "database_bytes": 2532671488,
+      "sample": "before-final-full-changed-1",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "full",
+      "wall_ms": 19758,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 1,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "elapsed_ms": 19755,
+        "timings_ms": {
+          "begin_finalize_tx": 0,
+          "checkpoint_wal": 6,
+          "commit_finalize": 0,
+          "commit_indexed_rows": 2,
+          "count_diagnostics": 969,
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 7358,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 20,
+          "load_existing_index": 211,
+          "map_context": 1433,
+          "map_context_reused": 1433,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "publish_staged": 143,
+          "read_hash_worker_cpu_total": 111122,
+          "read_hash_worker_elapsed_sum": 111122,
+          "resolve_refs": 0,
+          "resolve_refs_scoped": 0,
+          "seed_staged": 8058,
+          "semantic_fts": 392,
+          "semantic_fts_scoped": 368,
+          "sqlite_write": 13,
+          "validator": 404,
+          "validator_scoped": 404,
+          "walk_sources": 428
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "base_seed": {
+          "configured": true,
+          "used": false,
+          "reason": "reused the compatible published generation instead"
+        },
+        "reused_generation": true
+      },
+      "process": {
+        "wall_ms": 19847,
+        "peak_rss_bytes": 529879040,
+        "io": {
+          "read_ops": 993655,
+          "write_ops": 619785,
+          "other_ops": 812786,
+          "read_bytes": 29385282412,
+          "write_bytes": 2533682544,
+          "other_bytes": 54429720
+        },
+        "cpu_ms": 42875.0,
+        "gc_cycles": 26
+      },
+      "database_bytes": 2532671488,
+      "sample": "before-final-full-changed-2",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "full",
+      "wall_ms": 25115,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 1,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "elapsed_ms": 25111,
+        "timings_ms": {
+          "begin_finalize_tx": 0,
+          "checkpoint_wal": 3,
+          "commit_finalize": 0,
+          "commit_indexed_rows": 1,
+          "count_diagnostics": 1012,
+          "extract_worker_cpu_total": 1,
+          "extract_worker_elapsed_sum": 1,
+          "hash_files_wall": 7617,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 19,
+          "load_existing_index": 192,
+          "map_context": 1630,
+          "map_context_reused": 1630,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "publish_staged": 140,
+          "read_hash_worker_cpu_total": 115380,
+          "read_hash_worker_elapsed_sum": 115380,
+          "resolve_refs": 0,
+          "resolve_refs_scoped": 0,
+          "seed_staged": 12882,
+          "semantic_fts": 395,
+          "semantic_fts_scoped": 372,
+          "sqlite_write": 20,
+          "validator": 438,
+          "validator_scoped": 438,
+          "walk_sources": 440
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "base_seed": {
+          "configured": true,
+          "used": false,
+          "reason": "reused the compatible published generation instead"
+        },
+        "reused_generation": true
+      },
+      "process": {
+        "wall_ms": 25196,
+        "peak_rss_bytes": 537808896,
+        "io": {
+          "read_ops": 993504,
+          "write_ops": 619637,
+          "other_ops": 812786,
+          "read_bytes": 29384663916,
+          "write_bytes": 2533066603,
+          "other_bytes": 54429722
+        },
+        "cpu_ms": 47281.25,
+        "gc_cycles": 28
+      },
+      "database_bytes": 2532671488,
+      "sample": "before-final-full-changed-3",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "full",
+      "wall_ms": 20152,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 1,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "elapsed_ms": 20149,
+        "timings_ms": {
+          "begin_finalize_tx": 0,
+          "checkpoint_wal": 3,
+          "commit_finalize": 0,
+          "commit_indexed_rows": 0,
+          "count_diagnostics": 979,
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 7459,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 17,
+          "load_existing_index": 226,
+          "map_context": 1447,
+          "map_context_reused": 1447,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "publish_staged": 145,
+          "read_hash_worker_cpu_total": 113455,
+          "read_hash_worker_elapsed_sum": 113455,
+          "resolve_refs": 0,
+          "resolve_refs_scoped": 0,
+          "seed_staged": 8114,
+          "semantic_fts": 419,
+          "semantic_fts_scoped": 396,
+          "sqlite_write": 13,
+          "validator": 423,
+          "validator_scoped": 423,
+          "walk_sources": 521
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "base_seed": {
+          "configured": true,
+          "used": false,
+          "reason": "reused the compatible published generation instead"
+        },
+        "reused_generation": true
+      },
+      "process": {
+        "wall_ms": 20244,
+        "peak_rss_bytes": 552632320,
+        "io": {
+          "read_ops": 993503,
+          "write_ops": 619637,
+          "other_ops": 812786,
+          "read_bytes": 29384659820,
+          "write_bytes": 2533066575,
+          "other_bytes": 54429752
+        },
+        "cpu_ms": 44515.625,
+        "gc_cycles": 28
+      },
+      "database_bytes": 2532671488,
+      "sample": "before-final-full-changed-4",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "full",
+      "wall_ms": 28286,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 0,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "no_op": true,
+        "elapsed_ms": 28281,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 12189,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 18,
+          "load_existing_index": 179,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "publish_staged": 140,
+          "read_hash_worker_cpu_total": 189769,
+          "read_hash_worker_elapsed_sum": 189769,
+          "reuse_published_index": 1447,
+          "seed_staged": 13612,
+          "sqlite_write": 7,
+          "walk_sources": 393
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "base_seed": {
+          "configured": true,
+          "used": false,
+          "reason": "reused the compatible published generation instead"
+        },
+        "reused_generation": true
+      },
+      "process": {
+        "wall_ms": 28376,
+        "peak_rss_bytes": 502288384,
+        "io": {
+          "read_ops": 835764,
+          "write_ops": 619332,
+          "other_ops": 810332,
+          "read_bytes": 28728324573,
+          "write_bytes": 2532739902,
+          "other_bytes": 54354558
+        },
+        "cpu_ms": 40296.875,
+        "gc_cycles": 24
+      },
+      "database_bytes": 2532671488,
+      "sample": "before-final-full-noop-0",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "full",
+      "wall_ms": 18258,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 0,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "no_op": true,
+        "elapsed_ms": 18255,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 7086,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 19,
+          "load_existing_index": 178,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "publish_staged": 141,
+          "read_hash_worker_cpu_total": 107049,
+          "read_hash_worker_elapsed_sum": 107049,
+          "reuse_published_index": 1405,
+          "seed_staged": 8732,
+          "sqlite_write": 14,
+          "walk_sources": 399
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "base_seed": {
+          "configured": true,
+          "used": false,
+          "reason": "reused the compatible published generation instead"
+        },
+        "reused_generation": true
+      },
+      "process": {
+        "wall_ms": 18332,
+        "peak_rss_bytes": 513933312,
+        "io": {
+          "read_ops": 835764,
+          "write_ops": 619293,
+          "other_ops": 810326,
+          "read_bytes": 28728363305,
+          "write_bytes": 2532739791,
+          "other_bytes": 54354308
+        },
+        "cpu_ms": 43125.0,
+        "gc_cycles": 23
+      },
+      "database_bytes": 2532671488,
+      "sample": "before-final-full-noop-1",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "full",
+      "wall_ms": 17866,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 0,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "no_op": true,
+        "elapsed_ms": 17863,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 7088,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 19,
+          "load_existing_index": 177,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "publish_staged": 142,
+          "read_hash_worker_cpu_total": 106751,
+          "read_hash_worker_elapsed_sum": 106751,
+          "reuse_published_index": 1404,
+          "seed_staged": 8355,
+          "sqlite_write": 13,
+          "walk_sources": 383
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "base_seed": {
+          "configured": true,
+          "used": false,
+          "reason": "reused the compatible published generation instead"
+        },
+        "reused_generation": true
+      },
+      "process": {
+        "wall_ms": 17936,
+        "peak_rss_bytes": 505282560,
+        "io": {
+          "read_ops": 835764,
+          "write_ops": 619293,
+          "other_ops": 810326,
+          "read_bytes": 28728363305,
+          "write_bytes": 2532739762,
+          "other_bytes": 54354310
+        },
+        "cpu_ms": 40968.75,
+        "gc_cycles": 23
+      },
+      "database_bytes": 2532671488,
+      "sample": "before-final-full-noop-2",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "full",
+      "wall_ms": 17899,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 0,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "no_op": true,
+        "elapsed_ms": 17896,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 6997,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 18,
+          "load_existing_index": 179,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "publish_staged": 141,
+          "read_hash_worker_cpu_total": 105971,
+          "read_hash_worker_elapsed_sum": 105971,
+          "reuse_published_index": 1401,
+          "seed_staged": 8474,
+          "sqlite_write": 15,
+          "walk_sources": 394
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "base_seed": {
+          "configured": true,
+          "used": false,
+          "reason": "reused the compatible published generation instead"
+        },
+        "reused_generation": true
+      },
+      "process": {
+        "wall_ms": 17979,
+        "peak_rss_bytes": 500072448,
+        "io": {
+          "read_ops": 835764,
+          "write_ops": 619254,
+          "other_ops": 810328,
+          "read_bytes": 28728363305,
+          "write_bytes": 2532739676,
+          "other_bytes": 54354270
+        },
+        "cpu_ms": 41578.125,
+        "gc_cycles": 22
+      },
+      "database_bytes": 2532671488,
+      "sample": "before-final-full-noop-3",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "full",
+      "wall_ms": 17907,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 0,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "no_op": true,
+        "elapsed_ms": 17904,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 7291,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 19,
+          "load_existing_index": 176,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "publish_staged": 142,
+          "read_hash_worker_cpu_total": 110207,
+          "read_hash_worker_elapsed_sum": 110207,
+          "reuse_published_index": 1390,
+          "seed_staged": 8188,
+          "sqlite_write": 11,
+          "walk_sources": 397
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "base_seed": {
+          "configured": true,
+          "used": false,
+          "reason": "reused the compatible published generation instead"
+        },
+        "reused_generation": true
+      },
+      "process": {
+        "wall_ms": 17989,
+        "peak_rss_bytes": 495800320,
+        "io": {
+          "read_ops": 835764,
+          "write_ops": 619215,
+          "other_ops": 810324,
+          "read_bytes": 28728363305,
+          "write_bytes": 2532739527,
+          "other_bytes": 54354310
+        },
+        "cpu_ms": 40968.75,
+        "gc_cycles": 21
+      },
+      "database_bytes": 2532671488,
+      "sample": "before-final-full-noop-4",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 329,
+      "stats": {
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 0,
+        "references": 0,
+        "localization": 0,
+        "resources": 0,
+        "schema_fields": 0,
+        "object_fields": 0,
+        "diagnostics": 0,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 0,
+        "bytes_read": 41,
+        "bytes_hashed": 41,
+        "peak_queued_results": 1,
+        "no_op": true,
+        "elapsed_ms": 325,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 26,
+          "load_existing_index": 35,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0
+        },
+        "by_source": {
+          "project": 1
+        },
+        "path_outcomes": [
+          {
+            "path": "common/scripted_triggers/zz_perf_refresh_20260907.txt",
+            "status": "unchanged"
+          }
+        ]
+      },
+      "process": {
+        "wall_ms": 412,
+        "peak_rss_bytes": 81383424,
+        "io": {
+          "read_ops": 52648,
+          "write_ops": 274,
+          "other_ops": 1772,
+          "read_bytes": 220156860,
+          "write_bytes": 1959,
+          "other_bytes": 63264
+        },
+        "cpu_ms": 343.75,
+        "gc_cycles": 7
+      },
+      "database_bytes": 2532671488,
+      "sample": "before-final-unchanged-0",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 308,
+      "stats": {
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 0,
+        "references": 0,
+        "localization": 0,
+        "resources": 0,
+        "schema_fields": 0,
+        "object_fields": 0,
+        "diagnostics": 0,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 0,
+        "bytes_read": 41,
+        "bytes_hashed": 41,
+        "peak_queued_results": 1,
+        "no_op": true,
+        "elapsed_ms": 305,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 1,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 19,
+          "load_existing_index": 33,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 1,
+          "read_hash_worker_elapsed_sum": 1
+        },
+        "by_source": {
+          "project": 1
+        },
+        "path_outcomes": [
+          {
+            "path": "common/scripted_triggers/zz_perf_refresh_20260907.txt",
+            "status": "unchanged"
+          }
+        ]
+      },
+      "process": {
+        "wall_ms": 360,
+        "peak_rss_bytes": 80822272,
+        "io": {
+          "read_ops": 52648,
+          "write_ops": 274,
+          "other_ops": 1771,
+          "read_bytes": 220156860,
+          "write_bytes": 1944,
+          "other_bytes": 63264
+        },
+        "cpu_ms": 359.375,
+        "gc_cycles": 7
+      },
+      "database_bytes": 2532671488,
+      "sample": "before-final-unchanged-1",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 308,
+      "stats": {
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 0,
+        "references": 0,
+        "localization": 0,
+        "resources": 0,
+        "schema_fields": 0,
+        "object_fields": 0,
+        "diagnostics": 0,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 0,
+        "bytes_read": 41,
+        "bytes_hashed": 41,
+        "peak_queued_results": 1,
+        "no_op": true,
+        "elapsed_ms": 305,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 19,
+          "load_existing_index": 35,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0
+        },
+        "by_source": {
+          "project": 1
+        },
+        "path_outcomes": [
+          {
+            "path": "common/scripted_triggers/zz_perf_refresh_20260907.txt",
+            "status": "unchanged"
+          }
+        ]
+      },
+      "process": {
+        "wall_ms": 360,
+        "peak_rss_bytes": 81088512,
+        "io": {
+          "read_ops": 52648,
+          "write_ops": 274,
+          "other_ops": 1772,
+          "read_bytes": 220156860,
+          "write_bytes": 1930,
+          "other_bytes": 63264
+        },
+        "cpu_ms": 343.75,
+        "gc_cycles": 7
+      },
+      "database_bytes": 2532671488,
+      "sample": "before-final-unchanged-2",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 308,
+      "stats": {
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 0,
+        "references": 0,
+        "localization": 0,
+        "resources": 0,
+        "schema_fields": 0,
+        "object_fields": 0,
+        "diagnostics": 0,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 0,
+        "bytes_read": 41,
+        "bytes_hashed": 41,
+        "peak_queued_results": 1,
+        "no_op": true,
+        "elapsed_ms": 304,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 18,
+          "load_existing_index": 34,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0
+        },
+        "by_source": {
+          "project": 1
+        },
+        "path_outcomes": [
+          {
+            "path": "common/scripted_triggers/zz_perf_refresh_20260907.txt",
+            "status": "unchanged"
+          }
+        ]
+      },
+      "process": {
+        "wall_ms": 361,
+        "peak_rss_bytes": 80744448,
+        "io": {
+          "read_ops": 52648,
+          "write_ops": 313,
+          "other_ops": 1773,
+          "read_bytes": 220156860,
+          "write_bytes": 2069,
+          "other_bytes": 63264
+        },
+        "cpu_ms": 359.375,
+        "gc_cycles": 8
+      },
+      "database_bytes": 2532671488,
+      "sample": "before-final-unchanged-3",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 320,
+      "stats": {
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 0,
+        "references": 0,
+        "localization": 0,
+        "resources": 0,
+        "schema_fields": 0,
+        "object_fields": 0,
+        "diagnostics": 0,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 0,
+        "bytes_read": 41,
+        "bytes_hashed": 41,
+        "peak_queued_results": 1,
+        "no_op": true,
+        "elapsed_ms": 316,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 19,
+          "load_existing_index": 35,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0
+        },
+        "by_source": {
+          "project": 1
+        },
+        "path_outcomes": [
+          {
+            "path": "common/scripted_triggers/zz_perf_refresh_20260907.txt",
+            "status": "unchanged"
+          }
+        ]
+      },
+      "process": {
+        "wall_ms": 412,
+        "peak_rss_bytes": 80068608,
+        "io": {
+          "read_ops": 52648,
+          "write_ops": 274,
+          "other_ops": 1769,
+          "read_bytes": 220156860,
+          "write_bytes": 1947,
+          "other_bytes": 63264
+        },
+        "cpu_ms": 421.875,
+        "gc_cycles": 7
+      },
+      "database_bytes": 2532671488,
+      "sample": "before-final-unchanged-4",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "clean",
+      "wall_ms": 94836,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 21180,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "elapsed_ms": 94836,
+        "timings_ms": {
+          "begin_finalize_tx": 0,
+          "build_indexes": 11194,
+          "checkpoint_wal": 752,
+          "commit_finalize": 3341,
+          "commit_indexed_rows": 3253,
+          "count_diagnostics": 1353,
+          "extract_worker_cpu_total": 17031,
+          "extract_worker_elapsed_sum": 17031,
+          "fts_datatypes": 52,
+          "fts_document_map": 872,
+          "fts_localization": 3198,
+          "fts_objects": 530,
+          "fts_resources": 151,
+          "fts_script_keys": 1486,
+          "fts_script_text": 1322,
+          "fts_trigram": 15905,
+          "hash_files_wall": 18090,
+          "lint_worker_cpu_total": 15281,
+          "lint_worker_elapsed_sum": 15281,
+          "load_engine_bundle": 17,
+          "load_existing_index": 0,
+          "load_symbols": 2148,
+          "map_context": 19368,
+          "map_context_rebuild": 19368,
+          "map_contract_inputs": 1843,
+          "map_derived_layers": 8610,
+          "map_geometry": 1024,
+          "map_geometry_fingerprint": 1,
+          "map_history": 733,
+          "map_holy_sites_regions": 337,
+          "map_physical": 4932,
+          "map_province_image_decode": 169,
+          "map_province_image_geometry": 852,
+          "map_terrain_titles": 38,
+          "map_write_static": 297,
+          "parse_files_wall": 13632,
+          "parse_worker_cpu_total": 6857,
+          "parse_worker_elapsed_sum": 6857,
+          "publish_staged": 7581,
+          "read_hash_worker_cpu_total": 128684,
+          "read_hash_worker_elapsed_sum": 128684,
+          "resolve_refs": 2339,
+          "seed_staged": 0,
+          "semantic_fts": 23608,
+          "semantic_fts_rebuild": 23520,
+          "sqlite_write": 10315,
+          "validator": 416,
+          "validator_court_defaults": 4,
+          "validator_error_log_contract": 267,
+          "validator_folder_schema": 69,
+          "validator_government_defaults": 0,
+          "validator_government_fallback": 0,
+          "validator_government_registration": 4,
+          "validator_title_integrity": 28,
+          "walk_sources": 460
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        }
+      },
+      "process": {
+        "wall_ms": 96245,
+        "peak_rss_bytes": 883265536,
+        "io": {
+          "read_ops": 3170846,
+          "write_ops": 2547221,
+          "other_ops": 815604,
+          "read_bytes": 39007844341,
+          "write_bytes": 5512223513,
+          "other_bytes": 54646816
+        },
+        "cpu_ms": 149765.625,
+        "gc_cycles": 223
+      },
+      "database_bytes": 2569601024,
+      "sample": "after-paired-clean-0",
+      "version": "71aeb44d50621ad09de71532a0e9861dc952fcd0"
+    },
+    {
+      "mode": "clean",
+      "wall_ms": 92359,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 21180,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "elapsed_ms": 92358,
+        "timings_ms": {
+          "begin_finalize_tx": 0,
+          "build_indexes": 11430,
+          "checkpoint_wal": 906,
+          "commit_finalize": 3352,
+          "commit_indexed_rows": 3889,
+          "count_diagnostics": 1395,
+          "extract_worker_cpu_total": 16878,
+          "extract_worker_elapsed_sum": 16878,
+          "fts_datatypes": 54,
+          "fts_document_map": 877,
+          "fts_localization": 3237,
+          "fts_objects": 525,
+          "fts_resources": 151,
+          "fts_script_keys": 1477,
+          "fts_script_text": 1316,
+          "fts_trigram": 16089,
+          "hash_files_wall": 18045,
+          "lint_worker_cpu_total": 15242,
+          "lint_worker_elapsed_sum": 15242,
+          "load_engine_bundle": 18,
+          "load_existing_index": 0,
+          "load_symbols": 2137,
+          "map_context": 20965,
+          "map_context_rebuild": 20965,
+          "map_contract_inputs": 1930,
+          "map_derived_layers": 8433,
+          "map_geometry": 1026,
+          "map_geometry_fingerprint": 0,
+          "map_history": 756,
+          "map_holy_sites_regions": 346,
+          "map_physical": 4886,
+          "map_province_image_decode": 185,
+          "map_province_image_geometry": 838,
+          "map_terrain_titles": 44,
+          "map_write_static": 304,
+          "parse_files_wall": 13483,
+          "parse_worker_cpu_total": 6769,
+          "parse_worker_elapsed_sum": 6769,
+          "publish_staged": 1910,
+          "read_hash_worker_cpu_total": 129276,
+          "read_hash_worker_elapsed_sum": 129276,
+          "resolve_refs": 2577,
+          "seed_staged": 0,
+          "semantic_fts": 23818,
+          "semantic_fts_rebuild": 23731,
+          "sqlite_write": 10287,
+          "validator": 454,
+          "validator_court_defaults": 3,
+          "validator_error_log_contract": 292,
+          "validator_folder_schema": 71,
+          "validator_government_defaults": 0,
+          "validator_government_fallback": 0,
+          "validator_government_registration": 5,
+          "validator_title_integrity": 33,
+          "walk_sources": 447
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        }
+      },
+      "process": {
+        "wall_ms": 92415,
+        "peak_rss_bytes": 867999744,
+        "io": {
+          "read_ops": 3172635,
+          "write_ops": 2546498,
+          "other_ops": 815602,
+          "read_bytes": 39015181258,
+          "write_bytes": 5511037478,
+          "other_bytes": 54645710
+        },
+        "cpu_ms": 151375.0,
+        "gc_cycles": 218
+      },
+      "database_bytes": 2569703424,
+      "sample": "after-paired-clean-1",
+      "version": "71aeb44d50621ad09de71532a0e9861dc952fcd0"
+    },
+    {
+      "mode": "clean",
+      "wall_ms": 95730,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 21180,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "elapsed_ms": 95730,
+        "timings_ms": {
+          "begin_finalize_tx": 0,
+          "build_indexes": 11780,
+          "checkpoint_wal": 421,
+          "commit_finalize": 2989,
+          "commit_indexed_rows": 3268,
+          "count_diagnostics": 1423,
+          "extract_worker_cpu_total": 17909,
+          "extract_worker_elapsed_sum": 17909,
+          "fts_datatypes": 54,
+          "fts_document_map": 956,
+          "fts_localization": 3480,
+          "fts_objects": 569,
+          "fts_resources": 163,
+          "fts_script_keys": 1656,
+          "fts_script_text": 1402,
+          "fts_trigram": 17253,
+          "hash_files_wall": 18457,
+          "lint_worker_cpu_total": 16068,
+          "lint_worker_elapsed_sum": 16068,
+          "load_engine_bundle": 19,
+          "load_existing_index": 0,
+          "load_symbols": 2230,
+          "map_context": 22921,
+          "map_context_rebuild": 22921,
+          "map_contract_inputs": 1876,
+          "map_derived_layers": 8941,
+          "map_geometry": 1046,
+          "map_geometry_fingerprint": 1,
+          "map_history": 900,
+          "map_holy_sites_regions": 393,
+          "map_physical": 5093,
+          "map_province_image_decode": 190,
+          "map_province_image_geometry": 851,
+          "map_terrain_titles": 43,
+          "map_write_static": 314,
+          "parse_files_wall": 13992,
+          "parse_worker_cpu_total": 7180,
+          "parse_worker_elapsed_sum": 7180,
+          "publish_staged": 2853,
+          "read_hash_worker_cpu_total": 127045,
+          "read_hash_worker_elapsed_sum": 127045,
+          "resolve_refs": 2541,
+          "seed_staged": 0,
+          "semantic_fts": 25629,
+          "semantic_fts_rebuild": 25542,
+          "sqlite_write": 10848,
+          "validator": 462,
+          "validator_court_defaults": 3,
+          "validator_error_log_contract": 303,
+          "validator_folder_schema": 71,
+          "validator_government_defaults": 0,
+          "validator_government_fallback": 0,
+          "validator_government_registration": 5,
+          "validator_title_integrity": 32,
+          "walk_sources": 573
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        }
+      },
+      "process": {
+        "wall_ms": 95804,
+        "peak_rss_bytes": 851533824,
+        "io": {
+          "read_ops": 3173625,
+          "write_ops": 2547625,
+          "other_ops": 815601,
+          "read_bytes": 39019248325,
+          "write_bytes": 5512893778,
+          "other_bytes": 54645694
+        },
+        "cpu_ms": 157484.375,
+        "gc_cycles": 217
+      },
+      "database_bytes": 2570584064,
+      "sample": "after-paired-clean-2",
+      "version": "71aeb44d50621ad09de71532a0e9861dc952fcd0"
+    },
+    {
+      "mode": "clean",
+      "wall_ms": 88971,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 21180,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "elapsed_ms": 88966,
+        "timings_ms": {
+          "begin_finalize_tx": 0,
+          "build_indexes": 11252,
+          "checkpoint_wal": 822,
+          "commit_finalize": 3299,
+          "commit_indexed_rows": 3597,
+          "count_diagnostics": 1370,
+          "extract_worker_cpu_total": 17023,
+          "extract_worker_elapsed_sum": 17023,
+          "hash_files_wall": 18850,
+          "lint_worker_cpu_total": 15901,
+          "lint_worker_elapsed_sum": 15901,
+          "load_engine_bundle": 19,
+          "load_existing_index": 0,
+          "load_symbols": 2124,
+          "map_context": 19326,
+          "map_context_rebuild": 19326,
+          "parse_files_wall": 14292,
+          "parse_worker_cpu_total": 6911,
+          "parse_worker_elapsed_sum": 6911,
+          "publish_staged": 1501,
+          "read_hash_worker_cpu_total": 138038,
+          "read_hash_worker_elapsed_sum": 138038,
+          "resolve_refs": 2340,
+          "seed_staged": 0,
+          "semantic_fts": 22803,
+          "semantic_fts_rebuild": 22718,
+          "sqlite_write": 10473,
+          "validator": 417,
+          "walk_sources": 359
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        }
+      },
+      "process": {
+        "wall_ms": 89074,
+        "peak_rss_bytes": 846688256,
+        "io": {
+          "read_ops": 3095091,
+          "write_ops": 2509854,
+          "other_ops": 815598,
+          "read_bytes": 38697363833,
+          "write_bytes": 5434739638,
+          "other_bytes": 54646644
+        },
+        "cpu_ms": 155140.625,
+        "gc_cycles": 223
+      },
+      "database_bytes": 2531606528,
+      "sample": "before-paired-clean-0",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "clean",
+      "wall_ms": 91520,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 21180,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "elapsed_ms": 91518,
+        "timings_ms": {
+          "begin_finalize_tx": 0,
+          "build_indexes": 11363,
+          "checkpoint_wal": 831,
+          "commit_finalize": 3612,
+          "commit_indexed_rows": 3561,
+          "count_diagnostics": 1566,
+          "extract_worker_cpu_total": 17113,
+          "extract_worker_elapsed_sum": 17113,
+          "hash_files_wall": 15879,
+          "lint_worker_cpu_total": 15793,
+          "lint_worker_elapsed_sum": 15793,
+          "load_engine_bundle": 19,
+          "load_existing_index": 0,
+          "load_symbols": 2136,
+          "map_context": 22185,
+          "map_context_rebuild": 22185,
+          "parse_files_wall": 12918,
+          "parse_worker_cpu_total": 6929,
+          "parse_worker_elapsed_sum": 6929,
+          "publish_staged": 1757,
+          "read_hash_worker_cpu_total": 94583,
+          "read_hash_worker_elapsed_sum": 94583,
+          "resolve_refs": 2350,
+          "seed_staged": 0,
+          "semantic_fts": 24469,
+          "semantic_fts_rebuild": 24383,
+          "sqlite_write": 10308,
+          "validator": 421,
+          "walk_sources": 464
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        }
+      },
+      "process": {
+        "wall_ms": 91636,
+        "peak_rss_bytes": 848220160,
+        "io": {
+          "read_ops": 3095418,
+          "write_ops": 2511020,
+          "other_ops": 815601,
+          "read_bytes": 38698720477,
+          "write_bytes": 5438056155,
+          "other_bytes": 54645780
+        },
+        "cpu_ms": 152765.625,
+        "gc_cycles": 225
+      },
+      "database_bytes": 2532552704,
+      "sample": "before-paired-clean-1",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "clean",
+      "wall_ms": 93495,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 69321,
+        "nodes": 0,
+        "objects": 238597,
+        "references": 1086087,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764469,
+        "diagnostics": 312,
+        "overridden": 4239,
+        "files_read": 69321,
+        "files_hashed": 69321,
+        "files_parsed": 21180,
+        "bytes_read": 25525937522,
+        "bytes_hashed": 25525937522,
+        "peak_queued_results": 32,
+        "elapsed_ms": 93492,
+        "timings_ms": {
+          "begin_finalize_tx": 0,
+          "build_indexes": 12013,
+          "checkpoint_wal": 931,
+          "commit_finalize": 3260,
+          "commit_indexed_rows": 3460,
+          "count_diagnostics": 1340,
+          "extract_worker_cpu_total": 19507,
+          "extract_worker_elapsed_sum": 19507,
+          "hash_files_wall": 18943,
+          "lint_worker_cpu_total": 20711,
+          "lint_worker_elapsed_sum": 20711,
+          "load_engine_bundle": 22,
+          "load_existing_index": 0,
+          "load_symbols": 2432,
+          "map_context": 21709,
+          "map_context_rebuild": 21709,
+          "parse_files_wall": 15866,
+          "parse_worker_cpu_total": 8980,
+          "parse_worker_elapsed_sum": 8980,
+          "publish_staged": 1719,
+          "read_hash_worker_cpu_total": 97534,
+          "read_hash_worker_elapsed_sum": 97534,
+          "resolve_refs": 2541,
+          "seed_staged": 0,
+          "semantic_fts": 23405,
+          "semantic_fts_rebuild": 23315,
+          "sqlite_write": 13110,
+          "validator": 430,
+          "walk_sources": 405
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 1579,
+          "translation": 865
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        }
+      },
+      "process": {
+        "wall_ms": 93581,
+        "peak_rss_bytes": 852492288,
+        "io": {
+          "read_ops": 3095371,
+          "write_ops": 2510685,
+          "other_ops": 815600,
+          "read_bytes": 38698528253,
+          "write_bytes": 5436668470,
+          "other_bytes": 54645780
+        },
+        "cpu_ms": 166109.375,
+        "gc_cycles": 224
+      },
+      "database_bytes": 2532671488,
+      "sample": "before-paired-clean-2",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 5303,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 239099,
+        "references": 1086588,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764970,
+        "diagnostics": 1815,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 1,
+        "bytes_read": 36,
+        "bytes_hashed": 36,
+        "peak_queued_results": 1,
+        "elapsed_ms": 5275,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 20,
+          "load_existing_index": 36,
+          "load_symbols": 2636,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0,
+          "resolve_refs": 960,
+          "semantic_fts": 22,
+          "semantic_fts_scoped": 0,
+          "sqlite_write": 0,
+          "validator": 382,
+          "validator_court_defaults": 3,
+          "validator_error_log_contract": 259,
+          "validator_folder_schema": 52,
+          "validator_government_defaults": 0,
+          "validator_government_fallback": 1,
+          "validator_government_registration": 4,
+          "validator_title_integrity": 26
+        },
+        "by_source": {
+          "project": 1
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "changed_files": 1,
+        "path_outcomes": [
+          {
+            "path": "common/traits/zz_perf_fanout_20260907.txt",
+            "status": "refreshed"
+          }
+        ],
+        "changed_symbols": [
+          "trait:perf_refresh_fanout_new_trait",
+          "trait:perf_refresh_fanout_trait"
+        ],
+        "diagnostic_delta": {
+          "added": 501,
+          "resolved": 0,
+          "remaining": 1815
+        }
+      },
+      "process": {
+        "wall_ms": 5363,
+        "peak_rss_bytes": 576651264,
+        "io": {
+          "read_ops": 333535,
+          "write_ops": 1095,
+          "other_ops": 4200,
+          "read_bytes": 1381150647,
+          "write_bytes": 965572,
+          "other_bytes": 138928
+        },
+        "cpu_ms": 5390.625,
+        "gc_cycles": 19
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-fanout-0",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 4789,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 239099,
+        "references": 1086588,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764970,
+        "diagnostics": 1314,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 1,
+        "bytes_read": 32,
+        "bytes_hashed": 32,
+        "peak_queued_results": 1,
+        "elapsed_ms": 4763,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 18,
+          "load_existing_index": 34,
+          "load_symbols": 2192,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0,
+          "resolve_refs": 961,
+          "semantic_fts": 21,
+          "semantic_fts_scoped": 0,
+          "sqlite_write": 0,
+          "validator": 377,
+          "validator_court_defaults": 3,
+          "validator_error_log_contract": 258,
+          "validator_folder_schema": 53,
+          "validator_government_defaults": 0,
+          "validator_government_fallback": 0,
+          "validator_government_registration": 5,
+          "validator_title_integrity": 25
+        },
+        "by_source": {
+          "project": 1
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "changed_files": 1,
+        "path_outcomes": [
+          {
+            "path": "common/traits/zz_perf_fanout_20260907.txt",
+            "status": "refreshed"
+          }
+        ],
+        "changed_symbols": [
+          "trait:perf_refresh_fanout_new_trait",
+          "trait:perf_refresh_fanout_trait"
+        ],
+        "diagnostic_delta": {
+          "added": 0,
+          "resolved": 501,
+          "remaining": 1314
+        }
+      },
+      "process": {
+        "wall_ms": 4856,
+        "peak_rss_bytes": 588283904,
+        "io": {
+          "read_ops": 337901,
+          "write_ops": 990,
+          "other_ops": 4200,
+          "read_bytes": 1398870809,
+          "write_bytes": 678020,
+          "other_bytes": 139098
+        },
+        "cpu_ms": 4937.5,
+        "gc_cycles": 19
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-fanout-1",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 4702,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 239099,
+        "references": 1086588,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764970,
+        "diagnostics": 1815,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 1,
+        "bytes_read": 36,
+        "bytes_hashed": 36,
+        "peak_queued_results": 1,
+        "elapsed_ms": 4677,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 19,
+          "load_existing_index": 34,
+          "load_symbols": 2128,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0,
+          "resolve_refs": 942,
+          "semantic_fts": 21,
+          "semantic_fts_scoped": 1,
+          "sqlite_write": 0,
+          "validator": 383,
+          "validator_court_defaults": 3,
+          "validator_error_log_contract": 259,
+          "validator_folder_schema": 52,
+          "validator_government_defaults": 0,
+          "validator_government_fallback": 1,
+          "validator_government_registration": 5,
+          "validator_title_integrity": 27
+        },
+        "by_source": {
+          "project": 1
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "changed_files": 1,
+        "path_outcomes": [
+          {
+            "path": "common/traits/zz_perf_fanout_20260907.txt",
+            "status": "refreshed"
+          }
+        ],
+        "changed_symbols": [
+          "trait:perf_refresh_fanout_new_trait",
+          "trait:perf_refresh_fanout_trait"
+        ],
+        "diagnostic_delta": {
+          "added": 501,
+          "resolved": 0,
+          "remaining": 1815
+        }
+      },
+      "process": {
+        "wall_ms": 4750,
+        "peak_rss_bytes": 574058496,
+        "io": {
+          "read_ops": 333363,
+          "write_ops": 1047,
+          "other_ops": 4200,
+          "read_bytes": 1380283165,
+          "write_bytes": 940845,
+          "other_bytes": 139098
+        },
+        "cpu_ms": 4781.25,
+        "gc_cycles": 18
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-fanout-2",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 4695,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 239099,
+        "references": 1086588,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764970,
+        "diagnostics": 1314,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 1,
+        "bytes_read": 32,
+        "bytes_hashed": 32,
+        "peak_queued_results": 1,
+        "elapsed_ms": 4670,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 17,
+          "load_existing_index": 33,
+          "load_symbols": 2151,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0,
+          "resolve_refs": 947,
+          "semantic_fts": 21,
+          "semantic_fts_scoped": 0,
+          "sqlite_write": 0,
+          "validator": 372,
+          "validator_court_defaults": 3,
+          "validator_error_log_contract": 252,
+          "validator_folder_schema": 52,
+          "validator_government_defaults": 1,
+          "validator_government_fallback": 0,
+          "validator_government_registration": 4,
+          "validator_title_integrity": 26
+        },
+        "by_source": {
+          "project": 1
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "changed_files": 1,
+        "path_outcomes": [
+          {
+            "path": "common/traits/zz_perf_fanout_20260907.txt",
+            "status": "refreshed"
+          }
+        ],
+        "changed_symbols": [
+          "trait:perf_refresh_fanout_new_trait",
+          "trait:perf_refresh_fanout_trait"
+        ],
+        "diagnostic_delta": {
+          "added": 0,
+          "resolved": 501,
+          "remaining": 1314
+        }
+      },
+      "process": {
+        "wall_ms": 4747,
+        "peak_rss_bytes": 576901120,
+        "io": {
+          "read_ops": 339276,
+          "write_ops": 993,
+          "other_ops": 4200,
+          "read_bytes": 1404502809,
+          "write_bytes": 686243,
+          "other_bytes": 139098
+        },
+        "cpu_ms": 5000.0,
+        "gc_cycles": 19
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-fanout-3",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 4787,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 239099,
+        "references": 1086588,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764970,
+        "diagnostics": 1815,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 1,
+        "bytes_read": 36,
+        "bytes_hashed": 36,
+        "peak_queued_results": 1,
+        "elapsed_ms": 4758,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 18,
+          "load_existing_index": 35,
+          "load_symbols": 2153,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0,
+          "resolve_refs": 951,
+          "semantic_fts": 28,
+          "semantic_fts_scoped": 0,
+          "sqlite_write": 1,
+          "validator": 380,
+          "validator_court_defaults": 3,
+          "validator_error_log_contract": 257,
+          "validator_folder_schema": 52,
+          "validator_government_defaults": 0,
+          "validator_government_fallback": 0,
+          "validator_government_registration": 5,
+          "validator_title_integrity": 27
+        },
+        "by_source": {
+          "project": 1
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "changed_files": 1,
+        "path_outcomes": [
+          {
+            "path": "common/traits/zz_perf_fanout_20260907.txt",
+            "status": "refreshed"
+          }
+        ],
+        "changed_symbols": [
+          "trait:perf_refresh_fanout_new_trait",
+          "trait:perf_refresh_fanout_trait"
+        ],
+        "diagnostic_delta": {
+          "added": 501,
+          "resolved": 0,
+          "remaining": 1815
+        }
+      },
+      "process": {
+        "wall_ms": 4854,
+        "peak_rss_bytes": 577818624,
+        "io": {
+          "read_ops": 337859,
+          "write_ops": 1026,
+          "other_ops": 4200,
+          "read_bytes": 1398698781,
+          "write_bytes": 883303,
+          "other_bytes": 139098
+        },
+        "cpu_ms": 5062.5,
+        "gc_cycles": 18
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-fanout-4",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "full",
+      "wall_ms": 35616,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 69823,
+        "nodes": 0,
+        "objects": 239099,
+        "references": 1086588,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764970,
+        "diagnostics": 1314,
+        "overridden": 4239,
+        "files_read": 69823,
+        "files_hashed": 69823,
+        "files_parsed": 502,
+        "bytes_read": 25525979638,
+        "bytes_hashed": 25525979638,
+        "peak_queued_results": 32,
+        "elapsed_ms": 35616,
+        "timings_ms": {
+          "begin_finalize_tx": 0,
+          "checkpoint_wal": 0,
+          "commit_finalize": 14,
+          "commit_indexed_rows": 5,
+          "count_diagnostics": 885,
+          "extract_worker_cpu_total": 9,
+          "extract_worker_elapsed_sum": 9,
+          "hash_files_wall": 13250,
+          "lint_worker_cpu_total": 6,
+          "lint_worker_elapsed_sum": 6,
+          "load_engine_bundle": 19,
+          "load_existing_index": 165,
+          "load_symbols": 2559,
+          "map_context": 1583,
+          "map_context_reused": 1583,
+          "noop_probe": 1906,
+          "noop_probe_hash_files_wall": 0,
+          "parse_files_wall": 44,
+          "parse_worker_cpu_total": 2,
+          "parse_worker_elapsed_sum": 2,
+          "publish_staged": 108,
+          "read_hash_worker_cpu_total": 204920,
+          "read_hash_worker_elapsed_sum": 204920,
+          "resolve_refs": 1076,
+          "seed_staged": 12840,
+          "semantic_fts": 44,
+          "semantic_fts_scoped": 19,
+          "sqlite_write": 54,
+          "validator": 452,
+          "validator_court_defaults": 3,
+          "validator_error_log_contract": 319,
+          "validator_folder_schema": 59,
+          "validator_government_defaults": 0,
+          "validator_government_fallback": 0,
+          "validator_government_registration": 5,
+          "validator_title_integrity": 28,
+          "walk_sources": 408
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 2081,
+          "translation": 865
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "base_seed": {
+          "configured": true,
+          "used": false,
+          "reason": "reused the compatible published generation instead"
+        },
+        "reused_generation": true
+      },
+      "process": {
+        "wall_ms": 35691,
+        "peak_rss_bytes": 556691456,
+        "io": {
+          "read_ops": 1145662,
+          "write_ops": 632443,
+          "other_ops": 859519,
+          "read_bytes": 30003910287,
+          "write_bytes": 2579434210,
+          "other_bytes": 69582230
+        },
+        "cpu_ms": 47281.25,
+        "gc_cycles": 41
+      },
+      "database_bytes": 2571067392,
+      "sample": "after-fanout-setup",
+      "version": "2ec0271d2e629785c708d1104504d64d8a7af138"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 17202,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 239099,
+        "references": 1086588,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764970,
+        "diagnostics": 1815,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 1,
+        "bytes_read": 36,
+        "bytes_hashed": 36,
+        "peak_queued_results": 1,
+        "elapsed_ms": 17173,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 18,
+          "load_existing_index": 1266,
+          "load_symbols": 5859,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0,
+          "resolve_refs": 1904,
+          "semantic_fts": 4334,
+          "semantic_fts_scoped": 4311,
+          "sqlite_write": 5,
+          "validator": 820
+        },
+        "by_source": {
+          "project": 1
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "changed_files": 1,
+        "path_outcomes": [
+          {
+            "path": "common/traits/zz_perf_fanout_20260907.txt",
+            "status": "refreshed"
+          }
+        ],
+        "changed_symbols": [
+          "trait:perf_refresh_fanout_new_trait",
+          "trait:perf_refresh_fanout_trait"
+        ],
+        "diagnostic_delta": {
+          "added": 501,
+          "resolved": 0,
+          "remaining": 1815
+        }
+      },
+      "process": {
+        "wall_ms": 17293,
+        "peak_rss_bytes": 577728512,
+        "io": {
+          "read_ops": 405115,
+          "write_ops": 1053,
+          "other_ops": 4200,
+          "read_bytes": 1674357692,
+          "write_bytes": 956982,
+          "other_bytes": 138944
+        },
+        "cpu_ms": 6546.875,
+        "gc_cycles": 18
+      },
+      "database_bytes": 2533736448,
+      "sample": "before-fanout-0",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 5162,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 239099,
+        "references": 1086588,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764970,
+        "diagnostics": 1314,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 1,
+        "bytes_read": 32,
+        "bytes_hashed": 32,
+        "peak_queued_results": 1,
+        "elapsed_ms": 5129,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 18,
+          "load_existing_index": 35,
+          "load_symbols": 2169,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0,
+          "resolve_refs": 960,
+          "semantic_fts": 379,
+          "semantic_fts_scoped": 357,
+          "sqlite_write": 0,
+          "validator": 402
+        },
+        "by_source": {
+          "project": 1
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "changed_files": 1,
+        "path_outcomes": [
+          {
+            "path": "common/traits/zz_perf_fanout_20260907.txt",
+            "status": "refreshed"
+          }
+        ],
+        "changed_symbols": [
+          "trait:perf_refresh_fanout_new_trait",
+          "trait:perf_refresh_fanout_trait"
+        ],
+        "diagnostic_delta": {
+          "added": 0,
+          "resolved": 501,
+          "remaining": 1314
+        }
+      },
+      "process": {
+        "wall_ms": 5251,
+        "peak_rss_bytes": 585613312,
+        "io": {
+          "read_ops": 404892,
+          "write_ops": 939,
+          "other_ops": 4200,
+          "read_bytes": 1673265946,
+          "write_bytes": 644773,
+          "other_bytes": 139116
+        },
+        "cpu_ms": 5296.875,
+        "gc_cycles": 18
+      },
+      "database_bytes": 2533736448,
+      "sample": "before-fanout-1",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 5148,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 239099,
+        "references": 1086588,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764970,
+        "diagnostics": 1815,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 1,
+        "bytes_read": 36,
+        "bytes_hashed": 36,
+        "peak_queued_results": 1,
+        "elapsed_ms": 5123,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 19,
+          "load_existing_index": 33,
+          "load_symbols": 2156,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0,
+          "resolve_refs": 972,
+          "semantic_fts": 391,
+          "semantic_fts_scoped": 368,
+          "sqlite_write": 1,
+          "validator": 394
+        },
+        "by_source": {
+          "project": 1
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "changed_files": 1,
+        "path_outcomes": [
+          {
+            "path": "common/traits/zz_perf_fanout_20260907.txt",
+            "status": "refreshed"
+          }
+        ],
+        "changed_symbols": [
+          "trait:perf_refresh_fanout_new_trait",
+          "trait:perf_refresh_fanout_trait"
+        ],
+        "diagnostic_delta": {
+          "added": 501,
+          "resolved": 0,
+          "remaining": 1815
+        }
+      },
+      "process": {
+        "wall_ms": 5201,
+        "peak_rss_bytes": 586948608,
+        "io": {
+          "read_ops": 410777,
+          "write_ops": 1032,
+          "other_ops": 4200,
+          "read_bytes": 1697370910,
+          "write_bytes": 899458,
+          "other_bytes": 139116
+        },
+        "cpu_ms": 5156.25,
+        "gc_cycles": 18
+      },
+      "database_bytes": 2533736448,
+      "sample": "before-fanout-2",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 5093,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 239099,
+        "references": 1086588,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764970,
+        "diagnostics": 1314,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 1,
+        "bytes_read": 32,
+        "bytes_hashed": 32,
+        "peak_queued_results": 1,
+        "elapsed_ms": 5065,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 18,
+          "load_existing_index": 33,
+          "load_symbols": 2116,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0,
+          "resolve_refs": 962,
+          "semantic_fts": 380,
+          "semantic_fts_scoped": 358,
+          "sqlite_write": 1,
+          "validator": 376
+        },
+        "by_source": {
+          "project": 1
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "changed_files": 1,
+        "path_outcomes": [
+          {
+            "path": "common/traits/zz_perf_fanout_20260907.txt",
+            "status": "refreshed"
+          }
+        ],
+        "changed_symbols": [
+          "trait:perf_refresh_fanout_new_trait",
+          "trait:perf_refresh_fanout_trait"
+        ],
+        "diagnostic_delta": {
+          "added": 0,
+          "resolved": 501,
+          "remaining": 1314
+        }
+      },
+      "process": {
+        "wall_ms": 5150,
+        "peak_rss_bytes": 567918592,
+        "io": {
+          "read_ops": 409387,
+          "write_ops": 963,
+          "other_ops": 4200,
+          "read_bytes": 1691677466,
+          "write_bytes": 603805,
+          "other_bytes": 139116
+        },
+        "cpu_ms": 5187.5,
+        "gc_cycles": 19
+      },
+      "database_bytes": 2533736448,
+      "sample": "before-fanout-3",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "files",
+      "wall_ms": 5213,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 1,
+        "nodes": 0,
+        "objects": 239099,
+        "references": 1086588,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764970,
+        "diagnostics": 1815,
+        "overridden": 0,
+        "files_read": 1,
+        "files_hashed": 1,
+        "files_parsed": 1,
+        "bytes_read": 36,
+        "bytes_hashed": 36,
+        "peak_queued_results": 1,
+        "elapsed_ms": 5187,
+        "timings_ms": {
+          "extract_worker_cpu_total": 0,
+          "extract_worker_elapsed_sum": 0,
+          "hash_files_wall": 0,
+          "lint_worker_cpu_total": 0,
+          "lint_worker_elapsed_sum": 0,
+          "load_engine_bundle": 19,
+          "load_existing_index": 35,
+          "load_symbols": 2164,
+          "parse_files_wall": 0,
+          "parse_worker_cpu_total": 0,
+          "parse_worker_elapsed_sum": 0,
+          "read_hash_worker_cpu_total": 0,
+          "read_hash_worker_elapsed_sum": 0,
+          "resolve_refs": 989,
+          "semantic_fts": 377,
+          "semantic_fts_scoped": 354,
+          "sqlite_write": 0,
+          "validator": 400
+        },
+        "by_source": {
+          "project": 1
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "changed_files": 1,
+        "path_outcomes": [
+          {
+            "path": "common/traits/zz_perf_fanout_20260907.txt",
+            "status": "refreshed"
+          }
+        ],
+        "changed_symbols": [
+          "trait:perf_refresh_fanout_new_trait",
+          "trait:perf_refresh_fanout_trait"
+        ],
+        "diagnostic_delta": {
+          "added": 501,
+          "resolved": 0,
+          "remaining": 1815
+        }
+      },
+      "process": {
+        "wall_ms": 5302,
+        "peak_rss_bytes": 574205952,
+        "io": {
+          "read_ops": 410703,
+          "write_ops": 1032,
+          "other_ops": 4200,
+          "read_bytes": 1697067806,
+          "write_bytes": 899444,
+          "other_bytes": 139116
+        },
+        "cpu_ms": 5421.875,
+        "gc_cycles": 18
+      },
+      "database_bytes": 2533736448,
+      "sample": "before-fanout-4",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    },
+    {
+      "mode": "full",
+      "wall_ms": 28517,
+      "stats": {
+        "committed": true,
+        "database": "<isolated>/index.sqlite",
+        "files": 69823,
+        "nodes": 0,
+        "objects": 239099,
+        "references": 1086588,
+        "localization": 2694942,
+        "resources": 43902,
+        "schema_fields": 2489,
+        "object_fields": 764970,
+        "diagnostics": 1314,
+        "overridden": 4239,
+        "files_read": 69823,
+        "files_hashed": 69823,
+        "files_parsed": 502,
+        "bytes_read": 25525979638,
+        "bytes_hashed": 25525979638,
+        "peak_queued_results": 32,
+        "elapsed_ms": 28513,
+        "timings_ms": {
+          "begin_finalize_tx": 0,
+          "checkpoint_wal": 31,
+          "commit_finalize": 0,
+          "commit_indexed_rows": 28,
+          "count_diagnostics": 844,
+          "extract_worker_cpu_total": 1,
+          "extract_worker_elapsed_sum": 1,
+          "hash_files_wall": 8669,
+          "lint_worker_cpu_total": 3,
+          "lint_worker_elapsed_sum": 3,
+          "load_engine_bundle": 19,
+          "load_existing_index": 172,
+          "load_symbols": 2406,
+          "map_context": 1573,
+          "map_context_reused": 1573,
+          "parse_files_wall": 49,
+          "parse_worker_cpu_total": 1,
+          "parse_worker_elapsed_sum": 1,
+          "publish_staged": 105,
+          "read_hash_worker_cpu_total": 131113,
+          "read_hash_worker_elapsed_sum": 131113,
+          "resolve_refs": 984,
+          "seed_staged": 12562,
+          "semantic_fts": 34,
+          "semantic_fts_scoped": 11,
+          "sqlite_write": 69,
+          "validator": 392,
+          "walk_sources": 386
+        },
+        "by_source": {
+          "clausewitz-assets": 378,
+          "game": 14977,
+          "game-assets": 32732,
+          "godherja": 18664,
+          "jomini-assets": 126,
+          "project": 2081,
+          "translation": 865
+        },
+        "wal_checkpoint": {
+          "mode": "truncate",
+          "busy": 0,
+          "log_frames": 0,
+          "checkpointed_frames": 0
+        },
+        "base_seed": {
+          "configured": true,
+          "used": false,
+          "reason": "reused the compatible published generation instead"
+        },
+        "reused_generation": true
+      },
+      "process": {
+        "wall_ms": 28567,
+        "peak_rss_bytes": 555634688,
+        "io": {
+          "read_ops": 1114035,
+          "write_ops": 625132,
+          "other_ops": 815860,
+          "read_bytes": 29874234386,
+          "write_bytes": 2547473999,
+          "other_bytes": 54663532
+        },
+        "cpu_ms": 47312.5,
+        "gc_cycles": 34
+      },
+      "database_bytes": 2533736448,
+      "sample": "before-fanout-setup",
+      "version": "2dabbb79a4a7552e2e218693752f4b473182ef62"
+    }
+  ]
+}

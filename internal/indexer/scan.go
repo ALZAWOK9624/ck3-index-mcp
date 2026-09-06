@@ -258,23 +258,10 @@ func scanWithPreparedEngineBundle(ctx context.Context, cfg Config, forceClean, p
 	existingLoadStart := time.Now()
 	existing := map[string]fileRecord{}
 	if !forceClean {
-		rows, err := db.sql.QueryContext(ctx, `SELECT id, source_name, source_rank, path, rel_path, kind, mtime, file_size, sha256, overridden,
-			override_reason,override_by_source,override_by_rank,override_rule FROM files`)
+		existing, err = loadExistingScanFiles(ctx, db.sql)
 		if err != nil {
 			return ScanStats{}, err
 		}
-		for rows.Next() {
-			var rec fileRecord
-			var recOvr int
-			if err := rows.Scan(&rec.ID, &rec.SourceName, &rec.SourceRank, &rec.Path, &rec.RelPath, &rec.Kind, &rec.MTime, &rec.Size, &rec.SHA, &recOvr,
-				&rec.OverrideReason, &rec.OverrideBySource, &rec.OverrideByRank, &rec.OverrideRule); err != nil {
-				rows.Close()
-				return ScanStats{}, err
-			}
-			rec.Overridden = recOvr != 0
-			existing[rec.Path] = rec
-		}
-		rows.Close()
 		if needsPathCacheRebuild(existing) {
 			fmt.Fprintln(os.Stderr, "[scan] old relative path cache detected, rebuilding sqlite cache")
 			if err := db.reset(ctx); err != nil {
@@ -398,88 +385,18 @@ func scanWithPreparedEngineBundle(ctx context.Context, cfg Config, forceClean, p
 
 	// Collect file jobs first, then parse them concurrently.
 	walkStart := time.Now()
-	var jobs []fileJob
-	for _, src := range cfg.Sources {
-		if src.Name == "" || src.Path == "" {
-			continue
-		}
-		if err := filepath.WalkDir(src.Path, func(path string, d os.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			rel, relErr := filepath.Rel(src.Path, path)
-			if relErr != nil {
-				return relErr
-			}
-			rel = filepath.ToSlash(rel)
-			if d.IsDir() {
-				if shouldPruneSourceDirForSource(rel, src.ResourceOnly) {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if d.Type()&os.ModeSymlink != 0 {
-				return fmt.Errorf("source %q contains symbolic link at %s", src.Name, rel)
-			}
-			kind := classifyRel(rel)
-			if kind == "" || (src.ResourceOnly && kind != "resource") {
-				return nil
-			}
-			jobs = append(jobs, fileJob{
-				src:              src,
-				path:             path,
-				rel:              rel,
-				kind:             kind,
-				prev:             existing[path],
-				forceParse:       kind == "script" && (engineDataDirty || cachedRuleVersion != indexRuleVersion || cachedLintRuleVersion != lintRuleVersion || (vanillaDirty && strings.Contains(rel, "on_action"))) || kind == "localization" && cachedLintRuleVersion != lintRuleVersion,
-				verifyContent:    cfg.verifyContent,
-				engineRules:      engineRules,
-				vanillaOnActions: vanillaOnActionLookup,
-			})
-			return nil
-		}); err != nil {
-			return ScanStats{}, fmt.Errorf("scan source %q: %w", src.Name, err)
-		}
-	}
-	stats.TimingsMillis["walk_sources"] = time.Since(walkStart).Milliseconds()
-
-	// Override pass: files with the same rel_path across sources.
-	// The source with the lowest rank (highest priority) wins; others
-	// are skipped entirely (only a file record is stored, no parsing).
-	replacePaths, err := collectSourceReplacePaths(cfg.Sources)
+	jobs, overriddenCount, _, err := collectScanFileJobs(ctx, cfg, existing, false)
 	if err != nil {
 		return ScanStats{}, err
 	}
-	overrideWinners := map[string]Source{} // rel_path -> highest-priority source
-	for _, j := range jobs {
-		if winner, ok := overrideWinners[j.rel]; !ok || j.src.Rank < winner.Rank {
-			overrideWinners[j.rel] = j.src
-		}
-	}
-	sourceNameByRank := map[int]string{}
-	for _, source := range cfg.Sources {
-		sourceNameByRank[source.Rank] = source.Name
-	}
-	overriddenCount := 0
-	for i := range jobs {
-		winner := overrideWinners[jobs[i].rel]
-		if jobs[i].src.Rank > winner.Rank {
-			jobs[i].overridden = true
-			jobs[i].overrideReason = "same_relative_path"
-			jobs[i].overrideBySource = winner.Name
-			jobs[i].overrideByRank = winner.Rank
-			jobs[i].overrideRule = jobs[i].rel
-			overriddenCount++
-		} else if rank, rule, ok := replacePathEvidence(jobs[i].rel, jobs[i].src.Rank, replacePaths); ok {
-			jobs[i].overridden = true
-			jobs[i].overrideReason = "descriptor_replace_path"
-			jobs[i].overrideBySource = sourceNameByRank[rank]
-			jobs[i].overrideByRank = rank
-			jobs[i].overrideRule = rule
-			overriddenCount++
-		}
-	}
+	stats.TimingsMillis["walk_sources"] = time.Since(walkStart).Milliseconds()
 	stats.Overridden = overriddenCount
+	for i := range jobs {
+		j := &jobs[i]
+		j.forceParse = j.kind == "script" && (engineDataDirty || cachedRuleVersion != indexRuleVersion || cachedLintRuleVersion != lintRuleVersion || (vanillaDirty && strings.Contains(j.rel, "on_action"))) || j.kind == "localization" && cachedLintRuleVersion != lintRuleVersion
+		j.engineRules = engineRules
+		j.vanillaOnActions = vanillaOnActionLookup
+	}
 
 	// The parser workers intentionally run ahead of SQLite writes. Tie their
 	// lifetime to this scan so a failed/cancelled full refresh cannot leave a
@@ -740,26 +657,26 @@ parsedFilesComplete:
 		// full refresh for semantic file changes, while map-only changes can skip
 		// it because they do not alter the indexed object graph.
 		if fileChanges {
-			if err := refreshTitleIntegrityDiagnostics(ctx, tx); err != nil {
+			if err := timeScanPhase(stats.TimingsMillis, "validator_title_integrity", func() error { return refreshTitleIntegrityDiagnostics(ctx, tx) }); err != nil {
 				return ScanStats{}, err
 			}
 		}
-		if err := refreshGovernmentRegistrationDiagnostics(ctx, tx, project.Rank); err != nil {
+		if err := timeScanPhase(stats.TimingsMillis, "validator_government_registration", func() error { return refreshGovernmentRegistrationDiagnostics(ctx, tx, project.Rank) }); err != nil {
 			return ScanStats{}, err
 		}
-		if err := refreshGovernmentFallbackDiagnostics(ctx, tx); err != nil {
+		if err := timeScanPhase(stats.TimingsMillis, "validator_government_fallback", func() error { return refreshGovernmentFallbackDiagnostics(ctx, tx) }); err != nil {
 			return ScanStats{}, err
 		}
-		if err := refreshGovernmentMechanicDefaultDiagnostics(ctx, tx); err != nil {
+		if err := timeScanPhase(stats.TimingsMillis, "validator_government_defaults", func() error { return refreshGovernmentMechanicDefaultDiagnostics(ctx, tx) }); err != nil {
 			return ScanStats{}, err
 		}
-		if err := refreshCourtTypeDefaultDiagnostics(ctx, tx); err != nil {
+		if err := timeScanPhase(stats.TimingsMillis, "validator_court_defaults", func() error { return refreshCourtTypeDefaultDiagnostics(ctx, tx) }); err != nil {
 			return ScanStats{}, err
 		}
-		if err := refreshFolderSchemaDiagnostics(ctx, tx, project.Rank); err != nil {
+		if err := timeScanPhase(stats.TimingsMillis, "validator_folder_schema", func() error { return refreshFolderSchemaDiagnostics(ctx, tx, project.Rank) }); err != nil {
 			return ScanStats{}, err
 		}
-		if err := refreshErrorLogContractDiagnostics(ctx, tx, project.Rank); err != nil {
+		if err := timeScanPhase(stats.TimingsMillis, "validator_error_log_contract", func() error { return refreshErrorLogContractDiagnostics(ctx, tx, project.Rank) }); err != nil {
 			return ScanStats{}, err
 		}
 		stats.TimingsMillis["validator"] = time.Since(stageStart).Milliseconds()
@@ -802,25 +719,25 @@ parsedFilesComplete:
 		if err := addValidationDiagnostics(ctx, tx, project.Rank); err != nil {
 			return ScanStats{}, err
 		}
-		if err := refreshTitleIntegrityDiagnostics(ctx, tx); err != nil {
+		if err := timeScanPhase(stats.TimingsMillis, "validator_title_integrity", func() error { return refreshTitleIntegrityDiagnostics(ctx, tx) }); err != nil {
 			return ScanStats{}, err
 		}
-		if err := refreshGovernmentRegistrationDiagnostics(ctx, tx, project.Rank); err != nil {
+		if err := timeScanPhase(stats.TimingsMillis, "validator_government_registration", func() error { return refreshGovernmentRegistrationDiagnostics(ctx, tx, project.Rank) }); err != nil {
 			return ScanStats{}, err
 		}
-		if err := refreshGovernmentFallbackDiagnostics(ctx, tx); err != nil {
+		if err := timeScanPhase(stats.TimingsMillis, "validator_government_fallback", func() error { return refreshGovernmentFallbackDiagnostics(ctx, tx) }); err != nil {
 			return ScanStats{}, err
 		}
-		if err := refreshGovernmentMechanicDefaultDiagnostics(ctx, tx); err != nil {
+		if err := timeScanPhase(stats.TimingsMillis, "validator_government_defaults", func() error { return refreshGovernmentMechanicDefaultDiagnostics(ctx, tx) }); err != nil {
 			return ScanStats{}, err
 		}
-		if err := refreshCourtTypeDefaultDiagnostics(ctx, tx); err != nil {
+		if err := timeScanPhase(stats.TimingsMillis, "validator_court_defaults", func() error { return refreshCourtTypeDefaultDiagnostics(ctx, tx) }); err != nil {
 			return ScanStats{}, err
 		}
-		if err := refreshFolderSchemaDiagnostics(ctx, tx, project.Rank); err != nil {
+		if err := timeScanPhase(stats.TimingsMillis, "validator_folder_schema", func() error { return refreshFolderSchemaDiagnostics(ctx, tx, project.Rank) }); err != nil {
 			return ScanStats{}, err
 		}
-		if err := refreshErrorLogContractDiagnostics(ctx, tx, project.Rank); err != nil {
+		if err := timeScanPhase(stats.TimingsMillis, "validator_error_log_contract", func() error { return refreshErrorLogContractDiagnostics(ctx, tx, project.Rank) }); err != nil {
 			return ScanStats{}, err
 		}
 		stats.TimingsMillis["validator"] = time.Since(stageStart).Milliseconds()
@@ -844,7 +761,7 @@ parsedFilesComplete:
 		stats.TimingsMillis["map_context_reused"] = time.Since(stageStart).Milliseconds()
 	} else {
 		fmt.Fprintln(os.Stderr, "[scan] rebuilding map context cache")
-		if err := rebuildMapCache(ctx, tx, cfg, *plannedMapManifest); err != nil {
+		if err := rebuildMapCache(ctx, tx, cfg, *plannedMapManifest, stats.TimingsMillis); err != nil {
 			return ScanStats{}, err
 		}
 		stats.TimingsMillis["map_context_rebuild"] = time.Since(stageStart).Milliseconds()
@@ -866,7 +783,7 @@ parsedFilesComplete:
 	ftsStart := time.Now()
 	if fullFTSRebuild {
 		fmt.Fprintln(os.Stderr, "[scan] rebuilding semantic FTS")
-		if err := rebuildSearchFTS(ctx, tx); err != nil {
+		if err := rebuildSearchFTS(ctx, tx, stats.TimingsMillis); err != nil {
 			return ScanStats{}, err
 		}
 		stats.TimingsMillis["semantic_fts_rebuild"] = time.Since(ftsStart).Milliseconds()
@@ -1806,6 +1723,7 @@ type fileJob struct {
 	overrideRule     string
 	forceParse       bool
 	verifyContent    bool
+	verifyOnly       bool // read/hash proof; a mismatch is parsed by the later write scan
 	engineRules      *EngineRuleSet
 	vanillaOnActions *vanillaOnActionIndex
 }
@@ -2184,6 +2102,9 @@ func parseOneFile(j fileJob) fileResult {
 		return result
 	}
 	parseStart := time.Now()
+	if j.verifyOnly {
+		return result
+	}
 	result.work.filesParsed = 1
 	result.work.parseStarted = parseStart
 	switch j.kind {

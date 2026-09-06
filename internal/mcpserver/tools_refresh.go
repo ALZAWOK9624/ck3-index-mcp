@@ -300,7 +300,9 @@ func handleRefresh(ctx context.Context, runtime *Runtime, definition *ToolDefini
 // Keep post-publication work bounded and report auxiliary failures as warnings.
 // The fallback deliberately does not certify the old runtime binding as ready.
 func completedRefreshOutput(ctx context.Context, runtime *Runtime, operation string, stats indexer.ScanStats) toolOutput {
-	markMCPCommitted(ctx)
+	if stats.Committed {
+		markMCPCommitted(ctx)
+	}
 	postCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	var status map[string]any
@@ -342,5 +344,5 @@ func completedRefreshOutput(ctx context.Context, runtime *Runtime, operation str
 		status["changed_symbols"] = append([]string{}, stats.ChangedSymbols...)
 		status["changed_symbols_truncated"] = stats.ChangedSymbolsTruncated
 	}
-	return toolOutput{Value: status, Visibility: "private", Committed: true, StateUnverified: unverified}
+	return toolOutput{Value: status, Visibility: "private", Committed: stats.Committed, StateUnverified: unverified}
 }

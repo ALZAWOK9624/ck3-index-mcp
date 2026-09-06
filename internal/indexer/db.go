@@ -872,6 +872,10 @@ func (db *DB) ensureSchemaNoIndexes(ctx context.Context) error {
 			PRIMARY KEY(name,rule_kind)
 		)`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(kind, name, text, source, path UNINDEXED, file_id UNINDEXED, tokenize='unicode61 remove_diacritics 2')`,
+		`CREATE TABLE IF NOT EXISTS search_documents (
+			fts_rowid INTEGER PRIMARY KEY,
+			file_id INTEGER NOT NULL
+		)`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS script_text_fts USING fts5(search_text, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2')`,
 		`CREATE VIRTUAL TABLE IF NOT EXISTS trigram_loc USING fts5(value, content='', contentless_delete=1, detail=none, tokenize='trigram')`,
 	}
@@ -988,6 +992,7 @@ var indexStmts = []string{
 	`CREATE INDEX IF NOT EXISTS idx_objects_name ON objects(name, object_type)`,
 	`CREATE INDEX IF NOT EXISTS idx_objects_type_name ON objects(object_type, name)`,
 	`CREATE INDEX IF NOT EXISTS idx_objects_file_id ON objects(file_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_search_documents_file ON search_documents(file_id)`,
 	`CREATE INDEX IF NOT EXISTS idx_objects_type_source ON objects(object_type, source_rank, source_name)`,
 	`CREATE INDEX IF NOT EXISTS idx_defs_name ON object_defs(name, object_type)`,
 	`CREATE INDEX IF NOT EXISTS idx_nodes_key ON nodes(key)`,

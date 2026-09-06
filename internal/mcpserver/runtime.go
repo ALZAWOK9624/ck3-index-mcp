@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"ck3-index/internal/indexer"
 )
@@ -29,6 +30,9 @@ type toolOutput struct {
 	// visible publication. A cancellation that arrives after that commit must
 	// not be reported as if the old generation had been retained.
 	Committed bool
+	// StateUnverified prevents a failed post-publication rebind from attaching
+	// the previous generation's identity to a successfully committed refresh.
+	StateUnverified bool
 }
 
 type callToolParams struct {
@@ -114,7 +118,7 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 	// cannot tell "unchanged" from "replaced by a different database that
 	// happens to be on generation 1 again".
 	if definition.Annotations.ReadOnlyHint && cacheableReadRequest(definition.Name, handlerArguments) && beforeErr == nil && before.Ready() && before.Revision != "" {
-		key := toolCacheKey(definition.Name, runtime.DBPath, runtime.DatabaseEpoch, before.Generation, before.Revision, call.Arguments)
+		key := toolCacheKey(definition.Name, runtime.DBPath, runtime.DatabaseEpoch, before.Generation, before.Revision, call.Arguments, before.BaselineRevision)
 		if cached, ok := mcpReadToolCache.get(key); ok {
 			afterState, stateErr := runtime.DB.IndexState(ctx)
 			if stateErr == nil && afterState.Ready() && !indexStateChanged(before, afterState) && !indexStatePublishing(afterState) {
@@ -143,14 +147,16 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 	}
 	resultContext := ctx
 	if output.Committed {
-		resultContext = context.WithoutCancel(ctx)
+		var cancel context.CancelFunc
+		resultContext, cancel = context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
 	}
 	after, afterErr := runtime.DB.IndexState(resultContext)
 	if beforeErr == nil && afterErr == nil && indexStateChanged(before, after) {
-		// Refresh owns its one intentional generation change. Re-running it
-		// would either duplicate work or produce a second generation, so return
-		// its first transactional result directly.
-		if definition.Name != "ck3_refresh" {
+		// Refresh owns its generation change; baseline writes own a baseline
+		// revision change. Never replay a committed operation or report its
+		// intentional state transition as an uncommitted conflict.
+		if definition.Name != "ck3_refresh" && !output.Committed {
 			if indexStatePublishing(after) && !indexStateIndependentRequest(definition.Name, handlerArguments) {
 				return encodeInternalToolError(runtime, ErrorIndexFinalizing, "ck3-index began publishing a new scan generation while this query was running; retry after the index reports ready."), nil
 			}
@@ -201,12 +207,12 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 		}
 	}
 	boundedResult, err := finalizeToolResult(result, runtime, definition, argumentNotices,
-		after, beforeErr == nil && afterErr == nil && after.Ready(), responseControl.MaxResponseBytes)
+		after, !output.StateUnverified && beforeErr == nil && afterErr == nil && after.Ready(), responseControl.MaxResponseBytes)
 	if err != nil {
 		return encodeToolError(err, runtime), nil
 	}
 	if cachePayload != nil {
-		mcpReadToolCache.put(toolCacheKey(definition.Name, runtime.DBPath, runtime.DatabaseEpoch, after.Generation, after.Revision, call.Arguments), cachePayload)
+		mcpReadToolCache.put(toolCacheKey(definition.Name, runtime.DBPath, runtime.DatabaseEpoch, after.Generation, after.Revision, call.Arguments, after.BaselineRevision), cachePayload)
 	}
 	return boundedResult, nil
 }
@@ -250,7 +256,7 @@ func finalizeToolResult(result map[string]any, runtime *Runtime, definition *Too
 }
 
 func indexStateChanged(before, after indexer.IndexState) bool {
-	return before.Generation != after.Generation || before.Revision != after.Revision || before.Status != after.Status
+	return before.Generation != after.Generation || before.Revision != after.Revision || before.Status != after.Status || before.BaselineRevision != after.BaselineRevision
 }
 
 func cacheablePublishedTransition(before indexer.IndexState, beforeErr error, after indexer.IndexState, afterErr error) bool {

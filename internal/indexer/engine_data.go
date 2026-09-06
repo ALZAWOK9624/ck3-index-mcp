@@ -419,7 +419,7 @@ func (db *DB) LookupDatatype(ctx context.Context, query string, limit int) ([]Da
 	if limit <= 0 {
 		limit = 20
 	}
-	rows, err := db.sql.QueryContext(ctx, `SELECT name,signature,COALESCE(description,''),COALESCE(definition_type,''),COALESCE(return_type,''),COALESCE(category,''),source_path FROM engine_datatypes WHERE name=? OR name LIKE ? ORDER BY CASE WHEN name=? THEN 0 ELSE 1 END,name LIMIT ?`, query, escapeLike(query)+"%", query, limit)
+	rows, err := db.sql.QueryContext(ctx, `SELECT name,signature,COALESCE(description,''),COALESCE(definition_type,''),COALESCE(return_type,''),COALESCE(category,''),source_path FROM engine_datatypes WHERE name=? OR name LIKE ? ESCAPE '\' ORDER BY CASE WHEN name=? THEN 0 ELSE 1 END,name LIMIT ?`, query, escapeLike(query)+"%", query, limit)
 	if err != nil {
 		return nil, err
 	}

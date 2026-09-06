@@ -112,10 +112,10 @@ func (c *readToolCache) put(key string, data []byte) {
 	}
 }
 
-// invalidateTool drops every cached response for one tool. The cache key
-// carries the published index identity, which covers refreshes and database
-// switches; it cannot see a write that changes what a read returns without
-// moving the generation. A baseline write is exactly that, so it says so here.
+// invalidateTool reclaims responses made obsolete by a write. Correctness
+// comes from the persisted baseline revision in the cache key and state
+// checks: eviction alone cannot stop in-flight backfill or notify other
+// processes sharing the database.
 //
 // Entries for other databases are dropped too. The key holds the database path,
 // so they could be spared, but the cost of not sparing them is one recomputed
@@ -166,7 +166,10 @@ func (c *readToolCache) stats() readToolCacheStats {
 // generation 1 again, so (path, epoch, generation) repeats across two entirely
 // different published databases. Keying and validating on the revision as well
 // is what stops the second one from being answered out of the first one's cache.
-func toolCacheKey(name, databasePath string, epoch uint64, generation int64, revision string, args json.RawMessage) string {
+func toolCacheKey(name, databasePath string, epoch uint64, generation int64, revision string, args json.RawMessage, baselineRevision ...string) string {
+	if len(baselineRevision) > 0 && baselineRevision[0] != "" {
+		revision += "\x00baseline:" + baselineRevision[0]
+	}
 	return name + "\x00" +
 		databasePath + "\x00" +
 		strconv.FormatUint(epoch, 10) + "\x00" +

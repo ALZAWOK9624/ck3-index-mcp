@@ -165,6 +165,7 @@ func llmEvidenceOutputSchema() map[string]any {
 
 func refreshOutputSchema() map[string]any {
 	indexState := objectSchema(map[string]any{
+		"baseline_revision": map[string]any{"type": "string"},
 		"scan_generation":   map[string]any{"type": "integer", "minimum": 0},
 		"scan_revision":     map[string]any{"type": "string"},
 		"scan_committed_at": map[string]any{"type": "string"},
@@ -202,6 +203,8 @@ func refreshOutputSchema() map[string]any {
 	}, "added", "resolved", "remaining")
 	stats := scanStatsOutputSchema(delta)
 	success := objectSchema(map[string]any{
+		"committed":       map[string]any{"type": "boolean"},
+		"warnings":        arrayProperty("Post-refresh steps that need retrying.", map[string]any{"type": "string"}),
 		"operation":       stringProperty("Refresh operation.", "status", "files", "full"),
 		"refresh_status":  refreshStatus,
 		"is_scanning":     map[string]any{"type": "boolean"},
@@ -225,12 +228,33 @@ func refreshOutputSchema() map[string]any {
 		"changed_symbols_truncated": map[string]any{"type": "boolean"},
 		"diagnostic_delta":          nullableObjectSchema(delta),
 	}, "operation", "refresh_status", "is_scanning", "status", "index", "scan_generation", "needs_full_scan")
-	return preciseToolOutputSchema(success)
+	completedUnverified := objectSchema(map[string]any{
+		"operation":       stringProperty("Completed refresh operation.", "files", "full"),
+		"status":          stringProperty("Publication succeeded but current status could not be read.", "refresh_completed_status_unavailable"),
+		"committed":       map[string]any{"type": "boolean"},
+		"is_scanning":     map[string]any{"type": "boolean"},
+		"refresh_status":  map[string]any{"type": "null"},
+		"index":           map[string]any{"type": "null"},
+		"scan_generation": map[string]any{"type": "null"},
+		"needs_full_scan": map[string]any{"type": "null"},
+		"refresh":         stats,
+		"warnings":        arrayProperty("Post-refresh steps that need retrying.", map[string]any{"type": "string"}),
+		"guidance":        map[string]any{"type": "string"},
+	}, "operation", "status", "committed", "refresh", "warnings", "guidance")
+	for key, value := range success["properties"].(map[string]any) {
+		properties := completedUnverified["properties"].(map[string]any)
+		if _, exists := properties[key]; !exists {
+			properties[key] = value
+		}
+	}
+	return preciseToolOutputSchema(success, completedUnverified)
 }
 
 func scanStatsOutputSchema(delta map[string]any) map[string]any {
 	integer := map[string]any{"type": "integer", "minimum": 0}
 	properties := map[string]any{
+		"committed":                 map[string]any{"type": "boolean"},
+		"warnings":                  arrayProperty("Post-commit steps that need retrying.", map[string]any{"type": "string"}),
 		"database":                  map[string]any{"type": "string"},
 		"no_op":                     map[string]any{"type": "boolean"},
 		"reused_generation":         map[string]any{"type": "boolean", "description": "Full refresh reused a compatible published snapshot after verifying every source file's content."},

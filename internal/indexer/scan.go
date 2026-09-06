@@ -21,22 +21,24 @@ import (
 )
 
 type ScanStats struct {
-	Database     string `json:"database"`
-	Files        int    `json:"files"`
-	Nodes        int    `json:"nodes"`
-	Objects      int    `json:"objects"`
-	References   int    `json:"references"`
-	Localization int    `json:"localization"`
-	Resources    int    `json:"resources"`
-	SchemaFields int    `json:"schema_fields"`
-	ObjectFields int    `json:"object_fields"`
-	Diagnostics  int    `json:"diagnostics"`
-	Overridden   int    `json:"overridden"`
-	FilesRead    int64  `json:"files_read"`
-	FilesHashed  int64  `json:"files_hashed"`
-	FilesParsed  int64  `json:"files_parsed"`
-	BytesRead    int64  `json:"bytes_read"`
-	BytesHashed  int64  `json:"bytes_hashed"`
+	Committed    bool     `json:"committed,omitempty"`
+	Warnings     []string `json:"warnings,omitempty"`
+	Database     string   `json:"database"`
+	Files        int      `json:"files"`
+	Nodes        int      `json:"nodes"`
+	Objects      int      `json:"objects"`
+	References   int      `json:"references"`
+	Localization int      `json:"localization"`
+	Resources    int      `json:"resources"`
+	SchemaFields int      `json:"schema_fields"`
+	ObjectFields int      `json:"object_fields"`
+	Diagnostics  int      `json:"diagnostics"`
+	Overridden   int      `json:"overridden"`
+	FilesRead    int64    `json:"files_read"`
+	FilesHashed  int64    `json:"files_hashed"`
+	FilesParsed  int64    `json:"files_parsed"`
+	BytesRead    int64    `json:"bytes_read"`
+	BytesHashed  int64    `json:"bytes_hashed"`
 	// PeakQueuedResults measures the highest observed occupancy of the compact
 	// result channel, not the number of live worker ASTs.
 	PeakQueuedResults int `json:"peak_queued_results"`
@@ -185,11 +187,11 @@ func scanWithPreparedEngineBundle(ctx context.Context, cfg Config, forceClean, p
 		return ScanStats{}, err
 	}
 	engineRules := engineRuleSetFromBundle(engineBundle)
-	vanillaOnActionRoot := ""
-	if gameSource, ok := GameSource(cfg); ok {
-		vanillaOnActionRoot = gameSource.Path
+	vanillaOnActionLookup := vanillaOnActionsForConfig(cfg)
+	vanillaFingerprint, err := vanillaOnActionLookup.contentFingerprint()
+	if err != nil {
+		return ScanStats{}, err
 	}
-	vanillaOnActionLookup := newVanillaOnActionIndex(vanillaOnActionRoot)
 	dbPath, err := ConfiguredDatabasePath(cfg)
 	if err != nil {
 		return ScanStats{}, err
@@ -200,15 +202,19 @@ func scanWithPreparedEngineBundle(ctx context.Context, cfg Config, forceClean, p
 	}
 	defer db.Close()
 	defer func() {
+		postCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
 		if resultErr != nil {
-			db.recordScanFailure(context.Background(), resultErr)
+			db.recordScanFailure(postCtx, resultErr)
 			return
 		}
-		db.clearScanFailure(context.Background())
+		db.clearScanFailure(postCtx)
 	}()
 	defer func() {
-		if resultErr == nil && publishRules {
-			resultErr = publishEngineBundleMatchingDB(context.Background(), db, engineBundle)
+		if resultErr == nil && publishRules && !stats.Committed {
+			postCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			resultErr = publishEngineBundleMatchingDB(postCtx, db, engineBundle)
 		}
 	}()
 	// This database is a rebuildable cache. Scans do large write batches, so
@@ -311,8 +317,13 @@ func scanWithPreparedEngineBundle(ctx context.Context, cfg Config, forceClean, p
 	engineFingerprint := engineBundle.Fingerprint
 	engineDataDirty := forceClean || !publishedState.Ready() || engineFingerprint != cachedEngineFingerprint
 	inputIdentityDirty := forceClean || !publishedState.Ready() || cachedInputFingerprint != IndexedInputFingerprint(cfg)
+	cachedVanillaFingerprint, err := db.metaValue(ctx, vanillaOnActionFingerprintKey)
+	if err != nil {
+		return ScanStats{}, err
+	}
+	vanillaDirty := cachedVanillaFingerprint != vanillaFingerprint
 
-	writerConn, err := db.scanWriteConnection(ctx)
+	writerConn, err := db.scanWriteConnection(ctx, cfg.disposableStage)
 	if err != nil {
 		return ScanStats{}, err
 	}
@@ -420,7 +431,7 @@ func scanWithPreparedEngineBundle(ctx context.Context, cfg Config, forceClean, p
 				rel:              rel,
 				kind:             kind,
 				prev:             existing[path],
-				forceParse:       (engineDataDirty || cachedRuleVersion != indexRuleVersion || cachedLintRuleVersion != lintRuleVersion) && kind == "script",
+				forceParse:       (engineDataDirty || cachedRuleVersion != indexRuleVersion || cachedLintRuleVersion != lintRuleVersion || (vanillaDirty && strings.Contains(rel, "on_action"))) && kind == "script",
 				verifyContent:    cfg.verifyContent,
 				engineRules:      engineRules,
 				vanillaOnActions: vanillaOnActionLookup,
@@ -628,7 +639,7 @@ parsedFilesComplete:
 	// inputs outside ordinary script jobs (map CSV/.map files and engine logs),
 	// otherwise an apparently no-op scan could leave a derived cache stale.
 	var plannedMapManifest *mapInputManifest
-	if !fileChanges && !engineDataDirty && publishedState.Ready() && cachedRuleVersion == indexRuleVersion && cachedLintRuleVersion == lintRuleVersion && ftsCurrent {
+	if !fileChanges && !engineDataDirty && !vanillaDirty && publishedState.Ready() && cachedRuleVersion == indexRuleVersion && cachedLintRuleVersion == lintRuleVersion && ftsCurrent {
 		stageStart := time.Now()
 		manifest, err := collectMapInputManifest(ctx, cfg)
 		if err != nil {
@@ -651,6 +662,13 @@ parsedFilesComplete:
 			}
 			if err := tx.Commit(); err != nil {
 				return ScanStats{}, err
+			}
+			stats.Committed = true
+			if cfg.afterScanCommit != nil {
+				cfg.afterScanCommit()
+			}
+			if publishRules {
+				publishEngineRules(engineBundle, publishedState)
 			}
 			stats.Noop = !schemaRepaired
 			stats.TimingsMillis["reuse_published_index"] = time.Since(stageStart).Milliseconds()
@@ -898,6 +916,9 @@ parsedFilesComplete:
 	if err := storeIndexedInputFingerprint(ctx, tx, cfg); err != nil {
 		return ScanStats{}, err
 	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, vanillaOnActionFingerprintKey, vanillaFingerprint); err != nil {
+		return ScanStats{}, err
+	}
 	if err := bumpScanGeneration(ctx, tx); err != nil {
 		return ScanStats{}, err
 	}
@@ -930,22 +951,36 @@ parsedFilesComplete:
 		}
 	}
 	stats.TimingsMillis["count_diagnostics"] = time.Since(stageStart).Milliseconds()
+	committedState, err := readIndexState(ctx, tx)
+	if err != nil {
+		return ScanStats{}, err
+	}
 	stageStart = time.Now()
 	if err := tx.Commit(); err != nil {
 		return ScanStats{}, err
 	}
 	stats.TimingsMillis["commit_finalize"] = time.Since(stageStart).Milliseconds()
+	stats.Committed = true
+	if cfg.afterScanCommit != nil {
+		cfg.afterScanCommit()
+	}
+	if publishRules {
+		publishEngineRules(engineBundle, committedState)
+	}
+	postCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
 	stageStart = time.Now()
-	checkpoint, checkpointErr := db.checkpointWALAfterScan(ctx)
+	checkpoint, checkpointErr := db.checkpointWALAfterScan(postCtx)
 	if checkpointErr != nil {
+		stats.Warnings = append(stats.Warnings, "wal_checkpoint_deferred")
 		fmt.Fprintf(os.Stderr, "[scan] WAL checkpoint deferred after scan: %v\n", checkpointErr)
 	} else {
 		stats.WALCheckpoint = &checkpoint
 		fmt.Fprintf(os.Stderr, "[scan] WAL checkpoint %s busy=%d frames=%d/%d\n", checkpoint.Mode, checkpoint.Busy, checkpoint.CheckpointedFrames, checkpoint.LogFrames)
 	}
 	var freePages, totalPages int
-	_ = db.sql.QueryRowContext(ctx, `PRAGMA freelist_count`).Scan(&freePages)
-	_ = db.sql.QueryRowContext(ctx, `PRAGMA page_count`).Scan(&totalPages)
+	_ = db.sql.QueryRowContext(postCtx, `PRAGMA freelist_count`).Scan(&freePages)
+	_ = db.sql.QueryRowContext(postCtx, `PRAGMA page_count`).Scan(&totalPages)
 	if totalPages > 0 && freePages*100/totalPages >= 5 {
 		// VACUUM is intentionally not a normal scan-finalizer. It needs a much
 		// stronger lock and can create another large write burst; leave space
@@ -953,7 +988,7 @@ parsedFilesComplete:
 		fmt.Fprintf(os.Stderr, "[scan] cache has %d free pages; deferred VACUUM to explicit maintenance\n", freePages)
 	}
 	stats.TimingsMillis["checkpoint_wal"] = time.Since(stageStart).Milliseconds()
-	for _, key := range []string{"load_engine_bundle", "load_existing_index", "walk_sources", "hash_files_wall", "parse_files_wall", "read_hash_worker_cpu_total", "parse_worker_cpu_total", "lint_worker_cpu_total", "extract_worker_cpu_total", "sqlite_write", "commit_indexed_rows", "build_indexes", "begin_finalize_tx", "load_symbols", "resolve_refs", "resolve_refs_scoped", "validator", "validator_scoped", "map_context", "map_context_rebuild", "map_context_reused", "semantic_fts", "semantic_fts_rebuild", "semantic_fts_scoped", "count_diagnostics", "commit_finalize", "checkpoint_wal"} {
+	for _, key := range []string{"load_engine_bundle", "load_existing_index", "walk_sources", "hash_files_wall", "parse_files_wall", "read_hash_worker_elapsed_sum", "parse_worker_elapsed_sum", "lint_worker_elapsed_sum", "extract_worker_elapsed_sum", "sqlite_write", "commit_indexed_rows", "build_indexes", "begin_finalize_tx", "load_symbols", "resolve_refs", "resolve_refs_scoped", "validator", "validator_scoped", "map_context", "map_context_rebuild", "map_context_reused", "semantic_fts", "semantic_fts_rebuild", "semantic_fts_scoped", "count_diagnostics", "commit_finalize", "checkpoint_wal"} {
 		if ms, ok := stats.TimingsMillis[key]; ok {
 			fmt.Fprintf(os.Stderr, "[scan] timing %s=%dms\n", key, ms)
 		}
@@ -1865,17 +1900,17 @@ type fileResult struct {
 type fileWorkMetrics struct {
 	filesRead, filesHashed, filesParsed int64
 	bytesRead, bytesHashed              int64
-	readHashCPU, parseCPU               time.Duration
-	lintCPU, extractCPU                 time.Duration
+	readHashElapsed, parseElapsed       time.Duration
+	lintElapsed, extractElapsed         time.Duration
 	hashStarted, hashFinished           time.Time
 	parseStarted, parseFinished         time.Time
 }
 
 type fileWorkTotals struct {
-	readHashCPU, parseCPU    time.Duration
-	lintCPU, extractCPU      time.Duration
-	hashStarted, hashEnded   time.Time
-	parseStarted, parseEnded time.Time
+	readHashElapsed, parseElapsed time.Duration
+	lintElapsed, extractElapsed   time.Duration
+	hashStarted, hashEnded        time.Time
+	parseStarted, parseEnded      time.Time
 }
 
 func (totals *fileWorkTotals) add(stats *ScanStats, work fileWorkMetrics) {
@@ -1884,10 +1919,10 @@ func (totals *fileWorkTotals) add(stats *ScanStats, work fileWorkMetrics) {
 	stats.FilesParsed += work.filesParsed
 	stats.BytesRead += work.bytesRead
 	stats.BytesHashed += work.bytesHashed
-	totals.readHashCPU += work.readHashCPU
-	totals.parseCPU += work.parseCPU
-	totals.lintCPU += work.lintCPU
-	totals.extractCPU += work.extractCPU
+	totals.readHashElapsed += work.readHashElapsed
+	totals.parseElapsed += work.parseElapsed
+	totals.lintElapsed += work.lintElapsed
+	totals.extractElapsed += work.extractElapsed
 	if !work.hashStarted.IsZero() && (totals.hashStarted.IsZero() || work.hashStarted.Before(totals.hashStarted)) {
 		totals.hashStarted = work.hashStarted
 	}
@@ -1903,10 +1938,14 @@ func (totals *fileWorkTotals) add(stats *ScanStats, work fileWorkMetrics) {
 }
 
 func (totals *fileWorkTotals) applyTimings(stats *ScanStats) {
-	stats.TimingsMillis["read_hash_worker_cpu_total"] = totals.readHashCPU.Milliseconds()
-	stats.TimingsMillis["parse_worker_cpu_total"] = totals.parseCPU.Milliseconds()
-	stats.TimingsMillis["lint_worker_cpu_total"] = totals.lintCPU.Milliseconds()
-	stats.TimingsMillis["extract_worker_cpu_total"] = totals.extractCPU.Milliseconds()
+	stats.TimingsMillis["read_hash_worker_elapsed_sum"] = totals.readHashElapsed.Milliseconds()
+	stats.TimingsMillis["parse_worker_elapsed_sum"] = totals.parseElapsed.Milliseconds()
+	stats.TimingsMillis["lint_worker_elapsed_sum"] = totals.lintElapsed.Milliseconds()
+	stats.TimingsMillis["extract_worker_elapsed_sum"] = totals.extractElapsed.Milliseconds()
+	// Compatibility aliases contain elapsed wall time, never CPU time.
+	for _, phase := range []string{"read_hash", "parse", "lint", "extract"} {
+		stats.TimingsMillis[phase+"_worker_cpu_total"] = stats.TimingsMillis[phase+"_worker_elapsed_sum"]
+	}
 	if !totals.hashStarted.IsZero() {
 		stats.TimingsMillis["hash_files_wall"] = totals.hashEnded.Sub(totals.hashStarted).Milliseconds()
 	}
@@ -1993,7 +2032,7 @@ func parseOneFile(j fileJob) fileResult {
 		result.work.bytesHashed = size
 		result.work.hashStarted = start
 		result.work.hashFinished = time.Now()
-		result.work.readHashCPU += result.work.hashFinished.Sub(start)
+		result.work.readHashElapsed += result.work.hashFinished.Sub(start)
 	}
 	// Overridden files are metadata-only on the normal scan path. This keeps
 	// incremental scans fast; deeper override analysis belongs in validation.
@@ -2088,7 +2127,7 @@ func parseOneFile(j fileJob) fileResult {
 			parsed = script.ParseBytes(data)
 		}
 		result.work.parseFinished = time.Now()
-		result.work.parseCPU += result.work.parseFinished.Sub(parseStart)
+		result.work.parseElapsed += result.work.parseFinished.Sub(parseStart)
 		result.parseErrors = parsed.Errors
 		result.searchText = buildScriptSearchText(parsed.Nodes)
 		lintStart := time.Now()
@@ -2110,7 +2149,7 @@ func parseOneFile(j fileJob) fileResult {
 				}
 			}
 		}
-		result.work.lintCPU += time.Since(lintStart)
+		result.work.lintElapsed += time.Since(lintStart)
 		analysisRecord := fileRecord{
 			SourceName: j.src.Name,
 			SourceRank: j.src.Rank,
@@ -2122,21 +2161,21 @@ func parseOneFile(j fileJob) fileResult {
 		result.objects = extractObjects(analysisRecord, parsed.Nodes)
 		result.refs = extractRefs(analysisRecord, parsed.Nodes, result.objects)
 		result.objectFields = extractObjectFields(analysisRecord, parsed.Nodes, result.objects)
-		result.work.extractCPU += time.Since(extractStart)
+		result.work.extractElapsed += time.Since(extractStart)
 	case "localization":
 		result.locs, result.err = parseLocBytes(j.rel, data)
 		if result.err == nil {
 			result.refs = extractLocalizationRuntimeRefs(result.locs)
 		}
 		result.work.parseFinished = time.Now()
-		result.work.parseCPU += result.work.parseFinished.Sub(parseStart)
+		result.work.parseElapsed += result.work.parseFinished.Sub(parseStart)
 		lintStart := time.Now()
 		result.ctxDiags = checkLocalizationSyntax(j.rel, data)
-		result.work.lintCPU += time.Since(lintStart)
+		result.work.lintElapsed += time.Since(lintStart)
 	case "schema":
 		result.schemaEntries, result.err = parseSchemaBytes(j.rel, data)
 		result.work.parseFinished = time.Now()
-		result.work.parseCPU += result.work.parseFinished.Sub(parseStart)
+		result.work.parseElapsed += result.work.parseFinished.Sub(parseStart)
 	default:
 		result.work.filesParsed = 0
 		result.work.parseStarted = time.Time{}

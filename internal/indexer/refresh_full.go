@@ -191,12 +191,14 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 
 	stageConfig := normalized
 	stageConfig.Database = stagePath
+	stageConfig.disposableStage = true
+	stageConfig.afterScanCommit = nil
 	// A seeded stage already holds every upstream row, so it must be scanned
 	// incrementally: a clean rebuild would discard exactly the work the base was
 	// there to supply. Without a base the stage starts empty and a clean scan is
 	// both correct and marginally cheaper.
 	stageConfig.ForceClean = !seeded && !reused
-	stageConfig.verifyContent = reused
+	stageConfig.verifyContent = true
 	// Reuse the exact bundle whose fingerprint admitted the optional base.
 	// Reloading here doubles log parsing and creates a TOCTOU window where the
 	// stage can be seeded against one bundle and scanned against another.
@@ -211,28 +213,35 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 		recordStagedFullScanFailure(normalized, err)
 		return ScanStats{}, err
 	}
-	publishStart := time.Now()
-	if err := publishStagedFullScan(ctx, normalized, stagePath, base); err != nil {
-		err = sanitizeStagedFullScanFailure(err, scanRedactionPaths(normalized, dbPath, stagePath))
-		recordStagedFullScanFailure(normalized, err)
-		return ScanStats{}, err
-	}
-	publishedPath, err := ConfiguredDatabasePath(normalized)
+	// Validate and prepare the necessary engine snapshot before the pointer commit.
+	stageDB, err := OpenReadOnlyWithOptions(stagePath, normalized.SQLiteReadOptions())
 	if err != nil {
 		return ScanStats{}, err
 	}
-	live, err := OpenReadOnlyWithOptions(publishedPath, normalized.SQLiteReadOptions())
-	if err != nil {
-		return ScanStats{}, err
-	}
-	rulesErr := publishEngineBundleMatchingDB(ctx, live, engineBundle)
-	closeErr := live.Close()
+	rules, rulesErr := engineRulesMatchingDB(ctx, stageDB, engineBundle)
+	closeErr := stageDB.Close()
 	if rulesErr != nil {
 		return ScanStats{}, rulesErr
 	}
 	if closeErr != nil {
 		return ScanStats{}, closeErr
 	}
+	publishStart := time.Now()
+	var publishedState IndexState
+	if err := publishStagedFullScan(ctx, normalized, stagePath, base, &publishedState); err != nil {
+		err = sanitizeStagedFullScanFailure(err, scanRedactionPaths(normalized, dbPath, stagePath))
+		recordStagedFullScanFailure(normalized, err)
+		return ScanStats{}, err
+	}
+	stats.Committed = true
+	if normalized.afterScanCommit != nil {
+		normalized.afterScanCommit()
+	}
+	if rules != nil {
+		rules.Generation = publishedState.Generation
+		rules.Revision = publishedState.Revision
+	}
+	publishEngineRuleSnapshot(rules)
 	if stats.TimingsMillis == nil {
 		stats.TimingsMillis = map[string]int64{}
 	}
@@ -401,7 +410,7 @@ func recordStagedFullScanFailure(cfg Config, scanErr error) {
 	db.recordScanFailure(context.Background(), scanErr)
 }
 
-func publishStagedFullScan(ctx context.Context, cfg Config, stagePath string, base PublicationBase) error {
+func publishStagedFullScan(ctx context.Context, cfg Config, stagePath string, base PublicationBase, publishedState ...*IndexState) error {
 	anchorPath, err := ConfiguredDatabaseAnchorPath(cfg)
 	if err != nil {
 		return err
@@ -556,6 +565,9 @@ func publishStagedFullScan(ctx context.Context, cfg Config, stagePath string, ba
 	}
 	if err := publishDatabasePointer(anchorPath, generationPath); err != nil {
 		return fmt.Errorf("publish database generation pointer: %w", err)
+	}
+	if len(publishedState) > 0 {
+		*publishedState[0] = state
 	}
 	// The pointer commit is the publication boundary. Reclaiming the retired
 	// generation is best-effort: an MCP lease may still hold it on Windows, and

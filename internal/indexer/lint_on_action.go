@@ -1,6 +1,8 @@
 package indexer
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,14 +22,23 @@ import (
 // original with itself, and a handful add a block vanilla never had. Comparing
 // costs one lazy pass over the game's own on_action directory.
 type vanillaOnActionIndex struct {
-	root   string
-	once   sync.Once
-	blocks map[string]map[string]*script.Node
+	root        string
+	once        sync.Once
+	blocks      map[string]map[string]*script.Node
+	fingerprint string
+	err         error
 }
 
 // newVanillaOnActionIndex returns nil when no game layer is configured. A
 // workspace without one has no original to overwrite, so the check that
 // depends on this stays silent rather than guessing.
+func vanillaOnActionsForConfig(cfg Config) *vanillaOnActionIndex {
+	if game, ok := GameSource(cfg); ok {
+		return newVanillaOnActionIndex(game.Path)
+	}
+	return nil
+}
+
 func newVanillaOnActionIndex(root string) *vanillaOnActionIndex {
 	if strings.TrimSpace(root) == "" {
 		return nil
@@ -51,17 +62,41 @@ func (index *vanillaOnActionIndex) block(action, blockKey string) (*script.Node,
 	return node, ok
 }
 
+const vanillaOnActionFingerprintKey = "vanilla_on_action_fingerprint"
+
+func (index *vanillaOnActionIndex) contentFingerprint() (string, error) {
+	if index == nil {
+		return "none", nil
+	}
+	index.once.Do(index.load)
+	return index.fingerprint, index.err
+}
+
 func (index *vanillaOnActionIndex) load() {
 	index.blocks = map[string]map[string]*script.Node{}
+	hash := sha256.New()
 	dir := filepath.Join(index.root, "common", "on_action")
-	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info == nil || info.IsDir() || !strings.EqualFold(filepath.Ext(path), ".txt") {
+	index.err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			if path == dir && os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if info == nil || info.IsDir() || !strings.EqualFold(filepath.Ext(path), ".txt") {
 			return nil
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil
+			return err
 		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		fmt.Fprintf(hash, "%d:%s%d:", len(rel), rel, len(data))
+		hash.Write(data)
 		for _, node := range script.Parse(string(data)).Nodes {
 			if node.Kind != "block" || node.Key == "" {
 				continue
@@ -80,6 +115,7 @@ func (index *vanillaOnActionIndex) load() {
 		}
 		return nil
 	})
+	index.fingerprint = fmt.Sprintf("%x", hash.Sum(nil))
 }
 
 // sameScriptShape compares two parsed subtrees by what they say, ignoring

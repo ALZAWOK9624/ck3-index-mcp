@@ -458,7 +458,7 @@ func (db *DB) searchFTS(ctx context.Context, query string, opts SearchOptions, l
 		return nil, nil
 	}
 	match := `"` + strings.ReplaceAll(query, `"`, `""`) + `"`
-	rows, err := db.sql.QueryContext(ctx, `SELECT kind,name,text,source,path,bm25(search_fts) FROM search_fts WHERE search_fts MATCH ? AND kind<>'script_text' AND (?='' OR kind=?) AND (?='' OR source=?) AND (?='' OR path LIKE ?) ORDER BY bm25(search_fts),name LIMIT ?`, match, opts.Kind, opts.Kind, opts.Source, opts.Source, opts.PathPrefix, escapeLike(opts.PathPrefix)+"%", limit)
+	rows, err := db.sql.QueryContext(ctx, `SELECT kind,name,text,source,path,bm25(search_fts) FROM search_fts WHERE search_fts MATCH ? AND kind<>'script_text' AND (?='' OR kind=?) AND (?='' OR source=?) AND (?='' OR path LIKE ? ESCAPE '\') ORDER BY bm25(search_fts),name LIMIT ?`, match, opts.Kind, opts.Kind, opts.Source, opts.Source, opts.PathPrefix, escapeLike(opts.PathPrefix)+"%", limit)
 	if err != nil {
 		return nil, fmt.Errorf("FTS5 query failed: %w", err)
 	}
@@ -579,7 +579,7 @@ func indexedSourceRoot(indexedPath, relPath string) (string, error) {
 func (db *DB) searchContains(ctx context.Context, query string, opts SearchOptions, limit int) ([]LLMEvidence, error) {
 	var out []LLMEvidence
 	if opts.Kind == "" || opts.Kind == "object" {
-		rows, err := db.sql.QueryContext(ctx, `SELECT o.object_type,o.name,o.source_name,f.rel_path,o.line FROM objects o JOIN files f ON f.id=o.file_id WHERE f.overridden=0 AND instr(o.name,?)>0 AND (?='' OR o.source_name=?) AND (?='' OR f.rel_path LIKE ?) ORDER BY o.source_rank,length(o.name),o.name LIMIT ?`, query, opts.Source, opts.Source, opts.PathPrefix, escapeLike(opts.PathPrefix)+"%", limit)
+		rows, err := db.sql.QueryContext(ctx, `SELECT o.object_type,o.name,o.source_name,f.rel_path,o.line FROM objects o JOIN files f ON f.id=o.file_id WHERE f.overridden=0 AND instr(o.name,?)>0 AND (?='' OR o.source_name=?) AND (?='' OR f.rel_path LIKE ? ESCAPE '\') ORDER BY o.source_rank,length(o.name),o.name LIMIT ?`, query, opts.Source, opts.Source, opts.PathPrefix, escapeLike(opts.PathPrefix)+"%", limit)
 		if err != nil {
 			return nil, err
 		}
@@ -595,7 +595,7 @@ func (db *DB) searchContains(ctx context.Context, query string, opts SearchOptio
 		rows.Close()
 	}
 	if len(out) < limit && (opts.Kind == "" || opts.Kind == "resource") {
-		rows, err := db.sql.QueryContext(ctx, `SELECT r.kind,r.resource_path,r.source_name,f.rel_path FROM resources r JOIN files f ON f.id=r.file_id WHERE f.overridden=0 AND instr(r.resource_path,?)>0 AND (?='' OR r.source_name=?) AND (?='' OR f.rel_path LIKE ?) ORDER BY r.source_rank,length(r.resource_path),r.resource_path LIMIT ?`, query, opts.Source, opts.Source, opts.PathPrefix, escapeLike(opts.PathPrefix)+"%", limit-len(out))
+		rows, err := db.sql.QueryContext(ctx, `SELECT r.kind,r.resource_path,r.source_name,f.rel_path FROM resources r JOIN files f ON f.id=r.file_id WHERE f.overridden=0 AND instr(r.resource_path,?)>0 AND (?='' OR r.source_name=?) AND (?='' OR f.rel_path LIKE ? ESCAPE '\') ORDER BY r.source_rank,length(r.resource_path),r.resource_path LIMIT ?`, query, opts.Source, opts.Source, opts.PathPrefix, escapeLike(opts.PathPrefix)+"%", limit-len(out))
 		if err != nil {
 			return nil, err
 		}
@@ -641,7 +641,7 @@ func (db *DB) searchLocalizationValues(ctx context.Context, query string, opts S
 		// to the scan instead of failing the search outright; the index rule
 		// version bump makes the next refresh build the table.
 	}
-	rows, err := db.sql.QueryContext(ctx, `SELECT l.key,l.source_name,f.rel_path,l.line,l.language,l.value FROM localization l JOIN files f ON f.id=l.file_id WHERE f.overridden=0 AND instr(l.value,?)>0 AND (?='' OR l.source_name=?) AND (?='' OR f.rel_path LIKE ?) ORDER BY l.source_rank,l.key LIMIT ?`, query, opts.Source, opts.Source, opts.PathPrefix, escapeLike(opts.PathPrefix)+"%", limit)
+	rows, err := db.sql.QueryContext(ctx, `SELECT l.key,l.source_name,f.rel_path,l.line,l.language,l.value FROM localization l JOIN files f ON f.id=l.file_id WHERE f.overridden=0 AND instr(l.value,?)>0 AND (?='' OR l.source_name=?) AND (?='' OR f.rel_path LIKE ? ESCAPE '\') ORDER BY l.source_rank,l.key LIMIT ?`, query, opts.Source, opts.Source, opts.PathPrefix, escapeLike(opts.PathPrefix)+"%", limit)
 	if err != nil {
 		return nil, err
 	}
@@ -657,7 +657,7 @@ func missingTrigramIndex(err error) bool {
 
 func (db *DB) searchLocalizationValuesTrigram(ctx context.Context, query string, opts SearchOptions, limit int) ([]LLMEvidence, error) {
 	match := localizationTrigramCandidates(query)
-	rows, err := db.sql.QueryContext(ctx, `SELECT l.key,l.source_name,f.rel_path,l.line,l.language,l.value FROM trigram_loc t JOIN localization l ON l.id=t.rowid JOIN files f ON f.id=l.file_id WHERE trigram_loc MATCH ? AND instr(l.value,?)>0 AND f.overridden=0 AND (?='' OR l.source_name=?) AND (?='' OR f.rel_path LIKE ?) ORDER BY l.source_rank,l.key LIMIT ?`, match, query, opts.Source, opts.Source, opts.PathPrefix, escapeLike(opts.PathPrefix)+"%", limit)
+	rows, err := db.sql.QueryContext(ctx, `SELECT l.key,l.source_name,f.rel_path,l.line,l.language,l.value FROM trigram_loc t JOIN localization l ON l.id=t.rowid JOIN files f ON f.id=l.file_id WHERE trigram_loc MATCH ? AND instr(l.value,?)>0 AND f.overridden=0 AND (?='' OR l.source_name=?) AND (?='' OR f.rel_path LIKE ? ESCAPE '\') ORDER BY l.source_rank,l.key LIMIT ?`, match, query, opts.Source, opts.Source, opts.PathPrefix, escapeLike(opts.PathPrefix)+"%", limit)
 	if err != nil {
 		return nil, err
 	}

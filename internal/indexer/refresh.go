@@ -89,6 +89,13 @@ func (db *DB) RefreshStatus(ctx context.Context, cfg Config) (RefreshStatus, err
 		if version != indexRuleVersion {
 			status.NeedsFullScan = true
 		}
+		lintVersion, metaErr := db.metaValue(ctx, "lint_rule_version")
+		if metaErr != nil {
+			return RefreshStatus{}, metaErr
+		}
+		if lintVersion != lintRuleVersion {
+			status.NeedsFullScan = true
+		}
 		inputCurrent, inputErr := db.indexedInputFingerprintCurrent(ctx, normalized)
 		if inputErr != nil {
 			return RefreshStatus{}, inputErr

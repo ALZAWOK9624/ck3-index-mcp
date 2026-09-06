@@ -48,7 +48,7 @@ func TestScanWriterTransactionUsesPinnedPragmas(t *testing.T) {
 		"busy_timeout": 60000,
 		"temp_store":   2,
 		"cache_size":   -200000,
-		"synchronous":  0,
+		"synchronous":  2,
 	} {
 		var got int
 		if err := tx.QueryRowContext(ctx, `PRAGMA `+pragma).Scan(&got); err != nil {

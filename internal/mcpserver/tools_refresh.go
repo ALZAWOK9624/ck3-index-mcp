@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"sync"
+	"time"
 
 	"ck3-index/internal/indexer"
 )
@@ -229,30 +230,8 @@ func handleRefresh(ctx context.Context, runtime *Runtime, definition *ToolDefini
 			finish(refreshErr)
 			return toolOutput{}, refreshErr
 		}
-		if reloadErr := rebindPublishedDatabase(context.WithoutCancel(ctx), runtime); reloadErr != nil {
-			finish(reloadErr)
-			markMCPCommitted(ctx)
-			return toolOutput{}, reloadErr
-		}
 		finish(nil)
-		if rulesErr := runtime.DB.RestoreEngineRules(context.WithoutCancel(ctx), runtime.Config.EngineLogs); rulesErr != nil {
-			markMCPCommitted(ctx)
-			return toolOutput{}, rulesErr
-		}
-		// The cache path is a host detail; refresh callers only need the newly
-		// published generation included in status below.
-		stats.Database = ""
-		// Once staged publication committed, report its stable state even if a
-		// cancellation notification arrived a few instructions too late to roll
-		// back the completed atomic transaction.
-		status, statusErr := refreshStatusOutput(context.WithoutCancel(ctx), runtime)
-		if statusErr != nil {
-			return toolOutput{}, statusErr
-		}
-		status["operation"] = "full"
-		status["refresh"] = stats
-		status["diagnostic_delta"] = stats.DiagnosticDelta
-		return toolOutput{Value: status, Visibility: "private", Committed: true}, nil
+		return completedRefreshOutput(ctx, runtime, "full", stats), nil
 	case "files":
 		if len(args.Paths) == 0 {
 			return toolOutput{}, missingArgument("paths")
@@ -311,26 +290,57 @@ func handleRefresh(ctx context.Context, runtime *Runtime, definition *ToolDefini
 		if refreshErr != nil {
 			return toolOutput{}, refreshErr
 		}
-		if rulesErr := runtime.DB.RestoreEngineRules(context.WithoutCancel(ctx), runtime.Config.EngineLogs); rulesErr != nil {
-			markMCPCommitted(ctx)
-			return toolOutput{}, rulesErr
-		}
-		stats.Database = ""
-		status, statusErr := refreshStatusOutput(context.WithoutCancel(ctx), runtime)
-		if statusErr != nil {
-			return toolOutput{}, statusErr
-		}
-		status["operation"] = "files"
-		status["refresh"] = stats
-		status["changed_files"] = stats.ChangedFiles
-		status["removed_files"] = stats.RemovedFiles
-		status["missing_files"] = stats.MissingFiles
-		status["path_outcomes"] = stats.PathOutcomes
-		status["changed_symbols"] = stats.ChangedSymbols
-		status["changed_symbols_truncated"] = stats.ChangedSymbolsTruncated
-		status["diagnostic_delta"] = stats.DiagnosticDelta
-		return toolOutput{Value: status, Visibility: "private", Committed: true}, nil
+		return completedRefreshOutput(ctx, runtime, "files", stats), nil
 	default:
 		return toolOutput{}, unknownOperation(operation)
 	}
+}
+
+// Publication cannot be undone by a cancelled request or a failed status read.
+// Keep post-publication work bounded and report auxiliary failures as warnings.
+// The fallback deliberately does not certify the old runtime binding as ready.
+func completedRefreshOutput(ctx context.Context, runtime *Runtime, operation string, stats indexer.ScanStats) toolOutput {
+	markMCPCommitted(ctx)
+	postCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	var status map[string]any
+	if operation == "full" {
+		if err := rebindPublishedDatabase(postCtx, runtime); err != nil {
+			stats.Warnings = append(stats.Warnings, "database_rebind_deferred")
+		}
+	}
+	if len(stats.Warnings) == 0 || stats.Warnings[len(stats.Warnings)-1] != "database_rebind_deferred" {
+		if err := runtime.DB.RestoreEngineRules(postCtx, runtime.Config.EngineLogs); err != nil {
+			stats.Warnings = append(stats.Warnings, "engine_rules_restore_deferred")
+		} else if value, err := refreshStatusOutput(postCtx, runtime); err != nil {
+			stats.Warnings = append(stats.Warnings, "refresh_status_unavailable")
+		} else {
+			status = value
+		}
+	}
+	unverified := status == nil
+	if unverified {
+		status = map[string]any{
+			"status": "refresh_completed_status_unavailable", "is_scanning": false,
+			"refresh_status": nil, "index": nil, "scan_generation": nil, "needs_full_scan": nil,
+			"guidance": "The refresh completed. Retry ck3_refresh status or ck3_health to verify the current binding; do not repeat the write solely because this status read was unavailable.",
+		}
+	}
+	stats.Database = ""
+	status["operation"] = operation
+	status["committed"] = stats.Committed
+	status["refresh"] = stats
+	if len(stats.Warnings) > 0 {
+		status["warnings"] = stats.Warnings
+	}
+	status["diagnostic_delta"] = stats.DiagnosticDelta
+	if operation == "files" {
+		status["changed_files"] = stats.ChangedFiles
+		status["removed_files"] = stats.RemovedFiles
+		status["missing_files"] = append([]string{}, stats.MissingFiles...)
+		status["path_outcomes"] = append([]indexer.RefreshPathOutcome{}, stats.PathOutcomes...)
+		status["changed_symbols"] = append([]string{}, stats.ChangedSymbols...)
+		status["changed_symbols_truncated"] = stats.ChangedSymbolsTruncated
+	}
+	return toolOutput{Value: status, Visibility: "private", Committed: true, StateUnverified: unverified}
 }

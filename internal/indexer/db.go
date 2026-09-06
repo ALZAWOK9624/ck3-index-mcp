@@ -214,15 +214,19 @@ func (db *DB) Close() error { return db.sql.Close() }
 // PRAGMAs to the same SQLite connection. Applying these through *sql.DB would
 // configure an arbitrary pooled connection and leave the actual writer with
 // different durability, cache, or timeout settings.
-func (db *DB) scanWriteConnection(ctx context.Context) (*sql.Conn, error) {
+func (db *DB) scanWriteConnection(ctx context.Context, disposableStage ...bool) (*sql.Conn, error) {
 	conn, err := db.sql.Conn(ctx)
 	if err != nil {
 		return nil, err
 	}
+	syncPragma := `PRAGMA synchronous=FULL`
+	if len(disposableStage) > 0 && disposableStage[0] {
+		syncPragma = `PRAGMA synchronous=OFF`
+	}
 	for _, pragma := range []string{
 		`PRAGMA busy_timeout=60000`,
 		`PRAGMA journal_mode=WAL`,
-		`PRAGMA synchronous=OFF`,
+		syncPragma,
 		`PRAGMA temp_store=MEMORY`,
 		`PRAGMA cache_size=-200000`,
 	} {

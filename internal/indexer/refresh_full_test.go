@@ -1,9 +1,11 @@
 package indexer
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -293,7 +295,15 @@ func TestScanFullStagedPublishesOnlyCompletedGeneration(t *testing.T) {
 func TestScanFullStagedDoesNotRewriteLiveDatabaseOrGrowItsWAL(t *testing.T) {
 	ctx := context.Background()
 	cfg, _, sourcePath, livePath := stagedFullRefreshFixture(t)
-	beforeDigest := fileDigest(t, livePath)
+	retainedFile, err := os.Open(livePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer retainedFile.Close()
+	beforeBytes, err := io.ReadAll(retainedFile)
+	if err != nil {
+		t.Fatal(err)
+	}
 	beforeWALSize := int64(0)
 	if info, err := os.Stat(livePath + "-wal"); err == nil {
 		beforeWALSize = info.Size()
@@ -306,7 +316,14 @@ func TestScanFullStagedDoesNotRewriteLiveDatabaseOrGrowItsWAL(t *testing.T) {
 	if _, err := ScanFullStaged(ctx, cfg); err != nil {
 		t.Fatal(err)
 	}
-	if afterDigest := fileDigest(t, livePath); afterDigest != beforeDigest {
+	if _, err := retainedFile.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+	afterBytes, err := io.ReadAll(retainedFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(beforeBytes, afterBytes) {
 		t.Fatal("full publication rewrote the previously published database")
 	}
 	afterWALSize := int64(0)

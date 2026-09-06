@@ -20,10 +20,11 @@ const (
 )
 
 type IndexState struct {
-	Generation  int64  `json:"scan_generation"`
-	Revision    string `json:"scan_revision,omitempty"`
-	CommittedAt string `json:"scan_committed_at,omitempty"`
-	Status      string `json:"scan_status,omitempty"`
+	BaselineRevision string `json:"baseline_revision,omitempty"`
+	Generation       int64  `json:"scan_generation"`
+	Revision         string `json:"scan_revision,omitempty"`
+	CommittedAt      string `json:"scan_committed_at,omitempty"`
+	Status           string `json:"scan_status,omitempty"`
 	// StaleReason explains a deliberate invalidation. It is short, stable, and
 	// path-free so it can be reported straight to an MCP caller.
 	StaleReason string `json:"scan_stale_reason,omitempty"`
@@ -112,7 +113,7 @@ func clearIndexStaleMarkers(ctx context.Context, q integrityQueryExecer) error {
 func readIndexState(ctx context.Context, queryer integrityQueryExecer) (IndexState, error) {
 	state := IndexState{Status: "initializing"}
 	rows, err := queryer.QueryContext(ctx, `SELECT key,value FROM meta
-		WHERE key IN ('scan_generation','scan_revision','scan_committed_at','scan_status','scan_stale_reason','scan_required_action')`)
+		WHERE key IN ('baseline_revision','scan_generation','scan_revision','scan_committed_at','scan_status','scan_stale_reason','scan_required_action')`)
 	if err != nil {
 		return state, err
 	}
@@ -125,6 +126,8 @@ func readIndexState(ctx context.Context, queryer integrityQueryExecer) (IndexSta
 			return state, err
 		}
 		switch key {
+		case "baseline_revision":
+			state.BaselineRevision = value
 		case "scan_generation":
 			hasGeneration = true
 			state.Generation, _ = strconv.ParseInt(value, 10, 64)

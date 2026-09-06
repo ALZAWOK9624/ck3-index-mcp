@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Refresh and baseline audit fixes (2026-09-06)
+
+- Persist baseline revisions and include them in MCP read-cache identity, including concurrent in-flight requests and separate processes.
+- Verify binary contents in base-seeded full refreshes and explicit file refreshes, and reject obsolete diagnostic rules. Track the game's on_action inputs so dependent diagnostics are refreshed even when project files are unchanged.
+- Prepare required results before publication; report committed refreshes with warnings when cancellation or post-publication status/rebind work fails. Active scan writers use SQLite FULL synchronization; disposable stages retain their existing fast setting.
+- Fix literal LIKE prefix escaping in substring/FTS and datatype queries. Rename worker timing metrics to elapsed sums, retaining deprecated aliases for compatibility.
+- See [audit fixes and validation boundaries](docs/AUDIT_FIXES_20260906.md).
+
 ### Tool catalog cost
 
 - The advertised `tools/list` payload dropped from 120024 to 79490 bytes (-33.8%) with no tool removed and no capability changed. That payload is the one thing every session pays for before the caller has asked anything, so its size is a direct tax on the context window available for actual work.

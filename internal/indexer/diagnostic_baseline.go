@@ -213,6 +213,9 @@ func (db *DB) SaveDiagnosticBaseline(ctx context.Context, name string) (Diagnost
 			return DiagnosticBaseline{}, err
 		}
 	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('baseline_revision','1') ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(meta.value AS INTEGER)+1 AS TEXT)`); err != nil {
+		return DiagnosticBaseline{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return DiagnosticBaseline{}, err
 	}
@@ -278,6 +281,9 @@ func (db *DB) ClearDiagnosticBaseline(ctx context.Context, name string) (Diagnos
 		return DiagnosticBaseline{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM diagnostic_baseline_snapshots WHERE name=?`, key); err != nil {
+		return DiagnosticBaseline{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO meta(key,value) VALUES('baseline_revision','1') ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(meta.value AS INTEGER)+1 AS TEXT)`); err != nil {
 		return DiagnosticBaseline{}, err
 	}
 	if err := tx.Commit(); err != nil {

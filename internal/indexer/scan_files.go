@@ -61,6 +61,7 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 	}
 	engineLoadMillis := time.Since(engineLoadStart).Milliseconds()
 	engineRules := engineRuleSetFromBundle(engineBundle)
+	vanillaOnActions := vanillaOnActionsForConfig(cfg)
 	if len(relPaths) == 0 {
 		return ScanStats{}, fmt.Errorf("scan --files requires at least one source-root relative path")
 	}
@@ -87,15 +88,19 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 	}
 	defer db.Close()
 	defer func() {
+		postCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
 		if resultErr != nil {
-			db.recordScanFailure(context.Background(), resultErr)
+			db.recordScanFailure(postCtx, resultErr)
 			return
 		}
-		db.clearScanFailure(context.Background())
+		db.clearScanFailure(postCtx)
 	}()
 	defer func() {
-		if resultErr == nil {
-			resultErr = publishEngineBundleMatchingDB(context.Background(), db, engineBundle)
+		if resultErr == nil && !stats.Committed {
+			postCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			resultErr = publishEngineBundleMatchingDB(postCtx, db, engineBundle)
 		}
 	}()
 	inputCurrent, err := db.indexedInputFingerprintCurrent(ctx, cfg)
@@ -116,6 +121,13 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 	if version != indexRuleVersion {
 		return ScanStats{}, &FullScanRequiredError{Reason: "the index rule version changed"}
 	}
+	lintVersion, err := db.metaValue(ctx, "lint_rule_version")
+	if err != nil {
+		return ScanStats{}, err
+	}
+	if lintVersion != lintRuleVersion {
+		return ScanStats{}, &FullScanRequiredError{Reason: "the diagnostic rule version changed"}
+	}
 	state, err := db.IndexState(ctx)
 	if err != nil {
 		return ScanStats{}, err
@@ -130,6 +142,17 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 	}
 	if cachedEngineFingerprint != engineFingerprint {
 		return ScanStats{}, &FullScanRequiredError{Reason: "engine log rules changed"}
+	}
+	vanillaFingerprint, err := vanillaOnActions.contentFingerprint()
+	if err != nil {
+		return ScanStats{}, err
+	}
+	cachedVanillaFingerprint, err := db.metaValue(ctx, vanillaOnActionFingerprintKey)
+	if err != nil {
+		return ScanStats{}, err
+	}
+	if cachedVanillaFingerprint != vanillaFingerprint {
+		return ScanStats{}, &FullScanRequiredError{Reason: "the game on_action diagnostic inputs changed"}
 	}
 	stats = ScanStats{Database: dbPath, BySource: map[string]int{}, TimingsMillis: map[string]int64{}}
 	stats.TimingsMillis["load_engine_bundle"] = engineLoadMillis
@@ -197,7 +220,7 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 		if prev.ID != 0 {
 			oldFileIDs[prev.ID] = true
 		}
-		jobs = append(jobs, fileJob{src: src, path: full, rel: rel, kind: kind, prev: prev, engineRules: engineRules})
+		jobs = append(jobs, fileJob{src: src, path: full, rel: rel, kind: kind, prev: prev, engineRules: engineRules, vanillaOnActions: vanillaOnActions, verifyContent: true})
 		pathOutcomes[rel] = RefreshPathOutcome{Path: rel, Status: "refreshed"}
 	}
 	sort.Strings(stats.MissingFiles)
@@ -503,18 +526,30 @@ func ScanFiles(ctx context.Context, cfg Config, relPaths []string) (stats ScanSt
 	if err := refreshScanStatsTotals(ctx, tx, &stats); err != nil {
 		return ScanStats{}, err
 	}
-	if err := tx.Commit(); err != nil {
-		return ScanStats{}, err
-	}
-	afterDiagnostics, err := db.diagnosticFingerprintSet(ctx)
+	afterDiagnostics, err := diagnosticFingerprintSet(ctx, tx)
 	if err != nil {
 		return ScanStats{}, err
 	}
+	committedState, err := readIndexState(ctx, tx)
+	if err != nil {
+		return ScanStats{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ScanStats{}, err
+	}
+	stats.Committed = true
+	if cfg.afterScanCommit != nil {
+		cfg.afterScanCommit()
+	}
+	publishEngineRules(engineBundle, committedState)
+	postCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
 	stats.DiagnosticDelta = diffDiagnosticFingerprints(beforeDiagnostics, afterDiagnostics)
 	stats.ChangedSymbols, stats.ChangedSymbolsTruncated = boundedChangedSymbols(changedSymbols, maxChangedSymbolsPerRefresh)
 	stats.PathOutcomes = sortedRefreshPathOutcomes(pathOutcomes)
-	checkpoint, checkpointErr := db.checkpointWALAfterScan(ctx)
+	checkpoint, checkpointErr := db.checkpointWALAfterScan(postCtx)
 	if checkpointErr != nil {
+		stats.Warnings = append(stats.Warnings, "wal_checkpoint_deferred")
 		fmt.Fprintf(os.Stderr, "[scan --files] WAL checkpoint deferred: %v\n", checkpointErr)
 	} else {
 		stats.WALCheckpoint = &checkpoint
@@ -565,7 +600,11 @@ func collectFileSymbolLabelsTx(ctx context.Context, tx *sql.Tx, fileID int64, ou
 }
 
 func (db *DB) diagnosticFingerprintSet(ctx context.Context) (map[string]bool, error) {
-	rows, err := db.sql.QueryContext(ctx, `SELECT source,severity,code,message,COALESCE(path,''),COALESCE(line,0),COALESCE(col,0),fingerprint FROM diagnostics`)
+	return diagnosticFingerprintSet(ctx, db.sql)
+}
+
+func diagnosticFingerprintSet(ctx context.Context, q integrityQueryExecer) (map[string]bool, error) {
+	rows, err := q.QueryContext(ctx, `SELECT source,severity,code,message,COALESCE(path,''),COALESCE(line,0),COALESCE(col,0),fingerprint FROM diagnostics`)
 	if err != nil {
 		return nil, err
 	}

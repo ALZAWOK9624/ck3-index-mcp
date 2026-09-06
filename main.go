@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"ck3-index/internal/checkcli"
+
 	"ck3-index/internal/indexer"
 	"ck3-index/internal/mcpserver"
 	"ck3-index/internal/migrator"
@@ -85,6 +87,9 @@ func run(ctx context.Context, args []string) error {
 	}
 	cmd := args[0]
 	args = args[1:]
+	if cmd == "check" {
+		return checkcli.Run(ctx, args, os.Stdin, os.Stdout, os.Stderr)
+	}
 	// Allow --clean anywhere after the command, e.g. "scan --clean".
 	clean := false
 	var scanFiles []string
@@ -1514,6 +1519,7 @@ func printHelp() {
 	package-dir <dir> --meta validate and build a portable CK3 mod ZIP from an existing directory
   scan [--clean]           rebuild SQLite index (incremental by default; --clean drops everything)
   scan --files <paths...>  refresh current-project files and affected refs without full scan
+  check [--serve]          check complete proposed text from stdin without config or SQL; --serve exposes standalone MCP
   query object <id>        show object definitions and override chain
   refs <id>                show incoming/outgoing references
   loc <key>                show localization values

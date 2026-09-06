@@ -41,10 +41,8 @@ func TestNamedColorsReadAllThreeNotations(t *testing.T) {
 	}
 }
 
-// The parser splits `color1 = rgb { 1 2 3 }` into an atom carrying the keyword
-// and a following anonymous block carrying the numbers. Reading only the atom
-// yields the literal string "rgb" as a colour name.
-func TestParseReadsLiteralColorNotationsSplitAcrossSiblings(t *testing.T) {
+// A tagged color must retain both its notation and components in the AST.
+func TestParseReadsLiteralColorNotations(t *testing.T) {
 	parsed := script.Parse(`dyn_test = {
 	pattern = "pattern_solid.dds"
 	color1 = black

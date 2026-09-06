@@ -72,7 +72,11 @@ func analyzeVirtualFileWithRules(relPath, sourceName string, sourceRank int, con
 	a := VirtualFileAnalysis{Record: rec, Kind: kind}
 	switch kind {
 	case "script":
-		a.Parsed = script.Parse(content)
+		if strings.HasSuffix(strings.ToLower(rel), ".gui") {
+			a.Parsed = script.ParseGUI(content)
+		} else {
+			a.Parsed = script.Parse(content)
+		}
 		for _, pe := range a.Parsed.Errors {
 			a.Diagnostics = append(a.Diagnostics, Diagnostic{
 				Source:   "parser",
@@ -84,7 +88,7 @@ func analyzeVirtualFileWithRules(relPath, sourceName string, sourceRank int, con
 				Column:   pe.Col,
 			})
 		}
-		a.Diagnostics = append(a.Diagnostics, ctxDiagnostics(rel, "compiler", checkScriptContext(a.Parsed.Nodes, rel))...)
+		a.Diagnostics = append(a.Diagnostics, ctxDiagnostics(rel, "compiler", checkScriptContextWithRules(a.Parsed.Nodes, rel, rules))...)
 		a.Diagnostics = append(a.Diagnostics, ctxDiagnostics(rel, "compiler", checkScriptLint(a.Parsed.Nodes, rel, SourceRoleProject, nil))...)
 		a.Diagnostics = append(a.Diagnostics, ctxDiagnostics(rel, "compiler", checkRuntimeContractsWithRules(a.Parsed.Nodes, rel, rules))...)
 		a.Diagnostics = append(a.Diagnostics, ctxDiagnostics(rel, "compiler", checkScopeTrackerWithRules(a.Parsed.Nodes, rel, rules))...)

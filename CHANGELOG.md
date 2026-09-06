@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Standalone DSL checker and vanilla corpus audit (2026-09-06)
+
+- Add SQL-independent `ck3-check`, `ck3-index check`, and an isolated MCP stdio service with `ck3_check` / `ck3_check_rules`.
+- Audit full supported vanilla text plus `.info` field evidence; publish reproducible fingerprints, scope-table comparisons and observed field coverage.
+- Reject missing/extra braces, invalid chained script assignments and lone `!`; retain color tags, correct source spans, and bound parser resource use.
+- Use the full engine command registry for context checks while preserving switch labels, iterator arguments and helper data blocks.
+- Fix GUI parsing for proposed files, tagged-color consumers, and missing localization keys containing apostrophes. Refresh the lint contract for existing indexes.
+
 ### Refresh and baseline audit fixes (2026-09-06)
 
 - Persist baseline revisions and include them in MCP read-cache identity, including concurrent in-flight requests and separate processes.

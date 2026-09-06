@@ -18,8 +18,9 @@ type Node struct {
 }
 
 type File struct {
-	Nodes  []*Node
-	Errors []ParseError
+	Nodes   []*Node
+	Errors  []ParseError
+	Limited bool
 }
 
 type ParseError struct {
@@ -30,6 +31,10 @@ type ParseError struct {
 
 const parserLookahead = 4
 const maxParserNodeChunk = 1024
+
+// Bound recursive consumers as well as the parser for untrusted tool input.
+const MaxDepth = 256
+const MaxNodes = 500000
 
 type parser struct {
 	lexer         *Lexer
@@ -43,6 +48,7 @@ type parser struct {
 	nextID        int64
 	errors        []ParseError
 	gui           bool
+	limited       bool
 }
 
 func Parse(text string) File {
@@ -79,7 +85,7 @@ func ParseGUIBytes(input []byte) File {
 func parseLexer(lexer *Lexer, gui bool) File {
 	p := &parser{lexer: lexer, nodeChunkSize: parserNodeChunkSize(lexer.sourceLen()), nextID: 1, gui: gui}
 	p.parseBlock(0, 0)
-	return File{Nodes: p.buildTree(), Errors: p.errors}
+	return File{Nodes: p.buildTree(), Errors: p.errors, Limited: p.limited}
 }
 
 func (p *parser) parseBlock(parent int64, depth int) (Token, bool, *Node) {
@@ -88,22 +94,48 @@ func (p *parser) parseBlock(parent int64, depth int) (Token, bool, *Node) {
 		tok := p.peek()
 		switch tok.Kind {
 		case TokenEOF:
+			if parent != 0 {
+				opening := p.nodeAt(parent)
+				p.err("unclosed block: expected } before end of file", Token{Line: opening.Line, Col: opening.Col})
+			}
 			return Token{}, false, last
 		case TokenRBrace:
 			close := p.advance()
+			if parent == 0 {
+				p.err("unexpected closing brace }", close)
+				continue
+			}
 			return close, true, last
 		case TokenError:
 			p.err(tok.Text, tok)
 			p.advance()
 		case TokenLBrace:
+			if !p.withinLimits(tok, depth) {
+				return Token{}, false, last
+			}
 			last = p.anonymousBlock(parent, depth)
 		case TokenIdent, TokenString:
+			if !p.withinLimits(tok, depth) {
+				return Token{}, false, last
+			}
 			last = p.statement(parent, depth)
 		default:
 			p.err("expected statement", tok)
 			p.advance()
 		}
 	}
+}
+
+func (p *parser) withinLimits(tok Token, depth int) bool {
+	if depth < MaxDepth && p.nextID <= MaxNodes {
+		return true
+	}
+	p.err("script exceeds parser depth or node limit", tok)
+	p.limited = true
+	// End all recursive frames without scanning or allocating more nodes.
+	p.lexer.pos = p.lexer.sourceLen()
+	p.buffered = 0
+	return false
 }
 
 func (p *parser) anonymousBlock(parent int64, depth int) *Node {
@@ -153,11 +185,11 @@ func (p *parser) statement(parent int64, depth int) *Node {
 			p.advance()
 			n.Value = val.Text
 			n.Kind = "atom"
-			n.EndLine, n.EndCol = val.Line, val.Col+runeLen(val.Text)
+			n.EndLine, n.EndCol = val.EndLine, val.EndCol
 			// Jomini GUI also permits inheritance/instantiation followed by a
 			// body: child = parent { ... }. Preserve parent in Value and attach
 			// the following block to the same node.
-			if p.gui && p.peek().Kind == TokenLBrace {
+			if (p.gui || val.Kind == TokenIdent && isValueTag(val.Text)) && p.peek().Kind == TokenLBrace {
 				p.advance()
 				n.Kind = "block"
 				close, closed, _ := p.parseBlock(n.ID, depth+1)
@@ -167,18 +199,23 @@ func (p *parser) statement(parent int64, depth int) *Node {
 				break
 			}
 			// CK3 GUI: type = A = B  (name = parent_type)
-			if p.peek().Kind == TokenOperator {
+			if p.gui && p.peek().Kind == TokenOperator {
 				nextOp := p.advance()
 				nextVal := p.peek()
 				if nextVal.Kind == TokenIdent || nextVal.Kind == TokenString {
 					p.advance()
 					n.Value = n.Value + " " + nextOp.Text + " " + nextVal.Text
-					n.EndLine, n.EndCol = nextVal.Line, nextVal.Col+runeLen(nextVal.Text)
+					n.EndLine, n.EndCol = nextVal.EndLine, nextVal.EndCol
+				} else {
+					p.err("expected value after GUI inheritance operator", nextVal)
 				}
 			}
 		default:
 			p.err("expected value or block after operator", val)
-			p.advance()
+			// Let the enclosing block consume its own closing delimiter.
+			if val.Kind != TokenRBrace && val.Kind != TokenEOF {
+				p.advance()
+			}
 		}
 	} else if op.Kind == TokenLBrace {
 		p.advance()
@@ -190,12 +227,20 @@ func (p *parser) statement(parent int64, depth int) *Node {
 		}
 	} else {
 		n.Kind = "bare"
-		n.EndLine, n.EndCol = key.Line, key.Col+runeLen(key.Text)
+		n.EndLine, n.EndCol = key.EndLine, key.EndCol
 	}
 	if n.EndLine == 0 {
 		n.EndLine, n.EndCol = n.Line, n.Col+runeLen(n.Key)
 	}
 	return n
+}
+
+func isValueTag(value string) bool {
+	switch value {
+	case "rgb", "hsv", "hsv360":
+		return true
+	}
+	return false
 }
 
 func (p *parser) guiPrefixedStatement(parent int64, depth int) (*Node, bool) {
@@ -419,5 +464,9 @@ func (p *parser) advance() Token {
 }
 
 func (p *parser) err(msg string, tok Token) {
+	if len(p.errors) >= 1000 {
+		p.limited = true
+		return
+	}
 	p.errors = append(p.errors, ParseError{Message: msg, Line: tok.Line, Col: tok.Col})
 }

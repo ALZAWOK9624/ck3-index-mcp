@@ -203,3 +203,30 @@ func TestAuditCommittedRefreshStatusFailureIsWarning(t *testing.T) {
 		})
 	}
 }
+
+func TestFullNoopRefreshDoesNotClaimCommit(t *testing.T) {
+	cfg, db, _ := writeRefreshFixture(t)
+	before, err := db.IndexState(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := indexer.ScanFullStaged(context.Background(), cfg)
+	if err != nil || !stats.Noop || stats.Committed {
+		t.Fatalf("full no-op failed: %+v %v", stats, err)
+	}
+	commit := &mcpCommitState{}
+	ctx := context.WithValue(context.Background(), mcpCommitStateKey{}, commit)
+	runtime := &Runtime{DB: db, Config: cfg}
+	out := completedRefreshOutput(ctx, runtime, "full", stats)
+	defer runtime.DB.Close()
+	value := out.Value.(map[string]any)
+	if commit.committed || out.Committed || out.StateUnverified || value["committed"] != false {
+		t.Fatalf("no-op incorrectly claimed a commit: %+v marker=%v", out, commit.committed)
+	}
+	after, err := runtime.DB.IndexState(ctx)
+	if err != nil || before.Generation != after.Generation || before.Revision != after.Revision {
+		t.Fatalf("no-op advanced identity: before=%+v after=%+v error=%v", before, after, err)
+	}
+	definition, _ := findCanonicalTool("ck3_refresh")
+	assertToolValueMatchesOutputSchema(t, definition, value)
+}

@@ -513,7 +513,7 @@ func TestStagedFullPublishRejectsChangedBaseGeneration(t *testing.T) {
 	}
 }
 
-func TestConcurrentFullRefreshesPublishDistinctGenerations(t *testing.T) {
+func TestConcurrentFullRefreshesPublishOnceAndReuseUnchangedGeneration(t *testing.T) {
 	cfg, reader, sourcePath, _ := stagedFullRefreshFixture(t)
 	before, err := reader.IndexState(context.Background())
 	if err != nil {
@@ -524,16 +524,19 @@ func TestConcurrentFullRefreshesPublishDistinctGenerations(t *testing.T) {
 	}
 	var wait sync.WaitGroup
 	errorsCh := make(chan error, 2)
+	statsCh := make(chan ScanStats, 2)
 	for index := 0; index < 2; index++ {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			_, err := ScanFullStaged(context.Background(), cfg)
+			stats, err := ScanFullStaged(context.Background(), cfg)
 			errorsCh <- err
+			statsCh <- stats
 		}()
 	}
 	wait.Wait()
 	close(errorsCh)
+	close(statsCh)
 	for err := range errorsCh {
 		if err != nil {
 			t.Fatal(err)
@@ -544,8 +547,20 @@ func TestConcurrentFullRefreshesPublishDistinctGenerations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.Generation != before.Generation+2 {
-		t.Fatalf("generation after two serialized full refreshes = %d, want %d", after.Generation, before.Generation+2)
+	if after.Generation != before.Generation+1 {
+		t.Fatalf("generation after two serialized full refreshes = %d, want %d", after.Generation, before.Generation+1)
+	}
+	committed, reused := 0, 0
+	for stats := range statsCh {
+		if stats.Committed {
+			committed++
+		}
+		if stats.Noop && stats.ReusedGeneration && !stats.Committed {
+			reused++
+		}
+	}
+	if committed != 1 || reused != 1 {
+		t.Fatalf("committed=%d reused=%d, want one of each", committed, reused)
 	}
 }
 

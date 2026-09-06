@@ -163,6 +163,10 @@ func TestFullScanRefreshesChangedSemanticFTSRowsWithoutRebuildingTable(t *testin
 		_ = db.Close()
 		t.Fatal(err)
 	}
+	if _, err := db.sql.Exec(`INSERT INTO search_documents(fts_rowid,file_id)
+		SELECT rowid,file_id FROM search_fts WHERE name='zzengineownedsentinel'`); err != nil {
+		t.Fatal(err)
+	}
 	tx, err := db.sql.BeginTx(ctx, nil)
 	if err != nil {
 		_ = db.Close()

@@ -112,12 +112,12 @@ func redactHostPaths(text string, hostPaths []string) string {
 	return text
 }
 
-// ScanFullStaged performs a full rebuild without exposing a partial cache to
-// readers. It scans into a sibling temporary SQLite database, verifies that
-// snapshot reached ready, then promotes that complete file as a new immutable
-// generation with one atomic pointer replacement. A failure or cancellation
-// before the pointer commit preserves the last published generation.
+// ScanFullStaged verifies every input and reuses a complete unchanged index
+// without copying it. Otherwise it scans into a sibling temporary database,
+// verifies that snapshot reached ready, and atomically publishes a new
+// generation. Failure before the pointer commit preserves the published index.
 func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
+	started := time.Now()
 	normalized, err := NormalizeConfig(cfg)
 	if err != nil {
 		return ScanStats{}, err
@@ -148,6 +148,36 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 	if err != nil {
 		return ScanStats{}, err
 	}
+	engineLoadStart := time.Now()
+	engineBundle, err := LoadEngineBundle(ctx, normalized.EngineLogs)
+	if err != nil {
+		err = sanitizeStagedFullScanFailure(err, scanRedactionPaths(normalized, dbPath, ""))
+		recordStagedFullScanFailure(normalized, err)
+		return ScanStats{}, err
+	}
+	engineLoadElapsed := time.Since(engineLoadStart)
+	var probe ScanStats
+	if !normalized.ForceClean {
+		var unchanged bool
+		probe, unchanged, err = probePublishedUnchanged(ctx, normalized, dbPath, base, engineBundle)
+		if err != nil {
+			err = sanitizeStagedFullScanFailure(err, scanRedactionPaths(normalized, dbPath, ""))
+			recordStagedFullScanFailure(normalized, err)
+			return ScanStats{}, err
+		}
+		if unchanged {
+			probe.Database = anchorPath
+			probe.ElapsedMillis = time.Since(started).Milliseconds()
+			probe.TimingsMillis["load_engine_bundle"] = engineLoadElapsed.Milliseconds()
+			probe.TimingsMillis["seed_staged"] = 0
+			probe.TimingsMillis["publish_staged"] = 0
+			if strings.TrimSpace(normalized.BaseDatabase) != "" {
+				probe.BaseSeed = &BaseSeedResult{Configured: true, Reason: "the published generation is already current"}
+			}
+			return probe, nil
+		}
+	}
+
 	stagePath, err := stagedFullScanPath(anchorPath)
 	if err != nil {
 		err = sanitizeStagedFullScanFailure(err, scanRedactionPaths(normalized, dbPath, ""))
@@ -160,14 +190,6 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 		}
 	}()
 
-	engineLoadStart := time.Now()
-	engineBundle, err := LoadEngineBundle(ctx, normalized.EngineLogs)
-	if err != nil {
-		err = sanitizeStagedFullScanFailure(err, scanRedactionPaths(normalized, dbPath, stagePath))
-		recordStagedFullScanFailure(normalized, err)
-		return ScanStats{}, err
-	}
-	engineLoadElapsed := time.Since(engineLoadStart)
 	seedStart := time.Now()
 	reused := false
 	if !normalized.ForceClean {
@@ -248,7 +270,19 @@ func ScanFullStaged(ctx context.Context, cfg Config) (ScanStats, error) {
 	stats.TimingsMillis["publish_staged"] = time.Since(publishStart).Milliseconds()
 	stats.TimingsMillis["seed_staged"] = seedElapsed.Milliseconds()
 	stats.ReusedGeneration = reused
-	stats.ElapsedMillis = time.Since(scanStart).Milliseconds()
+	stats.ElapsedMillis = time.Since(started).Milliseconds()
+	// A rejected proof can have read data before falling back. Include that
+	// work instead of presenting the second scan as the entire operation.
+	stats.FilesRead += probe.FilesRead
+	stats.FilesHashed += probe.FilesHashed
+	stats.BytesRead += probe.BytesRead
+	stats.BytesHashed += probe.BytesHashed
+	if probe.TimingsMillis != nil {
+		stats.TimingsMillis["noop_probe"] = probe.TimingsMillis["noop_probe"]
+		stats.TimingsMillis["noop_probe_hash_files_wall"] = probe.TimingsMillis["hash_files_wall"]
+		stats.TimingsMillis["read_hash_worker_elapsed_sum"] += probe.TimingsMillis["read_hash_worker_elapsed_sum"]
+		stats.TimingsMillis["read_hash_worker_cpu_total"] = stats.TimingsMillis["read_hash_worker_elapsed_sum"]
+	}
 	if seedResult.Configured {
 		stats.BaseSeed = seedResult
 	}

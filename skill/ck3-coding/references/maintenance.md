@@ -8,7 +8,7 @@ Call the running service's health/status when diagnosing it. An independently la
 
 If MCP transport itself is unavailable and CLI work is needed, confirm the intended configuration and authorization, state the fallback, and avoid a concurrent writer. A validation error from a healthy tool is not a transport failure.
 
-The default refresh operation is read-only `status`. `files` updates project-relative paths; `full` stages and publishes a full generation. Prefer these when working through the service. CLI `scan --clean` is an explicit rebuild choice, not a routine response to any stale result.
+The default refresh operation is read-only `status`. `files` updates project-relative paths; `full` hashes all indexed input content and reuses a healthy unchanged generation; changes use a staged generation and atomic publication. A successful full no-op reports `no_op=true`, `reused_generation=true`, and no new commit; an unchanged generation number is expected. Prefer these when working through the service. CLI `scan --clean` is an explicit rebuild choice, not a routine response to any stale result.
 
 ## CLI-only and offline work
 

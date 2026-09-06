@@ -174,7 +174,7 @@ func buildCanonicalTools() []ToolDefinition {
 		{
 			Name:         "ck3_refresh",
 			Title:        "Refresh CK3 Index",
-			Description:  "Refresh the configured project source after source files change. status reports index readiness without mutation; files incrementally updates explicitly named source-root-relative project files; full rebuilds in a staged cache and atomically publishes only after it is ready, never silently substituting for files.",
+			Description:  "Refresh the private project index. status reports readiness; files updates named source-root-relative project files; full verifies all input content and reuses an unchanged healthy generation, otherwise rebuilds in a staged cache and atomically publishes it when ready. full never silently substitutes for files.",
 			InputSchema:  refreshInputSchema(),
 			OutputSchema: refreshOutputSchema(), Annotations: artifactAnnotations(), Handler: handleRefresh,
 		},

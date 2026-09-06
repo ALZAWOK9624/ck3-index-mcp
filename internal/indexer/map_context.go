@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"ck3-index/internal/script"
 )
@@ -111,7 +112,12 @@ type mapBlockKind struct {
 // rebuildMapCache consumes the manifest the caller already built. It must not
 // re-collect or re-hash the active map inputs: that is the same full source
 // walk and the same whole-raster read the caller just paid for.
-func rebuildMapCache(ctx context.Context, tx *sql.Tx, cfg Config, manifest mapInputManifest) error {
+func rebuildMapCache(ctx context.Context, tx *sql.Tx, cfg Config, manifest mapInputManifest, timings map[string]int64) error {
+	phaseStart := time.Now()
+	finishPhase := func(name string) {
+		timings[name] = time.Since(phaseStart).Milliseconds()
+		phaseStart = time.Now()
+	}
 	for _, table := range []string{
 		"map_titles", "map_title_adjacencies", "map_province_history",
 		"map_title_provinces", "map_integrity_issues", "map_title_history", "map_characters", "map_character_history",
@@ -125,9 +131,11 @@ func rebuildMapCache(ctx context.Context, tx *sql.Tx, cfg Config, manifest mapIn
 	active := manifest.Active
 	inputFingerprint := manifest.Fingerprint
 	mapDiagnostics, definedIDs := collectBaseMapContractDiagnostics(ctx, active)
+	finishPhase("map_contract_inputs")
 	if err := rebuildMapPhysicalCache(ctx, tx, active); err != nil {
 		return err
 	}
+	finishPhase("map_physical")
 	defFile := active["map_data/definition.csv"]
 	pngFile := active["map_data/provinces.png"]
 	defaultFile := active["map_data/default.map"]
@@ -162,6 +170,7 @@ func rebuildMapCache(ctx context.Context, tx *sql.Tx, cfg Config, manifest mapIn
 	_ = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM map_province_geometry`).Scan(&geometryRows)
 	geometryChanged := cachedFingerprint != fingerprint || geometryRows == 0
 
+	finishPhase("map_geometry_fingerprint")
 	var provinces map[int]*mapProvinceBuild
 	var adj map[[2]int]int
 	mapWidth, mapHeight := 0, 0
@@ -177,7 +186,7 @@ func rebuildMapCache(ctx context.Context, tx *sql.Tx, cfg Config, manifest mapIn
 				return fmt.Errorf("default.map: %w", err)
 			}
 		}
-		provinces, adj, mapWidth, mapHeight, err = scanProvinceImage(pngFile.Path, definitions, blocked)
+		provinces, adj, mapWidth, mapHeight, err = scanProvinceImage(pngFile.Path, definitions, blocked, timings)
 		if err != nil {
 			return fmt.Errorf("provinces.png: %w", err)
 		}
@@ -194,6 +203,7 @@ func rebuildMapCache(ctx context.Context, tx *sql.Tx, cfg Config, manifest mapIn
 		_ = tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key='map_width'`).Scan(&mapWidth)
 		_ = tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key='map_height'`).Scan(&mapHeight)
 	}
+	finishPhase("map_geometry")
 	terrains, terrainDefaults, err := parseProvinceTerrains(active)
 	if err != nil {
 		return err
@@ -236,9 +246,11 @@ func rebuildMapCache(ctx context.Context, tx *sql.Tx, cfg Config, manifest mapIn
 		p.IsCountyCapital = true
 	}
 
+	finishPhase("map_terrain_titles")
 	if err := insertMapStatic(ctx, tx, provinces, adj, titles, titleProvinces, geometryChanged); err != nil {
 		return err
 	}
+	finishPhase("map_write_static")
 	if err := rebuildMapStrategicCache(ctx, tx, active, provinces, mapWidth, mapHeight, fingerprint); err != nil {
 		return err
 	}
@@ -275,12 +287,14 @@ func rebuildMapCache(ctx context.Context, tx *sql.Tx, cfg Config, manifest mapIn
 			return err
 		}
 	}
+	finishPhase("map_derived_layers")
 	if err := insertHolySites(ctx, tx, active, titles, titleProvinces); err != nil {
 		return err
 	}
 	if err := insertMapRegions(ctx, tx, active, titleProvinces); err != nil {
 		return err
 	}
+	finishPhase("map_holy_sites_regions")
 	if err := insertProvinceHistory(ctx, tx, active); err != nil {
 		return err
 	}
@@ -295,6 +309,7 @@ func rebuildMapCache(ctx context.Context, tx *sql.Tx, cfg Config, manifest mapIn
 	if err := refreshMapTitleHolders(ctx, tx); err != nil {
 		return err
 	}
+	finishPhase("map_history")
 	if err := replaceMapContractDiagnostics(ctx, tx, mapDiagnostics); err != nil {
 		return err
 	}
@@ -678,16 +693,20 @@ func applyProvinceTerrain(provinces map[int]*mapProvinceBuild, terrains map[int]
 	}
 }
 
-func scanProvinceImage(path string, defs map[uint32]int, blocked map[int]mapBlockKind) (map[int]*mapProvinceBuild, map[[2]int]int, int, int, error) {
+func scanProvinceImage(path string, defs map[uint32]int, blocked map[int]mapBlockKind, timings map[string]int64) (map[int]*mapProvinceBuild, map[[2]int]int, int, int, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, nil, 0, 0, err
 	}
 	defer f.Close()
+	decodeStart := time.Now()
 	img, _, err := image.Decode(f)
 	if err != nil {
 		return nil, nil, 0, 0, err
 	}
+	timings["map_province_image_decode"] = time.Since(decodeStart).Milliseconds()
+	geometryStart := time.Now()
+	defer func() { timings["map_province_image_geometry"] = time.Since(geometryStart).Milliseconds() }()
 	b := img.Bounds()
 	w, h := b.Dx(), b.Dy()
 	labels := make([]provinceLabel, w*h)

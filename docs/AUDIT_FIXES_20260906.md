@@ -21,6 +21,7 @@
 - 原版 on_action 的文件路径及内容形成独立指纹。full 在该依赖变化时重算相关脚本；files 遇到依赖指纹变化要求 full，避免只刷新指定项目文件而遗漏其他消费者。第一次使用新版本刷新旧索引也会补齐该指纹。读取依赖失败会报错，不默默当成“原版没有该块”。
 - 专用扫描写连接默认使用 `synchronous=FULL`，覆盖活动库 files/普通 Scan；只有明确标记为可丢弃 stage 的扫描采用 `OFF`。测试在实际连接及事务内读回 PRAGMA，并验证连接复用后恢复 FULL。原有 stage 完整 checkpoint、文件同步、原子指针发布流程保留。此项验证不等价于真实断电实验。
 - 修复 Ubuntu 测试假设：发布成功可以解除旧文件名。验证旧代内容时保留已打开的文件句柄，比较同一文件对象，不要求旧路径在发布后仍然存在。此前 Ubuntu 失败发生在 `TestScanFullStagedDoesNotRewriteLiveDatabaseOrGrowItsWAL`。
+- GitHub 复核另外捕获了打包器的跨进程清理竞态：`ReadDir` 枚举后，另一个进程可以移走 stage 或清理过期 ZIP。清理现在只忽略这些位置的“不存在”，权限等真实错误仍会返回。新增 `TestCleanupStageDisappearsAfterEnumeration` 在所有平台确定性模拟 Unix 延迟 stat；本地跨进程打包测试重复十次及原生 packager 全包 race 均通过。
 - `ScanStats.committed` 表示该路径确实执行过提交；纯读取的 no-op 可以为 false。MCP 对已完成刷新继续报告结果，附带 `refresh` 统计。收尾无法验证时使用 `refresh_completed_status_unavailable`，`index`、`scan_generation`、`needs_full_scan` 为 null，返回 warning 和重试 status/health 的指引。调用方不要仅因状态读取不可用就重做写操作。
 - 基线仍按数据库 anchor 保存，并跨该 anchor 的重建保留；没有偷偷改成按项目路径自动删除。将完全不同的项目复用到同一 anchor 时，应显式管理基线。不同项目宜使用独立数据库 anchor。
 

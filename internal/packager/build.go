@@ -248,6 +248,9 @@ func cleanupArtifacts(root string, retention time.Duration, now time.Time) error
 			continue
 		}
 		info, err := entry.Info()
+		if os.IsNotExist(err) {
+			continue // another process already cleaned this directory entry
+		}
 		if err != nil {
 			return fmt.Errorf("inspect artifact %s: %w", entry.Name(), err)
 		}
@@ -260,13 +263,16 @@ func cleanupArtifacts(root string, retention time.Duration, now time.Time) error
 		}
 		archivePath := filepath.Join(root, entry.Name())
 		hash, size, err := hashFile(archivePath)
+		if os.IsNotExist(err) {
+			continue
+		}
 		if err != nil {
 			return fmt.Errorf("verify artifact %s: %w", entry.Name(), err)
 		}
 		if record.SHA256 != hash || record.Size != size {
 			continue
 		}
-		if err := os.Remove(archivePath); err != nil {
+		if err := os.Remove(archivePath); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove expired artifact %s: %w", entry.Name(), err)
 		}
 		if err := os.Remove(filepath.Join(root, artifactRecordName(entry.Name()))); err != nil && !os.IsNotExist(err) {
@@ -281,6 +287,11 @@ func cleanupExpiredStage(root string, entry os.DirEntry, cutoff time.Time) error
 		return nil
 	}
 	info, err := entry.Info()
+	// ReadDir and Info are separate operations on Unix. A concurrent builder
+	// may publish and remove its stage after enumeration but before this stat.
+	if os.IsNotExist(err) {
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("inspect package stage %s: %w", entry.Name(), err)
 	}

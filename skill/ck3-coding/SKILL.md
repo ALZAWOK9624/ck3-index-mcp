@@ -32,6 +32,7 @@ A QQ message asking to “edit” may request an explanation or code draft; it d
 | Unknown name/id, localized display text, or script occurrence | `ck3_search`; use `kind=localization` for display text or `script_text` for occurrences |
 | Engine key, scope, datatype, or rule usage | `ck3_script_reference` with the relevant `kind` |
 | Known caller/callee or event-chain question | `ck3_inspect operation=references` or `ck3_dependencies operation=event_chain` |
+| Newly generated or corrected runnable code | `ck3_check` on complete virtual texts before delivery |
 | Supported indexed object types | `ck3_workspace operation=object_types` |
 
 Answer directly when existing or first-call evidence establishes the requested fact. Inspect a search hit only when its identity, definition, or context is still missing. Follow a dependency only when it determines the answer. Broad review, edit preparation, full diagnostics, and rendering are not prerequisites for a factual answer.
@@ -50,6 +51,10 @@ Use indexed script/history/GUI definitions for mechanics. Localization establish
 - Page relevant results only to answer an unresolved part of the request. If a complete enumeration was requested, follow pagination and identify any remaining truncation. On `RESPONSE_TOO_LARGE`, narrow or lower the limit before raising the byte budget.
 - `next_actions` are suggestions, not mandatory steps or permission to write. Stop once the requested claims have sufficient evidence.
 - Await expensive scans, reviews, preflights, refreshes, packaging, GUI/map analysis, and raster work sequentially. Use search batching instead of queue flooding.
+
+## Check generated code before output
+
+For newly generated or corrected runnable code, follow [generated-code checking](references/generated-code-check.md): submit the final virtual texts, repair errors, recheck, then output that revision with an accurate coverage note. QQ uses the independent `ck3_check` service; it does not access the local project. A local final patch preflight of the exact final texts can satisfy this gate without a duplicate check. Factual questions and quotations of existing code do not need this loop.
 
 ## Task-specific references
 

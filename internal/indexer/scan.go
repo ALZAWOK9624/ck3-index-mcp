@@ -128,12 +128,12 @@ const indexRuleVersion = "2026-08-13-v0.5.0-trigram-loc-1"
 // what a rule reports leaves every stored row structurally valid, so paying
 // indexRuleVersion's price for it would drop the cache and mark the map
 // database stale — taking every map tool offline to correct a warning.
-// Bumping this instead re-parses script files, and only those, so their
-// diagnostics are recomputed while the map cache stays served.
+// Bumping this re-parses script/localization text so diagnostics and corrected
+// text extraction are refreshed while the map cache stays served.
 //
-// Bumped for folder dispatch, trigger algebra and the additional on_action
-// single-slot checks introduced by competitor-tooling integration.
-const lintRuleVersion = "2026-09-05-competitor-diagnostics-1"
+// Bumped for structural parser recovery, command-context coverage and
+// localization keys containing apostrophes.
+const lintRuleVersion = "2026-09-06-dsl-parser-1"
 
 // Keep ordinary full scans well below SQLite's variable limit when they take
 // the scoped resolver/validator path. Larger edits remain correct by falling
@@ -431,7 +431,7 @@ func scanWithPreparedEngineBundle(ctx context.Context, cfg Config, forceClean, p
 				rel:              rel,
 				kind:             kind,
 				prev:             existing[path],
-				forceParse:       (engineDataDirty || cachedRuleVersion != indexRuleVersion || cachedLintRuleVersion != lintRuleVersion || (vanillaDirty && strings.Contains(rel, "on_action"))) && kind == "script",
+				forceParse:       kind == "script" && (engineDataDirty || cachedRuleVersion != indexRuleVersion || cachedLintRuleVersion != lintRuleVersion || (vanillaDirty && strings.Contains(rel, "on_action"))) || kind == "localization" && cachedLintRuleVersion != lintRuleVersion,
 				verifyContent:    cfg.verifyContent,
 				engineRules:      engineRules,
 				vanillaOnActions: vanillaOnActionLookup,
@@ -1996,31 +1996,100 @@ func updateAtomicMax(value *atomic.Int64, candidate int64) {
 // blocks and triggers inside effect-like blocks. This replaces the old
 // SQL-based checkContext which required the full nodes table to be stored.
 func checkScriptContext(nodes []*script.Node, relPath string) []ctxDiag {
+	return checkScriptContextWithRules(nodes, relPath, currentEngineRuleSet())
+}
+
+func checkScriptContextWithRules(nodes []*script.Node, relPath string, rules *EngineRuleSet) []ctxDiag {
 	var out []ctxDiag
-	var walk func(ns []*script.Node, currentContext string)
-	walk = func(ns []*script.Node, currentContext string) {
+	var walk func(ns []*script.Node, currentContext, parent string)
+	walk = func(ns []*script.Node, currentContext, parent string) {
 		for _, n := range ns {
-			k := n.Key
-			if currentContext == "trigger" && IsEffectOnly(k) {
+			k := strings.ToLower(n.Key)
+			// switch labels are values of the selected trigger; random_list
+			// labels are weights. Neither is an executable command name.
+			if currentContext != "" && (parent == "switch" || parent == "random_list") {
+				if n.Kind == "block" {
+					walk(n.Children, currentContext, k)
+				}
+				continue
+			}
+			if k == "category" && strings.HasSuffix(parent, "_trait_in_category") {
+				continue
+			}
+			effect, trigger := commandKinds(k, rules)
+			if currentContext == "trigger" && effect && !trigger {
 				out = append(out, ctxDiag{severity: "error", code: "effect_in_trigger",
 					msg:  fmt.Sprintf("effect %q appears inside a trigger-like block", k),
 					line: n.Line, col: n.Col})
 			}
-			if currentContext == "effect" && IsTriggerOnly(k) {
+			if currentContext == "effect" && trigger && !effect {
 				out = append(out, ctxDiag{severity: "warning", code: "trigger_in_effect",
 					msg:  fmt.Sprintf("trigger %q appears inside an effect-like block", k),
 					line: n.Line, col: n.Col})
 			}
-			// Context-only diagnostics are intentionally limited to the direct
-			// contents of a known trigger/effect container. Many CK3 structural
-			// and scope blocks legally contain both conditions and effects; blindly
-			// inheriting through them creates thousands of false positives.
+			// Inherit only through known script/target containers. Native argument
+			// blocks and custom helper parameters are data, not executable context.
 			childContext := ContextFor(strings.ToLower(k))
-			walk(n.Children, childContext)
+			if currentContext != "" && childContext == "" && isScriptContextContainer(k, rules) {
+				childContext = currentContext
+			}
+			if currentContext != "" && childContext == "" {
+				continue
+			}
+			walk(n.Children, childContext, k)
 		}
 	}
-	walk(nodes, "")
+	p := strings.ToLower(filepathSlash(relPath))
+	rootContext := ""
+	if strings.HasPrefix(p, "common/scripted_effects/") {
+		rootContext = "effect"
+	}
+	if strings.HasPrefix(p, "common/scripted_triggers/") {
+		rootContext = "trigger"
+	}
+	if rootContext == "" {
+		walk(nodes, "", "")
+	} else {
+		for _, n := range nodes {
+			walk(n.Children, rootContext, n.Key)
+		}
+	}
 	return out
+}
+
+func commandKinds(key string, rules *EngineRuleSet) (effect, trigger bool) {
+	if rules != nil {
+		_, effect = rules.rules[key]["effect"]
+		_, trigger = rules.rules[key]["trigger"]
+		return
+	}
+	_, effect = engineEffectScopes[key]
+	_, trigger = engineTriggerScopes[key]
+	return
+}
+
+func isScriptContextContainer(key string, rules *EngineRuleSet) bool {
+	if key == "random_list" {
+		return true
+	}
+	if isScopeStructuralBlock(key) {
+		return true
+	}
+	if _, ok := iteratorScopeOut[key]; ok {
+		return true
+	}
+	if _, ok := engineScopeTransitionsOut[key]; ok {
+		return true
+	}
+	if rules != nil {
+		if _, ok := rules.targetOutputs[key]; ok {
+			return true
+		}
+	}
+	if _, ok := explicitTypedScope(key); ok {
+		return true
+	}
+	return key == "root" || key == "prev" || key == "this" || strings.HasPrefix(key, "scope:")
 }
 
 func parseOneFile(j fileJob) fileResult {
@@ -2132,7 +2201,7 @@ func parseOneFile(j fileJob) fileResult {
 		result.searchText = buildScriptSearchText(parsed.Nodes)
 		lintStart := time.Now()
 		if !isGUI {
-			result.ctxDiags = checkScriptContext(parsed.Nodes, j.rel)
+			result.ctxDiags = checkScriptContextWithRules(parsed.Nodes, j.rel, j.engineRules)
 			result.ctxDiags = append(result.ctxDiags, checkRuntimeContractsWithRules(parsed.Nodes, j.rel, j.engineRules)...)
 		}
 		result.ctxDiags = append(result.ctxDiags, checkScriptLint(parsed.Nodes, j.rel, j.src.Role, j.vanillaOnActions)...)
@@ -3879,7 +3948,7 @@ func insertRef(ctx context.Context, tx *sql.Tx, r refRow) error {
 	return err
 }
 
-var locLine = regexp.MustCompile(`^\s*([A-Za-z0-9_.:\-]+):\d*\s+(".*"|'.*')\s*$`)
+var locLine = regexp.MustCompile(`^\s*([A-Za-z0-9_'.:\-]+):\d*\s+(".*"|'.*')\s*$`)
 
 func scanLocalization(ctx context.Context, tx *sql.Tx, rec fileRecord, seen map[string]bool) (int, error) {
 	f, err := os.Open(rec.Path)

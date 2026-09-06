@@ -301,6 +301,15 @@ def validate_platform_contract(stage: Path, platform: str, version: str) -> tupl
     if not launcher.is_file():
         raise ReleaseError(f"platform launcher is missing: {launcher.relative_to(stage)}")
 
+    checker = (mcp.get("mcpServers") or {}).get("ck3_check")
+    checker_name = "start-ck3-check.ps1" if platform == "windows-x64" else "start-ck3-check.sh"
+    checker_args = (["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", f"./scripts/{checker_name}"]
+                    if platform == "windows-x64" else [f"./scripts/{checker_name}"])
+    if not isinstance(checker, dict) or checker.get("cwd") != "." or checker.get("command") != server.get("command") or checker.get("args") != checker_args:
+        raise ReleaseError("CHECKER_LAUNCHER_REQUIRED: independent ck3_check registration is missing or invalid")
+    if not (stage / "scripts" / checker_name).is_file():
+        raise ReleaseError("CHECKER_LAUNCHER_REQUIRED: independent checker script is missing")
+
     release_binaries = [
         path
         for path in (stage / "bin").iterdir()

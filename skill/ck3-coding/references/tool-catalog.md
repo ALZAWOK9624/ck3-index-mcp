@@ -2,6 +2,8 @@
 
 Read when a specialized capability is needed and the entrypoint's short routing table is insufficient. The current server's advertised schema is authoritative for arguments and availability. This catalog lists both answering and local-authoring capabilities; listing a tool does not grant QQ permission to use private-only or write operations.
 
+The bundled independent checker adds `ck3_check` for submitted virtual files and `ck3_check_rules` for its exact-command snapshot. Both work without the index. Read [generated-code checking](generated-code-check.md) when returning runnable code. The generated catalog below describes the semantic index service.
+
 <!-- BEGIN GENERATED MCP TOOLS -->
 ## MCP Tools (38 canonical tools)
 

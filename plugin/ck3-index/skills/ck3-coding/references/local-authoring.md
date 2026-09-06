@@ -12,6 +12,8 @@ Use `ck3_review files=[...]` for exploratory diagnosis. Omitting `files` reviews
 
 Use `ck3_preflight operation=patch` for the final gate on complete proposed files. Fix blockers or establish a false-positive rule with concrete source evidence. Do not suppress a finding merely to pass. Additional preparation/review calls are unnecessary when the required evidence and final gate already suffice.
 
+For a code draft that will be returned without applying a project patch, use [generated-code checking](generated-code-check.md). For actual project edits, the final preflight of the exact final texts supplies that gate; changes after it need another check.
+
 ## Apply and refresh
 
 Write the authorized files. For small project changes, call `ck3_refresh operation=files` with changed `paths`, including removed/renamed paths as needed, and await completion. Inspect relevant diagnostics from the new generation. Use `ck3_preflight operation=dirty` for unrefreshed on-disk changes, or `operation=subject` for an indexed subject needing a final gate.

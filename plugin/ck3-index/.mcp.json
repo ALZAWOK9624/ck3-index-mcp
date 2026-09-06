@@ -5,6 +5,12 @@
       "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "./scripts/start-ck3-index.ps1"],
       "cwd": ".",
       "startup_timeout_sec": 60
+    },
+    "ck3_check": {
+      "command": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "./scripts/start-ck3-check.ps1"],
+      "cwd": ".",
+      "startup_timeout_sec": 60
     }
   }
 }

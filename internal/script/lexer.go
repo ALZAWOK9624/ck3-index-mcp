@@ -20,10 +20,12 @@ const (
 )
 
 type Token struct {
-	Kind TokenKind
-	Text string
-	Line int
-	Col  int
+	Kind    TokenKind
+	Text    string
+	Line    int
+	Col     int
+	EndLine int
+	EndCol  int
 }
 
 // Lexer scans UTF-8 source directly. A lexer created for []byte input never
@@ -50,6 +52,24 @@ func Lex(text string) []Token {
 // to string or []rune.
 func LexBytes(input []byte) []Token {
 	return lexAll(newByteLexer(input))
+}
+
+// InvalidTokenEncoding checks executable tokens without building a token tape.
+// Legacy encodings in discarded comments do not invalidate script syntax.
+func InvalidTokenEncoding(text string) (ParseError, bool) {
+	if utf8.ValidString(text) && !strings.ContainsRune(text, 0) {
+		return ParseError{}, false
+	}
+	l := newParserStringLexer(text)
+	for {
+		token := l.Next()
+		if token.Kind == TokenEOF {
+			return ParseError{}, false
+		}
+		if token.Kind != TokenComment && (!utf8.ValidString(token.Text) || strings.ContainsRune(token.Text, 0)) {
+			return ParseError{Message: "script tokens must be UTF-8 without NUL bytes", Line: token.Line, Col: token.Col}, true
+		}
+	}
 }
 
 func lexAll(l *Lexer) []Token {
@@ -103,8 +123,9 @@ func (l *Lexer) skipBOM() {
 	}
 }
 
-func (l *Lexer) Next() Token {
+func (l *Lexer) Next() (token Token) {
 	l.skipSpace()
+	defer func() { token.EndLine, token.EndCol = l.line, l.col }()
 	startLine, startCol := l.line, l.col
 	r, ok := l.peek()
 	if !ok {
@@ -343,7 +364,7 @@ func (l *Lexer) operator(line, col int) Token {
 	case '>':
 		return Token{Kind: TokenOperator, Text: ">", Line: line, Col: col}
 	case '!':
-		return Token{Kind: TokenOperator, Text: "!", Line: line, Col: col}
+		return Token{Kind: TokenError, Text: "unexpected !; use != for inequality", Line: line, Col: col}
 	default:
 		return Token{Kind: TokenOperator, Text: string(first), Line: line, Col: col}
 	}
@@ -381,7 +402,7 @@ func (l *Lexer) ident(line, col int) Token {
 
 func isASCIIIdentDelimiter(b byte) bool {
 	switch b {
-	case ' ', '\t', '\n', '\r', '\v', '\f', '{', '}', '#', '=', '<', '>', '!', '?':
+	case ' ', '\t', '\n', '\r', '\v', '\f', '{', '}', '#', '"', '=', '<', '>', '!', '?':
 		return true
 	default:
 		return false

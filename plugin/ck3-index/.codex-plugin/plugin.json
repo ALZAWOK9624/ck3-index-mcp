@@ -7,13 +7,14 @@
   "interface": {
     "displayName": "CK3 Index",
     "shortDescription": "Local CK3 Mod assistance and fast QQ answers.",
-    "longDescription": "Use indexed definitions, references, localization, and source evidence to answer CK3/Godherja questions with targeted public retrieval. For authorized local Mod work, prepare and validate edits, refresh changed files, inspect diagnostics, and use GUI, heraldry, map, and packaging tools. One skill guides both workflows with distinct source and write boundaries.",
+    "longDescription": "Use indexed definitions, references, localization, and source evidence to answer CK3/Godherja questions with targeted public retrieval. Check generated code, repair errors, and recheck before delivery with the independent checker, without a database or project access. For authorized local Mod work, prepare and validate edits, refresh changed files, inspect diagnostics, and use GUI, heraldry, map, and packaging tools.",
     "developerName": "ALZAWOK",
     "category": "Productivity",
     "capabilities": [],
     "defaultPrompt": [
       "Answer this CK3 or Godherja question from permitted indexed evidence, following the QQ read-only workflow when invoked by the bot.",
-      "Help implement this local CK3 Mod change: inspect its context, validate the proposed files, then refresh the authorized edits."
+      "Help implement this local CK3 Mod change: inspect its context, validate the proposed files, then refresh the authorized edits.",
+      "Generate CK3 code for this behavior, check it with the independent checker, fix errors, and recheck before returning the final code."
     ]
   },
   "mcpServers": "./.mcp.json"

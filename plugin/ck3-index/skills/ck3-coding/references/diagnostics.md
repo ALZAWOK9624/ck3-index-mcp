@@ -12,7 +12,7 @@ QQ may explain permitted public findings or supplied error text. Private-only fi
 - Exact indexed subject: `ck3_inspect operation=diagnose` or `ck3_preflight operation=subject`.
 - Proposed semantic deletion/rename: `ck3_impact files=[...]`.
 
-Read-only proposal validation still uses the current database for context. Do not promise a SQL-free or engine-complete checker from these operations. Check advertised capabilities for the requested mode instead of inventing a standalone tool name.
+These indexed proposal-validation operations use the current database for context. For generated text alone, `ck3_check` is the separate database-free checker; see [generated-code checking](generated-code-check.md). Its partial static coverage does not replace indexed reference resolution or game execution.
 
 ## Triage
 

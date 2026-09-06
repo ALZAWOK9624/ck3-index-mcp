@@ -168,6 +168,7 @@ class ReleaseBundleTests(unittest.TestCase):
                 (sidecar, b"whitebox"),
                 (binary, b"ck3-index"),
                 (launcher, b"launcher"),
+                (stage / "scripts" / "start-ck3-check.ps1", b"checker launcher"),
                 (skill, b"skill"),
                 (stage / "third_party" / "WHITEBOXTOOLS_LICENSE.txt", b"license"),
             ):
@@ -181,6 +182,11 @@ class ReleaseBundleTests(unittest.TestCase):
                         "ck3_index": {
                             "command": r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
                             "cwd": ".",
+                        },
+                        "ck3_check": {
+                            "command": r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+                            "cwd": ".",
+                            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "./scripts/start-ck3-check.ps1"],
                         }
                     }
                 },
@@ -202,6 +208,12 @@ class ReleaseBundleTests(unittest.TestCase):
                 stage, "windows-x64", version
             )
             self.assertEqual(resolved, binary)
+
+            checker_launcher = stage / "scripts" / "start-ck3-check.ps1"
+            checker_launcher.unlink()
+            with self.assertRaisesRegex(release.ReleaseError, "CHECKER_LAUNCHER_REQUIRED"):
+                release.validate_platform_contract(stage, "windows-x64", version)
+            checker_launcher.write_bytes(b"checker launcher")
 
             write_json(
                 stage / "config" / "settings.json",

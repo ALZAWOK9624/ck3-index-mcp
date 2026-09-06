@@ -1,6 +1,6 @@
 # Index and rule maintenance
 
-Read for explicit index maintenance, service troubleshooting, release validation, or ck3-index development. Ordinary Mod editing uses MCP review/preflight and `ck3_refresh operation=files`.
+Read for authorized local index maintenance, service troubleshooting, release validation, or ck3-index development. Ordinary Mod editing uses MCP review/preflight and `ck3_refresh operation=files`. This is not a fallback path for a QQ answer that lacks public evidence or a public validator.
 
 ## Service context
 

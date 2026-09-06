@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Local authoring and QQ answering guidance (2026-09-06)
+
+- Describe both supported skill uses in the entrypoint, plugin metadata, and starter prompts. Local creation/validation uses a dedicated authoring reference; QQ questions use a public, read-only evidence path without loading the editing manuals.
+- Add targeted answer routing, same-context evidence reuse, meaningful stopping/pagination conditions, verified Chinese names, and separation of script mechanics from external lore.
+- Apply host-authenticated QQ permissions to retrieval and keep private project validation, index maintenance, baseline writes, and authoring artifacts out of the answer path. Current private-only review/preflight tools are not represented as public snippet validators.
+
 ### Skill guidance and packaging (2026-09-06)
 
 - Replace the monolithic CK3 skill with a short entrypoint and task-specific references. Search guidance uses the single structured table contract; edit guidance uses MCP review/preflight and targeted refresh without routine CLI scans.

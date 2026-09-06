@@ -1,6 +1,6 @@
 # MCP tool routing
 
-Read when a specialized capability is needed and the entrypoint's short routing table is insufficient. The current server's advertised schema is authoritative for arguments and availability.
+Read when a specialized capability is needed and the entrypoint's short routing table is insufficient. The current server's advertised schema is authoritative for arguments and availability. This catalog lists both answering and local-authoring capabilities; listing a tool does not grant QQ permission to use private-only or write operations.
 
 <!-- BEGIN GENERATED MCP TOOLS -->
 ## MCP Tools (38 canonical tools)

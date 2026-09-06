@@ -2,6 +2,8 @@
 
 Read for debugging or regression tracking. `ck3_diagnostics` reads existing indexed findings; it does not parse unsaved text or refresh changed files.
 
+QQ may explain permitted public findings or supplied error text. Private-only file validation and the baseline/refresh operations below belong to authorized local work; a QQ debugging question does not activate them.
+
 ## Use the right validation scope
 
 - Proposed complete files: `ck3_review files=[...]`; use `ck3_preflight operation=patch` for acceptance.

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Skill guidance and packaging (2026-09-06)
+
+- Replace the monolithic CK3 skill with a short entrypoint and task-specific references. Search guidance uses the single structured table contract; edit guidance uses MCP review/preflight and targeted refresh without routine CLI scans.
+- Correct unsupported impact arguments, stale SQL examples, baseline lifecycle advice, and confusion between read-only and database-free validation. Remove historical corpus counts and design preferences presented as engine requirements.
+- Generate the full tool catalog as an optional reference. The documentation generator now synchronizes every skill resource into the plugin, with checks for missing links and bundle drift.
+
 ### Single search result contract (2026-09-06)
 
 - `ck3_search` returns exactly one payload in `structuredContent`; `content` is empty. Evidence, suggestions and batch use columns/rows tables for zero, one or many hits. Paths remain literal strings.

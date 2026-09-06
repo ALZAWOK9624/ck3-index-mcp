@@ -34,8 +34,8 @@ type responseSizeCase struct {
 
 // responseSizeMeasurement records where a response's bytes actually went.
 // ContentBytes and StructuredBytes are reported separately because the two
-// currently carry the same payload; keeping them apart is what makes that
-// duplication visible instead of hiding inside a single total.
+// carry the same facts. Search text can now use lossless tables while the
+// structured form remains stable; measure both, not just the cheaper copy.
 type responseSizeMeasurement struct {
 	Name            string `json:"name"`
 	WireBytes       int    `json:"wire_bytes"`

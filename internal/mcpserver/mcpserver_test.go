@@ -725,7 +725,8 @@ func TestMCPMapToolsRegisteredAndCallable(t *testing.T) {
 	outer = got.(map[string]any)
 	content = outer["content"].([]map[string]any)
 	text = content[0]["text"].(string)
-	if !strings.Contains(text, `"intent":"ck3_search"`) || !strings.Contains(text, `"name":"c_c114"`) {
+	searchBody := expandSearchText(t, text)
+	if !strings.Contains(mustJSON(t, searchBody), `"intent":"ck3_search"`) || !strings.Contains(mustJSON(t, searchBody), `"name":"c_c114"`) {
 		t.Fatalf("expected high-level semantic search result, got %s", text)
 	}
 

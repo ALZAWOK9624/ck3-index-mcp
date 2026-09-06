@@ -24,8 +24,9 @@ type Runtime struct {
 }
 
 type toolOutput struct {
-	Value      any
-	Visibility string
+	Value             any
+	Visibility        string
+	CompactSearchText bool
 	// Committed means the handler has already made an atomic, externally
 	// visible publication. A cancellation that arrives after that commit must
 	// not be reported as if the old generation had been retained.
@@ -189,7 +190,7 @@ func callMCPTool(ctx context.Context, db *indexer.DB, cfg indexer.Config, raw js
 			}
 		}
 	}
-	result, err := encodeToolResultWithBudget(output.Value, output.Visibility, responseControl.MaxResponseBytes, definition.TrimmableFields...)
+	result, err := encodeToolResultWithTextFormat(output.Value, output.Visibility, responseControl.MaxResponseBytes, output.CompactSearchText, definition.TrimmableFields...)
 	if err != nil {
 		return encodeToolError(err, runtime), nil
 	}

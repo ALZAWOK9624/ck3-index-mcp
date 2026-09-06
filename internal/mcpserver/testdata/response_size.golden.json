@@ -1,22 +1,22 @@
 [
   {
     "name": "search/prefix",
-    "wire_bytes": 4518,
-    "content_bytes": 1955,
+    "wire_bytes": 3956,
+    "content_bytes": 1493,
     "structured_bytes": 1955,
     "evidence_items": 8
   },
   {
     "name": "search/prefix_limit20",
-    "wire_bytes": 9480,
-    "content_bytes": 4272,
+    "wire_bytes": 7602,
+    "content_bytes": 2704,
     "structured_bytes": 4272,
     "evidence_items": 20
   },
   {
     "name": "search/exact",
-    "wire_bytes": 5112,
-    "content_bytes": 2247,
+    "wire_bytes": 4589,
+    "content_bytes": 1822,
     "structured_bytes": 2247,
     "evidence_items": 8
   },

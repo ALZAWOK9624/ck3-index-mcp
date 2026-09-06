@@ -15,6 +15,10 @@ func encodeToolResult(value any, visibility string) (map[string]any, error) {
 }
 
 func encodeToolResultWithBudget(value any, visibility string, responseBudget int, trimmableFields ...string) (map[string]any, error) {
+	return encodeToolResultWithTextFormat(value, visibility, responseBudget, false, trimmableFields...)
+}
+
+func encodeToolResultWithTextFormat(value any, visibility string, responseBudget int, compactSearch bool, trimmableFields ...string) (map[string]any, error) {
 	value = redactToolValue(value, visibility)
 	if rendered, ok := value.(indexer.MapTerrainEditResult); ok && len(rendered.PreviewPNG) > 0 {
 		pngData := rendered.PreviewPNG
@@ -121,6 +125,9 @@ func encodeToolResultWithBudget(value any, visibility string, responseBudget int
 		"content":           []map[string]any{{"type": "text", "text": string(data)}},
 		"structuredContent": structured,
 	}
+	if compactSearch {
+		result["content"] = searchTextContent(structured)
+	}
 	return enforceResponseBudget(result, responseBudget, trimmableFields...)
 }
 
@@ -179,6 +186,9 @@ func trimResultToBudget(result map[string]any, responseBudget int, trimmableFiel
 			candidate[key] = value
 		}
 		candidate["content"] = []map[string]any{{"type": "text", "text": string(data)}}
+		if hasCompactSearchText(result) {
+			candidate["content"] = searchTextContent(trimmed)
+		}
 		candidate["structuredContent"] = trimmed
 		encoded, err := json.Marshal(candidate)
 		if err != nil {

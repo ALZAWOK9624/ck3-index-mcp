@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Compact search text (2026-09-06)
+
+- `ck3_search` defaults to lossless columns/rows text with shared fields and adaptive path dictionaries. `structuredContent` retains its original schema and values; `format=json` restores the legacy mirrored text.
+- Preserve presentation and per-call argument notices across cache hits and response-budget trimming. Small results stay ordinary JSON when a table would increase their size.
+- Real-index searches reduced text tokens by 24.0–41.3% with unchanged evidence; clients consuming both text and structured JSON saved 12.0–20.7% on those searches (`o200k_base`). No-match output remained unchanged. See [measurement scope and integration](docs/SEARCH_RESPONSE_COMPACTION.md).
+
 ### Refresh and baseline audit fixes (2026-09-06)
 
 - Persist baseline revisions and include them in MCP read-cache identity, including concurrent in-flight requests and separate processes.

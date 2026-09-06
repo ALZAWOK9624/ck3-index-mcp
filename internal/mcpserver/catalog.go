@@ -276,6 +276,7 @@ func searchInputSchema() map[string]any {
 		"kind":        stringProperty("Optional evidence category.", "object", "reference", "localization", "resource", "diagnostic", "script_key", "script_text", "datatype"),
 		"source":      stringProperty("Optional indexed source name."),
 		"path_prefix": stringProperty("Optional source-root-relative path prefix."),
+		"format":      searchTextFormatProperty(),
 		"limit":       limitProperty(),
 		"page":        pageProperty(),
 		"visibility":  visibilityProperty(),

@@ -51,6 +51,12 @@ private = false
 resource_only = true
 ```
 
+### 搜索返回的 token 成本
+
+`ck3_search` 默认使用紧凑正文：共同字段写入 `shared`，结果按 `columns` / `rows` 排列，重复文件路径可通过 `paths` 字典复用。命中顺序、来源、行列号、完整片段、分页与置信度不变；`structuredContent` 保留原对象数组，现有程序可以继续直接读取。只解析旧版 `content[0].text` JSON 的客户端请传 `format="json"`。客户端向模型发送结果时，可只发送完整的 `content` 正文，将结构化副本留给程序读取，避免两份相同证据占用上下文。
+
+具体格式、兼容方式与实测 token 数据见 [搜索正文压缩](docs/SEARCH_RESPONSE_COMPACTION.md)。
+
 ### MCP 并发、排队与超时
 
 重型、栅格与其他高成本调用由每个 MCP 服务实例的共享限额约束；栅格任务同时占用重型共享限额。超出活动限额的请求进入有界队列，被重型限额阻塞的请求不会堵住可运行的普通查询。客户端取消会传递到正在执行的任务和 SQLite 查询；排队超时返回 `OPERATION_QUEUE_TIMEOUT`，执行超时返回 `OPERATION_TIMEOUT`，两者的 `details.phase` 不同。

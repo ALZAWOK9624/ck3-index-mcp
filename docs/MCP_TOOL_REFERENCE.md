@@ -10,6 +10,7 @@ ck3-index 公开 38 个规范工具。细分能力由各工具的受限 operatio
 
 | 参数 | 必填 | 类型 | 约束 | 说明 |
 |---|---:|---|---|---|
+| `format` | 否 | 字符串 | 可选值=[compact json]; 默认值=compact | 正文格式：默认 compact 使用 columns/rows 表格；各行继承 shared 字段，null 单元格表示字段缺省，整数 path 单元格引用从零开始的 paths 字典。json 为旧版正文解析器保留与 structuredContent 相同的 JSON；两种模式的 structuredContent 均不变。 |
 | `kind` | 否 | 字符串 | 可选值=[object reference localization resource diagnostic script_key script_text datatype] | 可选的证据类别。 |
 | `limit` | 否 | 整数 | 最小值=1; 最大值=20; 默认值=8 | 每个结果分区最多返回的证据项数。 |
 | `page` | 否 | 整数 | 最小值=1; 最大值=25; 默认值=1 | 从 1 开始的证据页码；仅在返回的扫描 generation 内稳定。 |

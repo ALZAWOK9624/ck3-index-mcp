@@ -65,10 +65,10 @@ func handleSearch(ctx context.Context, runtime *Runtime, definition *ToolDefinit
 		if err != nil {
 			return toolOutput{}, invalidArgument("queries", err.Error())
 		}
-		return toolOutput{Value: value, Visibility: visibility}, nil
+		return toolOutput{Value: value, Visibility: visibility, CompactSearchText: args.Format != "json"}, nil
 	}
 	value, err := runtime.DB.LLMSearch(ctx, indexer.SearchOptions{Query: args.Query, Kind: args.Kind, Source: args.Source, PathPrefix: args.PathPrefix, Page: args.Page, LLMOptions: opts})
-	return toolOutput{Value: value, Visibility: visibility}, err
+	return toolOutput{Value: value, Visibility: visibility, CompactSearchText: args.Format != "json"}, err
 }
 
 func handleInspect(ctx context.Context, runtime *Runtime, definition *ToolDefinition, raw json.RawMessage) (toolOutput, error) {

@@ -117,6 +117,14 @@ func encodeToolResultWithBudget(value any, visibility string, responseBudget int
 	if err != nil {
 		return nil, err
 	}
+	if structured["intent"] == "ck3_search" {
+		if err := compactSearchResult(structured); err != nil {
+			return nil, err
+		}
+		return enforceResponseBudget(map[string]any{
+			"content": []map[string]any{}, "structuredContent": structured,
+		}, responseBudget, trimmableFields...)
+	}
 	result := map[string]any{
 		"content":           []map[string]any{{"type": "text", "text": string(data)}},
 		"structuredContent": structured,
@@ -168,7 +176,7 @@ func trimResultToBudget(result map[string]any, responseBudget int, trimmableFiel
 			return nil, false
 		}
 		kept := len(longest) / 2
-		trimmed[name] = longest[:kept]
+		setResponseRows(trimmed, name, longest[:kept])
 		synchronizeTruncationMetadata(trimmed, name, len(longest), kept, trimmableFields)
 		data, err := json.Marshal(trimmed)
 		if err != nil {
@@ -179,6 +187,9 @@ func trimResultToBudget(result map[string]any, responseBudget int, trimmableFiel
 			candidate[key] = value
 		}
 		candidate["content"] = []map[string]any{{"type": "text", "text": string(data)}}
+		if trimmed["intent"] == "ck3_search" {
+			candidate["content"] = []map[string]any{}
+		}
 		candidate["structuredContent"] = trimmed
 		encoded, err := json.Marshal(candidate)
 		if err != nil {
@@ -210,9 +221,8 @@ func longestTrimmableArray(structured map[string]any, allowed []string) (string,
 	var name string
 	var longest []any
 	for _, key := range allowed {
-		value := structured[key]
-		items, ok := value.([]any)
-		if !ok || len(items) < 2 {
+		items := responseRows(structured[key])
+		if len(items) < 2 {
 			continue
 		}
 		if len(items) > len(longest) || (len(items) == len(longest) && key < name) {
@@ -242,7 +252,7 @@ func synchronizeTruncationMetadata(structured map[string]any, field string, prev
 	// count; field-specific counts remain unambiguous in either case.
 	presentCollections := 0
 	for _, candidate := range trimmableFields {
-		if items, ok := structured[candidate].([]any); ok && len(items) > 0 {
+		if len(responseRows(structured[candidate])) > 0 {
 			presentCollections++
 		}
 	}

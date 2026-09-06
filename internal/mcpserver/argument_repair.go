@@ -144,8 +144,8 @@ func clampNumericArgument(name string, raw json.RawMessage, property map[string]
 }
 
 // attachArgumentNotices records the repairs on the successful result. The text
-// content is the encoding of structuredContent, so both representations have to
-// be rewritten together or a client reading the text would not see the notice.
+// content also carries the notices, so both representations have to be rewritten
+// together while preserving the caller's selected text presentation.
 func attachArgumentNotices(result map[string]any, notices []string) map[string]any {
 	if len(notices) == 0 || result == nil {
 		return result
@@ -155,13 +155,23 @@ func attachArgumentNotices(result map[string]any, notices []string) map[string]a
 		return result
 	}
 	structured["argument_notices"] = notices
+	if structured["intent"] == "ck3_search" {
+		return result
+	}
 	data, err := json.Marshal(structured)
 	if err != nil {
 		return result
 	}
-	items, ok := result["content"].([]map[string]any)
-	if !ok {
-		return result
+	var items []map[string]any
+	switch content := result["content"].(type) {
+	case []map[string]any:
+		items = content
+	case []any:
+		for _, raw := range content {
+			if item, ok := raw.(map[string]any); ok {
+				items = append(items, item)
+			}
+		}
 	}
 	for i, item := range items {
 		if kind, _ := item["type"].(string); kind != "text" {

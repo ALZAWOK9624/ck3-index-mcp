@@ -15,7 +15,7 @@ type chineseToolText struct {
 var chineseToolTexts = map[string]chineseToolText{
 	"ck3_search": {
 		Title:       "搜索 CK3 索引",
-		Description: "在不知道准确 CK3 标识符时进行搜索。返回按相关度排序的对象、本地化、资源、引用、诊断、数据类型与脚本键证据。",
+		Description: "在不知道准确 CK3 标识符时进行搜索。返回按相关度排序的对象、本地化、资源、引用、诊断、数据类型与脚本证据。只读取 structuredContent；evidence、suggestions、batch 均为 columns/rows 表格，null 表示字段缺省，无重复正文。",
 	},
 	"ck3_inspect": {
 		Title:       "检查 CK3 标识符",

@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### Validate generated code before answering (2026-09-06)
+
+- Bundle the independent `ck3_check` service alongside the semantic index. Generated code is checked, repaired and rechecked before delivery without database or project access.
+- Return one structured checker payload with per-file content hashes, static coverage and untrimmed error totals. A pass does not certify cross-file references or game execution.
+
+### Local authoring and QQ answering guidance (2026-09-06)
+
+- Describe both supported skill uses in the entrypoint, plugin metadata, and starter prompts. Local creation/validation uses a dedicated authoring reference; QQ questions use a public, read-only evidence path without loading the editing manuals.
+- Add targeted answer routing, same-context evidence reuse, meaningful stopping/pagination conditions, verified Chinese names, and separation of script mechanics from external lore.
+- Apply host-authenticated QQ permissions to retrieval and keep private project validation, index maintenance, baseline writes, and authoring artifacts out of the answer path. Current private-only review/preflight tools are not represented as public snippet validators.
+
+### Skill guidance and packaging (2026-09-06)
+
+- Replace the monolithic CK3 skill with a short entrypoint and task-specific references. Search guidance uses the single structured table contract; edit guidance uses MCP review/preflight and targeted refresh without routine CLI scans.
+- Correct unsupported impact arguments, stale SQL examples, baseline lifecycle advice, and confusion between read-only and database-free validation. Remove historical corpus counts and design preferences presented as engine requirements.
+- Generate the full tool catalog as an optional reference. The documentation generator now synchronizes every skill resource into the plugin, with checks for missing links and bundle drift.
+
+### Single search result contract (2026-09-06)
+
+- `ck3_search` returns exactly one payload in `structuredContent`; `content` is empty. Evidence, suggestions and batch use columns/rows tables for zero, one or many hits. Paths remain literal strings.
+- Removed the format option, legacy JSON projection, shared defaults, path dictionaries and adaptive shape fallback. Update clients to consume the canonical structured result.
+- Preserve ranking, complete evidence, confidence, pagination, privacy, cache notices and response-budget behavior. Eight real-index queries reduced combined payload tokens by 47.4–63.7% against the pre-optimization server (`o200k_base`). See [the contract and measurements](docs/SEARCH_RESPONSE_COMPACTION.md).
+
+### Standalone DSL checker and vanilla corpus audit (2026-09-06)
+
+- Add SQL-independent `ck3-check`, `ck3-index check`, and an isolated MCP stdio service with `ck3_check` / `ck3_check_rules`.
+- Audit full supported vanilla text plus `.info` field evidence; publish reproducible fingerprints, scope-table comparisons and observed field coverage.
+- Reject missing/extra braces, invalid chained script assignments and lone `!`; retain color tags, correct source spans, and bound parser resource use.
+- Use the full engine command registry for context checks while preserving switch labels, iterator arguments and helper data blocks.
+- Fix GUI parsing for proposed files, tagged-color consumers, and missing localization keys containing apostrophes. Refresh the lint contract for existing indexes.
+
 ### Refresh and baseline audit fixes (2026-09-06)
 
 - Persist baseline revisions and include them in MCP read-cache identity, including concurrent in-flight requests and separate processes.

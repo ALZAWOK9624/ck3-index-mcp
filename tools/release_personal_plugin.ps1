@@ -89,8 +89,9 @@ $cachebuster = Join-Path $creator 'scripts\update_plugin_cachebuster.py'
 $marketplaceReader = Join-Path $creator 'scripts\read_marketplace_name.py'
 $bundleBuilder = Join-Path $repo 'tools\build_release_bundle.py'
 $mcpSmoke = Join-Path $repo 'tools\verify_release_mcp.py'
+$checkSmoke = Join-Path $repo 'tools\verify_check_mcp.py'
 $bundleTests = Join-Path $repo 'tools\test_release_bundle.py'
-$requiredFiles = @($pluginValidator, $skillValidator, $bundleBuilder, $mcpSmoke, $bundleTests)
+$requiredFiles = @($pluginValidator, $skillValidator, $bundleBuilder, $mcpSmoke, $checkSmoke, $bundleTests)
 if (-not $SkipInstall) { $requiredFiles += @($cachebuster, $marketplaceReader) }
 foreach ($requiredFile in $requiredFiles) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
@@ -198,6 +199,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Staged plugin validation failed.' }
 
 & $python $mcpSmoke --stage $stage --platform windows-x64 --config $resolvedConfig --expected-tools 38
 if ($LASTEXITCODE -ne 0) { throw 'Staged plugin MCP smoke check failed.' }
+& $python $checkSmoke --stage $stage --platform windows-x64
+if ($LASTEXITCODE -ne 0) { throw 'Independent checker MCP smoke check failed.' }
 
 $releaseRoot = Join-Path $repo 'cache\release'
 New-Item -ItemType Directory -Force -Path $releaseRoot | Out-Null

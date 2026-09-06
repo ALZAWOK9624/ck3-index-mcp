@@ -1,18 +1,20 @@
 {
   "name": "ck3-index",
   "version": "0.5.0",
-  "description": "Semantic CK3 and Godherja index with diagnostics, precision map context, GIS terrain, hydrology, and relative bathymetry.",
+  "description": "CK3 and Godherja semantic evidence for local Mod editing and fast public QQ bot answers, with script validation, localization, GUI, and map tools.",
   "author": {"name": "ALZAWOK"},
   "skills": "./skills/",
   "interface": {
     "displayName": "CK3 Index",
-    "shortDescription": "Inspect and review CK3 mod code semantically.",
-    "longDescription": "Adds a read-only semantic CK3 and Godherja index for discovery, inspection, review, dependency analysis, diagnostics, localization and resources, plus precision map context, physical GIS analysis, relative bathymetry, and adaptive atlas rendering.",
+    "shortDescription": "Local CK3 Mod assistance and fast QQ answers.",
+    "longDescription": "Use indexed definitions, references, localization, and source evidence to answer CK3/Godherja questions with targeted public retrieval. Check generated code, repair errors, and recheck before delivery with the independent checker, without a database or project access. For authorized local Mod work, prepare and validate edits, refresh changed files, inspect diagnostics, and use GUI, heraldry, map, and packaging tools.",
     "developerName": "ALZAWOK",
     "category": "Productivity",
     "capabilities": [],
     "defaultPrompt": [
-      "Inspect this CK3 change with ck3-index before editing, then verify it with ck3_review."
+      "Answer this CK3 or Godherja question from permitted indexed evidence, following the QQ read-only workflow when invoked by the bot.",
+      "Help implement this local CK3 Mod change: inspect its context, validate the proposed files, then refresh the authorized edits.",
+      "Generate CK3 code for this behavior, check it with the independent checker, fix errors, and recheck before returning the final code."
     ]
   },
   "mcpServers": "./.mcp.json"

@@ -73,19 +73,27 @@ func (p Palette) ParseNamedColors(nodes []*script.Node) {
 }
 
 // parseColorAt reads the colour beginning at nodes[index]. It returns how many
-// extra siblings it consumed, because the parser splits `color1 = rgb { 1 2 3 }`
-// into an atom holding the keyword and a following anonymous block holding the
-// components; reading only the atom would silently yield the keyword as a name.
+// extra siblings it consumed. Current ASTs retain a tagged block's notation in
+// Value; the atom-plus-anonymous-block branch supports older stored ASTs.
 func parseColorAt(nodes []*script.Node, index int, palette Palette) (Color, int, bool) {
 	node := nodes[index]
 	switch node.Kind {
 	case "block":
-		// A bare { a b c } directly under the key.
+		// A list or tagged { a b c } directly under the key.
 		values, ok := numericChildren(node)
 		if !ok {
 			return Color{}, 0, false
 		}
-		return newColor(ColorNotationList, "", listColor(values)), 0, true
+		switch node.Value {
+		case "rgb":
+			return newColor(ColorNotationRGB, "", listColor(values)), 0, true
+		case "hsv":
+			return newColor(ColorNotationHSV, "", hsvColor(values[0], values[1], values[2])), 0, true
+		case "hsv360":
+			return newColor(ColorNotationHSV360, "", hsvColor(values[0]/360, values[1]/100, values[2]/100)), 0, true
+		default:
+			return newColor(ColorNotationList, "", listColor(values)), 0, true
+		}
 	case "atom":
 		keyword := strings.ToLower(strings.TrimSpace(node.Value))
 		switch keyword {

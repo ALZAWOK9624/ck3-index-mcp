@@ -1,86 +1,21 @@
 # Writing and localization
 
-This reference is deliberately short, and the shortest section is the most
-important one.
+Read when authoring or reviewing displayed text. Respect the user's prose scope: creating a missing key does not authorize filling every description, tooltip, or event body.
 
----
+## Meaning and voice
 
-## Event and flavour prose: not specified, on purpose
+Use the project's existing localization keys and accepted names. Keep the intended narrator, viewpoint, date, and knowledge consistent; an in-world voice is a stylistic choice unless the project requires it. Vary event structure to fit the scene instead of forcing a standard introduction or number of options.
 
-There is no template here for writing an event, and there should not be one.
+Explain actionable consequences truthfully. Show costs, thresholds, hidden state changes, and random outcomes through the supported tooltip mechanism when the player needs them to choose. Verify those claims against script and localization references. Localization alone does not establish how a mechanic works.
 
-A specification for prose produces prose that reads like a specification. Give a
-model a formula — hook, escalation, two balanced options, closing beat — and it
-will produce ten thousand events that are all structurally identical and
-recognisably machine-made. That failure is worse than uneven writing, because it
-is uniform: a reader stops noticing individual events and starts noticing the
-formula, and once seen it cannot be unseen.
+A reused mechanical concept may benefit from a `game_concept` definition and `[concept|E]` links. Repeated ordinary words do not all require new concepts. Reuse an existing concept when its meaning matches.
 
-So the guidance is deliberately thin:
+## Syntax and display
 
-- Write it as someone in that world would say it.
-- Vary. Length, shape, whose voice it is, whether anything happens at all.
-- Two real options beat five ornamental ones, and one honest option beats two
-  where one is obviously wrong.
-- Mechanics go in the tooltip. Voice goes in the description. Never swap them.
+Inspect nearby language headers, keys, quoting, and encoding before editing. Preserve the project's conventions. Check literal quotes and escape handling against actual parser/engine examples; do not add or remove escaping solely from JSON or YAML habits.
 
-Beyond that, write. If a future revision of this file adds a prose template,
-that is a regression, not an improvement.
+Balance bracket expressions and supported formatting spans. Close opened `#...` formats with `#!` where required. Use emphasis to identify values, warnings, or terms without relying on color alone. Do not invent formatting tags.
 
-The constraint that *does* bind is the fiction, not the form: in-world text is
-written by someone at some time, so it cannot know what happened after it was
-written, cannot describe its own culture from outside, and cannot use vocabulary
-its author lacks.
+Review literal macros, nested localization references, and dynamic scope expressions. A missing runtime value cannot be filled by guessing a character, title, or amount. Static review can catch known syntax/reference faults but cannot render every game context.
 
----
-
-## Concepts: define anything reused
-
-**If a term appears across several pieces of content, it needs a
-`game_concept` entry.** Vanilla ships 1,047 of them, which is the measure of how
-seriously Paradox takes this.
-
-A concept gives the term one definition in one place, a hover the player can
-reach from anywhere it appears, and a link syntax that keeps the prose short:
-
-```
-#! use the concept, do not re-explain the term inline
-[concept|E]
-```
-
-The failure mode without it is a term explained slightly differently in four
-tooltips, drifting apart over a year of edits, with the player never sure
-whether two phrasings mean the same thing. A bespoke faction system, a custom
-resource, a new office — each is a concept before it is content.
-
----
-
-## Colour in text: garnish, not paint
-
-Formatting codes (`#high`, `#P`, `#V`, `#warning`, `#color_yellow`, …) are for
-**picking out** the words that carry information: a number, a name, a threshold,
-a warning.
-
-They stop working when overused. A line where half the words are coloured has no
-emphasis at all, only noise, and the player's eye gives up and reads it flat.
-The practical ceiling is a few coloured spans per paragraph — enough that the
-coloured words are the ones you would want someone to remember if they only
-skimmed.
-
-Two mechanical notes:
-
-- Every opened format must be closed with `#!`. A missing close does not fail
-  loudly; it bleeds the colour through the rest of the string.
-- Straight quotes inside a localized value are safe. They are a typographic
-  choice, not a syntax error.
-
----
-
-## Length
-
-Text sits in a box someone sized. `text_multi` with a fixed height truncates
-silently, and Chinese fits roughly twice as much as English in the same width,
-so prose that fills a box in the language you are writing in will overflow in
-the language you are not.
-
-Write to the box, or size the box for the longest language you intend to ship.
+Validate complete proposed localization files with `ck3_review` or the patch preflight as appropriate, refresh written files, and inspect localization diagnostics. Preview the languages and UI scale intended for release; string length or language alone does not predict rendered width.

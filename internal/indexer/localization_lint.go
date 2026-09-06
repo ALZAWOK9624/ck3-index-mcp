@@ -11,7 +11,7 @@ import (
 // value. parseLocBytes intentionally remains permissive so one malformed line
 // does not hide every later key; these checks report the malformed line
 // separately instead of silently dropping it from the index.
-var localizationEntryPrefix = regexp.MustCompile(`^\s*[A-Za-z0-9_.:\-]+:\d*\s+`)
+var localizationEntryPrefix = regexp.MustCompile(`^\s*[A-Za-z0-9_'.:\-]+:\d*\s+`)
 
 // These are the call-like localization expressions that CK3 evaluates inside
 // square-bracket text. Ordinary prose parentheses are not checked, which

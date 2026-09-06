@@ -21,7 +21,7 @@ func TestUserDocumentationIsChineseAndSkillCatalogStaysEnglish(t *testing.T) {
 	root := repositoryRoot(t)
 	readme := readFile(t, filepath.Join(root, "README.md"))
 	reference := readFile(t, filepath.Join(root, "docs", "MCP_TOOL_REFERENCE.md"))
-	skill := readFile(t, filepath.Join(root, "skill", "ck3-coding", "SKILL.md"))
+	skill := readFile(t, filepath.Join(root, "skill", "ck3-coding", "references", "tool-catalog.md"))
 
 	checks := map[string]struct {
 		content  string

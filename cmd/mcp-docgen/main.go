@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -50,23 +51,53 @@ func run(root string, check bool) error {
 	readmeSection := renderChineseCatalogSection(canonical)
 	skillSection := renderCatalogSection(canonical)
 	readmePath := filepath.Join(root, "README.md")
-	skillPath := filepath.Join(root, "skill", "ck3-coding", "SKILL.md")
-	pluginSkillPath := filepath.Join(root, "plugin", "ck3-index", "skills", "ck3-coding", "SKILL.md")
+	skillRoot := filepath.Join(root, "skill", "ck3-coding")
+	pluginSkillRoot := filepath.Join(root, "plugin", "ck3-index", "skills", "ck3-coding")
+	skillCatalogPath := filepath.Join(skillRoot, "references", "tool-catalog.md")
 	referencePath := filepath.Join(root, "docs", "MCP_TOOL_REFERENCE.md")
 
 	readme, err := replaceSectionFile(readmePath, readmeSection)
 	if err != nil {
 		return err
 	}
-	skill, err := replaceSectionFile(skillPath, skillSection)
+	skillCatalog, err := replaceSectionFile(skillCatalogPath, skillSection)
 	if err != nil {
 		return err
 	}
 	outputs := map[string][]byte{
-		readmePath:      readme,
-		skillPath:       skill,
-		pluginSkillPath: skill,
-		referencePath:   []byte(renderReference(canonical)),
+		readmePath:       readme,
+		skillCatalogPath: skillCatalog,
+		referencePath:    []byte(renderReference(canonical)),
+	}
+	// References are part of the installed skill, not optional repository docs.
+	// Keep the entire bundle synchronized so an entrypoint cannot ship links to
+	// stale or missing resources. Use freshly generated content where present.
+	err = filepath.WalkDir(skillRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("skill resource is not a regular file: %s", path)
+		}
+		relative, err := filepath.Rel(skillRoot, path)
+		if err != nil {
+			return err
+		}
+		content, generated := outputs[path]
+		if !generated {
+			content, err = os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+		}
+		outputs[filepath.Join(pluginSkillRoot, relative)] = content
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 	var drift []string
 	for path, expected := range outputs {

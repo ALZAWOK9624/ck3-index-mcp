@@ -112,6 +112,8 @@ rm -rf -- "$stage" "$extract"
 cp -R "$repo/plugin/ck3-index" "$stage"
 tr -d '\r' < "$stage/scripts/start-ck3-index.sh" > "$stage/scripts/start-ck3-index.sh.tmp"
 mv "$stage/scripts/start-ck3-index.sh.tmp" "$stage/scripts/start-ck3-index.sh"
+tr -d '\r' < "$stage/scripts/start-ck3-check.sh" > "$stage/scripts/start-ck3-check.sh.tmp"
+mv "$stage/scripts/start-ck3-check.sh.tmp" "$stage/scripts/start-ck3-check.sh"
 mkdir -p "$extract" "$stage/bin" "$stage/sidecar" "$stage/third_party"
 unzip -q "$archive" -d "$extract"
 wbt_source="$extract/$archive_root"
@@ -142,6 +144,12 @@ cat > "$stage/.mcp.json" <<'EOF'
       "args": ["./scripts/start-ck3-index.sh"],
       "cwd": ".",
       "startup_timeout_sec": 60
+    },
+    "ck3_check": {
+      "command": "/bin/sh",
+      "args": ["./scripts/start-ck3-check.sh"],
+      "cwd": ".",
+      "startup_timeout_sec": 60
     }
   }
 }
@@ -153,6 +161,7 @@ python3 "$repo/tools/verify_release_mcp.py" \
   --platform linux-x64 \
   --config "$config" \
   --expected-tools 38
+python3 "$repo/tools/verify_check_mcp.py" --stage "$stage" --platform linux-x64
 
 if [ "$allow_unlicensed" = 1 ] && [ -z "$project_license" ]; then
   archive_suffix=-unlicensed-local-rc

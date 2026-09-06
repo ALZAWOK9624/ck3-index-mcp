@@ -34,8 +34,8 @@ type responseSizeCase struct {
 
 // responseSizeMeasurement records where a response's bytes actually went.
 // ContentBytes and StructuredBytes are reported separately because the two
-// currently carry the same payload; keeping them apart is what makes that
-// duplication visible instead of hiding inside a single total.
+// can duplicate the same facts. Search now carries only structured tables;
+// keep measuring both so a reintroduced compatibility copy is detected.
 type responseSizeMeasurement struct {
 	Name            string `json:"name"`
 	WireBytes       int    `json:"wire_bytes"`
@@ -113,9 +113,7 @@ func measureToolResult(t *testing.T, name string, result map[string]any) respons
 			t.Fatal(err)
 		}
 		measurement.StructuredBytes = len(encoded)
-		if evidence, ok := structured["evidence"].([]any); ok {
-			measurement.EvidenceItems = len(evidence)
-		}
+		measurement.EvidenceItems = len(responseRows(structured["evidence"]))
 	}
 	return measurement
 }

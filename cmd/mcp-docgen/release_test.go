@@ -155,8 +155,8 @@ func TestPinnedThirdPartyReleaseMetadata(t *testing.T) {
 
 func TestSkillDocumentsEveryCanonicalMapCLI(t *testing.T) {
 	root := repositoryRoot(t)
-	canonical := readFile(t, filepath.Join(root, "skill", "ck3-coding", "SKILL.md"))
-	plugin := readFile(t, filepath.Join(root, "plugin", "ck3-index", "skills", "ck3-coding", "SKILL.md"))
+	canonical := readFile(t, filepath.Join(root, "skill", "ck3-coding", "references", "maintenance.md"))
+	plugin := readFile(t, filepath.Join(root, "plugin", "ck3-index", "skills", "ck3-coding", "references", "maintenance.md"))
 	if canonical != plugin {
 		t.Fatal("plugin skill copy differs from the canonical skill")
 	}

@@ -76,12 +76,7 @@ func TestClampedArgumentIsReportedOnTheResult(t *testing.T) {
 	if served, _ := body["pagination"].(map[string]any)["limit"].(float64); served != 20 {
 		t.Fatalf("clamped limit was not the limit actually served: %v", served)
 	}
-	// The text content is the encoding of structuredContent; a client reading
-	// only the text must see the same repair.
-	items := result["content"].([]map[string]any)
-	if !strings.Contains(items[0]["text"].(string), "argument_notices") {
-		t.Fatalf("text content lost the argument notice: %v", items[0]["text"])
-	}
+	assertSearchResultContract(t, result)
 	assertDecodedValueMatchesSchema(t, "clamped ck3_search result", body, definition.OutputSchema)
 }
 

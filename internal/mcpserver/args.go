@@ -95,7 +95,6 @@ type ck3SearchArgs struct {
 	Source     string   `json:"source,omitempty"`
 	PathPrefix string   `json:"path_prefix,omitempty"`
 	Page       int      `json:"page,omitempty"`
-	Format     string   `json:"format,omitempty"`
 }
 
 type ck3InspectArgs struct {

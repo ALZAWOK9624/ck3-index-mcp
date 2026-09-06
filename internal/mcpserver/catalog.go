@@ -17,9 +17,9 @@ func buildCanonicalTools() []ToolDefinition {
 		{
 			Name:         "ck3_search",
 			Title:        "Search CK3 Index",
-			Description:  "Search when the exact CK3 id is unknown. Returns ranked object, localization, resource, reference, diagnostic, datatype, script-key, and full-script token evidence.",
+			Description:  "Search when the exact CK3 id is unknown. Returns ranked object, localization, resource, reference, diagnostic, datatype, script-key, and full-script token evidence. Read structuredContent: evidence, suggestions and batch use columns/rows tables; null means absent. No duplicate text payload.",
 			InputSchema:  searchInputSchema(),
-			OutputSchema: preciseToolOutputSchema(llmResultOutputSchema()), Annotations: annotations, Handler: handleSearch,
+			OutputSchema: preciseToolOutputSchema(searchResultOutputSchema()), Annotations: annotations, Handler: handleSearch,
 			CompatibilityProperties: legacyPrivacyProperties,
 		},
 		{
@@ -276,7 +276,6 @@ func searchInputSchema() map[string]any {
 		"kind":        stringProperty("Optional evidence category.", "object", "reference", "localization", "resource", "diagnostic", "script_key", "script_text", "datatype"),
 		"source":      stringProperty("Optional indexed source name."),
 		"path_prefix": stringProperty("Optional source-root-relative path prefix."),
-		"format":      searchTextFormatProperty(),
 		"limit":       limitProperty(),
 		"page":        pageProperty(),
 		"visibility":  visibilityProperty(),

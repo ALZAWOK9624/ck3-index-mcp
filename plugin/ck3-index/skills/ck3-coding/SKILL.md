@@ -127,6 +127,7 @@ Otherwise the response already names the spellings that were tried on your behal
 - `next_actions`, when present, is a validated call you can issue as-is.
 - Ask `ck3_inspect` for one known id rather than searching for it; search is for when the id is unknown.
 - `ck3_search` without `kind` covers objects, references, localization, resources, diagnostics, script keys, datatypes, and full script text in one call. Add `kind` to narrow a known-noisy term, not by default.
+- Read `ck3_search` from `structuredContent` only; its `content` is empty. `evidence`, `suggestions`, and `batch` use `columns`/`rows` tables; null cells mean absent fields, and paths are literal strings. Empty and single-hit results use the same table contract. Do not submit a `format` option.
 - Walking a family of ids -- every innovation, every game concept, every doctrine of a faith -- goes in one call through `queries`, up to eight terms. Each term is reported separately in `batch`, including the ones that matched nothing, so the absent members are as visible as the present ones. Asking for them one per call is the same evidence at eight times the round trips.
 - Do not re-summarize a batch by searching its terms again individually. The per-term rows are the summary; a term that needs more depth is the only reason to ask for it alone.
 

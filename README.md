@@ -53,9 +53,9 @@ resource_only = true
 
 ### 搜索返回的 token 成本
 
-`ck3_search` 默认使用紧凑正文：共同字段写入 `shared`，结果按 `columns` / `rows` 排列，重复文件路径可通过 `paths` 字典复用。命中顺序、来源、行列号、完整片段、分页与置信度不变；`structuredContent` 保留原对象数组，现有程序可以继续直接读取。只解析旧版 `content[0].text` JSON 的客户端请传 `format="json"`。客户端向模型发送结果时，可只发送完整的 `content` 正文，将结构化副本留给程序读取，避免两份相同证据占用上下文。
+`ck3_search` 只在 `structuredContent` 中返回一份结果，`content` 为空数组。`evidence`、`suggestions`、`batch` 统一使用 `columns` / `rows` 表格；来源和路径直接保留为字符串，`null` 表示字段缺省。空结果、单条与批量结果使用相同契约；没有格式开关、旧结果副本、共享字段展开或路径字典。调用方直接把 `structuredContent` 序列化给模型即可。
 
-具体格式、兼容方式与实测 token 数据见 [搜索正文压缩](docs/SEARCH_RESPONSE_COMPACTION.md)。
+此接口更新需要同步升级只读取正文或旧对象数组的客户端；已删除旧 `format` 参数。具体定义与实测数据见 [搜索结果结构](docs/SEARCH_RESPONSE_COMPACTION.md)。不需要重建索引。
 
 ### MCP 并发、排队与超时
 
@@ -188,7 +188,7 @@ ck3-index 仅公开一套规范 MCP 工具；细分能力通过受限 operation 
 
 | 工具 | 用途 |
 |---|---|
-| `ck3_search` | 在不知道准确 CK3 标识符时进行搜索。返回按相关度排序的对象、本地化、资源、引用、诊断、数据类型与脚本键证据。 |
+| `ck3_search` | 在不知道准确 CK3 标识符时进行搜索。返回按相关度排序的对象、本地化、资源、引用、诊断、数据类型与脚本证据。只读取 structuredContent；evidence、suggestions、batch 均为 columns/rows 表格，null 表示字段缺省，无重复正文。 |
 | `ck3_inspect` | 发现目标后，检查一个准确的 CK3 标识符、键或资源路径。定义视图包含覆盖来源、事件字段以及人物静态档案和日期时间线；引用视图保留关系、阶段、置信度和未解析原因；compare 可对准确类型化标识符做受限、只读的来源与上游对象级比较。 |
 | `ck3_review` | 审查完整的拟议 CK3 文件；未提供文件时审查当前工程中的脏文件。执行只读的语法、作用域、引用、本地化与资源检查。 |
 | `ck3_workspace` | 在选择具体对象前检查已索引的工作区结构。返回架构概览、对象类型分布，或 engine、CK3 1.19 快照与原版相邻注释之间只读的 on_action 证据审计。 |

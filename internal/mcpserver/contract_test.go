@@ -106,7 +106,7 @@ func TestPriorityToolRepresentativeOutputsMatchPublishedSchemas(t *testing.T) {
 	search, _ := findCanonicalTool("ck3_search")
 	searchValue := indexer.LLMResult{
 		Query:   "event:test.1",
-		Intent:  "event_chain",
+		Intent:  "ck3_search",
 		Summary: "bounded topology",
 		Evidence: []indexer.LLMEvidence{{
 			Kind: "object", Type: "event", Name: "test.1", Line: 3,
@@ -537,6 +537,11 @@ func assertToolValueMatchesOutputSchema(t *testing.T, definition *ToolDefinition
 	_, structured, err := encodeStructuredValue(value)
 	if err != nil {
 		t.Fatalf("encode %s representative output: %v", definition.Name, err)
+	}
+	if definition.Name == "ck3_search" {
+		if err := compactSearchResult(structured); err != nil {
+			t.Fatal(err)
+		}
 	}
 	assertDecodedValueMatchesSchema(t, definition.Name+" representative output", structured, definition.OutputSchema)
 }

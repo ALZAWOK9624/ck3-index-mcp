@@ -53,8 +53,8 @@ func TestPublicSearchDoesNotLeakPrivateCountsOrNextActions(t *testing.T) {
 		t.Fatalf("public search failed: %+v", result)
 	}
 	body := result["structuredContent"].(map[string]any)
-	assertSearchTextRoundTrip(t, result)
-	// Include compact text tables, path dictionaries, and shared fields.
+	assertSearchResultContract(t, result)
+	// Verify the one canonical structured result and its empty content array.
 	encoded, err := json.Marshal(result)
 	if err != nil {
 		t.Fatal(err)
@@ -68,7 +68,7 @@ func TestPublicSearchDoesNotLeakPrivateCountsOrNextActions(t *testing.T) {
 	if _, exists := body["next_actions"]; exists {
 		t.Fatalf("public search retained follow-up actions: %+v", body)
 	}
-	evidence := body["evidence"].([]any)
+	evidence := searchRowsForTest(t, body, "evidence")
 	if len(evidence) == 0 {
 		t.Fatalf("public search did not retain only public evidence: %+v", body)
 	}

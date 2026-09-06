@@ -2,11 +2,11 @@
 
 ## Unreleased
 
-### Compact search text (2026-09-06)
+### Single search result contract (2026-09-06)
 
-- `ck3_search` defaults to lossless columns/rows text with shared fields and adaptive path dictionaries. `structuredContent` retains its original schema and values; `format=json` restores the legacy mirrored text.
-- Preserve presentation and per-call argument notices across cache hits and response-budget trimming. Small results stay ordinary JSON when a table would increase their size.
-- Real-index searches reduced text tokens by 24.0–41.3% with unchanged evidence; clients consuming both text and structured JSON saved 12.0–20.7% on those searches (`o200k_base`). No-match output remained unchanged. See [measurement scope and integration](docs/SEARCH_RESPONSE_COMPACTION.md).
+- `ck3_search` returns exactly one payload in `structuredContent`; `content` is empty. Evidence, suggestions and batch use columns/rows tables for zero, one or many hits. Paths remain literal strings.
+- Removed the format option, legacy JSON projection, shared defaults, path dictionaries and adaptive shape fallback. Update clients to consume the canonical structured result.
+- Preserve ranking, complete evidence, confidence, pagination, privacy, cache notices and response-budget behavior. Eight real-index queries reduced combined payload tokens by 47.4–63.7% against the pre-optimization server (`o200k_base`). See [the contract and measurements](docs/SEARCH_RESPONSE_COMPACTION.md).
 
 ### Refresh and baseline audit fixes (2026-09-06)
 

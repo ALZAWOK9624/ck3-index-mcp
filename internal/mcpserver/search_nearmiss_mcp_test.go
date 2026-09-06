@@ -62,7 +62,7 @@ func TestSearchRecoversFromSeparatorAndCaseSpelling(t *testing.T) {
 				t.Fatalf("search failed: %+v", result)
 			}
 			body := result["structuredContent"].(map[string]any)
-			evidence, _ := body["evidence"].([]any)
+			evidence := searchRowsForTest(t, body, "evidence")
 			if len(evidence) == 0 {
 				t.Fatalf("query %q recovered no evidence: %+v", query, body)
 			}
@@ -85,7 +85,7 @@ func TestSearchStripsInspectStyleIDPrefix(t *testing.T) {
 	db, cfg := newSearchFixture(t)
 	result := callToolForTest(t, db, cfg, "ck3_search", map[string]any{"query": "trait:nearmiss_target"})
 	body := result["structuredContent"].(map[string]any)
-	evidence, _ := body["evidence"].([]any)
+	evidence := searchRowsForTest(t, body, "evidence")
 	if len(evidence) == 0 {
 		t.Fatalf("type-prefixed query recovered nothing: %+v", body)
 	}
@@ -98,10 +98,10 @@ func TestSearchLongestTokenCandidatesStaySuggestions(t *testing.T) {
 		t.Fatalf("search failed: %+v", result)
 	}
 	body := result["structuredContent"].(map[string]any)
-	if evidence, _ := body["evidence"].([]any); len(evidence) != 0 {
+	if evidence := searchRowsForTest(t, body, "evidence"); len(evidence) != 0 {
 		t.Fatalf("longest-token candidates were promoted to evidence: %+v", evidence)
 	}
-	suggestions, _ := body["suggestions"].([]any)
+	suggestions := searchRowsForTest(t, body, "suggestions")
 	if len(suggestions) == 0 || body["recovered_query"] != "mechanic" || body["recovery_confidence"] != "low" {
 		t.Fatalf("low-confidence recovery contract missing: %+v", body)
 	}
@@ -124,7 +124,7 @@ func TestSearchMissExplainsWhatWasTried(t *testing.T) {
 		t.Fatalf("miss returned an error instead of guidance: %+v", result)
 	}
 	body := result["structuredContent"].(map[string]any)
-	if evidence, _ := body["evidence"].([]any); len(evidence) != 0 {
+	if evidence := searchRowsForTest(t, body, "evidence"); len(evidence) != 0 {
 		t.Fatalf("expected a miss, got %+v", evidence)
 	}
 	guidance := strings.Join(stringsOf(body["guidance"]), " ")

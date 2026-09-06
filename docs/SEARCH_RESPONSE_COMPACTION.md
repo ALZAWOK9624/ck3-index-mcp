@@ -1,66 +1,60 @@
-# 搜索正文压缩
+# 单一搜索结果契约
 
-`ck3_search` 默认提供紧凑、可无损还原的 JSON 正文。查询算法、命中数量、排序、搜索范围和 `structuredContent` 的对象数组均不变。此改动不需要重建索引。
+`ck3_search` 只在 `structuredContent` 中返回一份结果，`content` 固定为空数组。没有旧版正文副本、格式开关、共享字段、路径字典或根据结果大小切换的表示。
 
-## 客户端用法
+`evidence`、`suggestions` 和批量查询的 `batch` 均为 `columns` / `rows` 表格。按表头读取每一行即可；`null` 表示字段缺省。来源和路径直接保留为字符串。命中顺序、完整片段、行列号、分页、公开来源过滤和置信度保留。
 
-- 普通模型调用：照常传 `query` 或 `queries`，默认 `format="compact"`。
-- 程序读取：继续读取原有 `structuredContent.evidence`、`suggestions`、`batch` 等字段，输出 schema 不变。
-- 旧程序若只解析 `content[0].text` 中的对象数组：显式传 `format="json"`，正文恢复旧格式。
-- QQ bot 等自建客户端可以仅将完整 `content` 正文送入模型上下文，将 `structuredContent` 留给程序使用。不要把两份内容再次拼接。服务器保留两份表示以兼容 MCP 客户端，无法控制客户端如何注入上下文。
+## 唯一调用方式
 
-部署需更换 MCP 可执行文件、重启对应服务，并让客户端重新获取工具目录。旧进程不会因源码更新自动切换。
-
-## 紧凑正文契约
-
-只有压缩后更短时，正文才出现 `format="ck3-search-table-v1"`。单个命中、空结果及不适合压缩的数据仍可使用普通 JSON；客户端必须同时接受两种表示。
-
-`evidence`、`suggestions`、`batch` 中的每个集合可以独立变成如下表格。其他字段原样保留。以下仅为合成示例：
+请求示例：`{"query":"example"}`。以下响应为合成示例：
 
 ```json
 {
-  "format": "ck3-search-table-v1",
-  "intent": "ck3_search",
-  "query": "example",
-  "summary": "Example search.",
-  "evidence": {
-    "shared": {"kind": "object", "type": "trait", "source": "game"},
-    "columns": ["name", "path", "line", "column", "detail"],
-    "paths": ["common/traits/example.txt"],
-    "rows": [
-      ["example_a", 0, 3, 1, null],
-      ["example_b", 0, 9, 1, "example detail"]
-    ]
+  "content": [],
+  "structuredContent": {
+    "intent": "ck3_search",
+    "query": "example",
+    "summary": "Example search.",
+    "evidence": {
+      "columns": ["kind", "type", "name", "source", "path", "line", "column"],
+      "rows": [
+        ["object", "trait", "example_a", "game", "common/traits/example.txt", 3, 1],
+        ["object", "trait", "example_b", "game", "common/traits/example.txt", 9, 1]
+      ]
+    }
   }
 }
 ```
 
-还原一行时先复制 `shared`，再将每个单元格对应到 `columns` 的同位置字段。`null` 表示该字段缺省。若表格带有 `paths`，`path` 列的整数是该字典的 **零起始索引**。没有 `paths` 时，`path` 单元格保持原始路径字符串。
+每行长度等于表头长度，字段排列稳定。零命中时 `evidence` 为 `{"columns":[],"rows":[]}`，单条结果也使用表格。没有候选或不是批量查询时，可省略 `suggestions` 或 `batch`。低置信度的 `suggestions` 与已命中的 `evidence` 始终分开，批量无命中的词仍保留其统计行。
 
-表格保持原始行顺序。`suggestions` 仍是低置信度候选，不是已确认的 `evidence`；两者永不混合。批量搜索中未命中的词仍有 `batch` 行。完整详情、片段、引号、换行和 Unicode 都用标准 JSON 保留。遇到显式 null、嵌套值或未来不支持的行结构时保留普通对象数组，不猜测其含义。
+## 调用方更新
 
-缓存命中、参数修正和返回大小限制都会保持正文与结构化数据一致。大小限制仍按原有规则截断有序数组并标注 `truncated` 与截断元数据；压缩本身不删除命中或截短文本。
+- 读取 `result.structuredContent`，按各表的 `columns` 读取 `rows`。
+- 向模型发送 `JSON.stringify(result.structuredContent)` 一次；不再读取正文作为搜索结果。
+- 删除 `format` 参数。服务端拒绝它，不进行旧格式转换。
+- 缓存命中和响应大小限制使用同一契约；参数修正提示在结构化结果内。响应截断保留截断计数和分页信息。
+- 升级 MCP 可执行文件与客户端后重新载入工具目录。无需重建索引。
+
+[MCP 规范](https://modelcontextprotocol.io/specification/2025-06-18/server/tools#structured-content) 将 `structuredContent` 定义为结构化结果，重复正文的建议用于旧客户端兼容。本接口采用单一结构化结果，输出结构由服务端契约测试校验。
 
 ## 2026-09-06 实测
 
-在同一真实索引、同一查询参数下，分别调用 `format=json` 与默认格式，验证 `structuredContent` 完全相同，并将紧凑正文还原后逐字段比较。随后重复调用验证缓存结果一致。全部查询使用公开来源过滤。原始游戏与 Mod 内容未收入仓库。
+在同一真实索引上通过两个独立 stdio MCP 服务分别运行原版提交 `0e67e3f` 和新版。全部查询使用公开来源过滤。将新表格展开后逐字段核对原版结果，再重复调用检查缓存一致性；证据数量、内容、顺序与已有元数据均一致。游戏、Mod 文件与索引未收入仓库。
 
-token 计数使用 `tiktoken 0.14.0` 的 `o200k_base`；这是可复现的 tokenizer 计数，不代表特定模型的实际计费，也没有测量模型推理延迟。
+计数使用 `tiktoken 0.14.0` / `o200k_base`。原载荷为旧正文与结构化副本之和，新载荷只有结构化结果；不包含工具目录、客户端包装和模型隐藏开销，不等于实际模型计费或推理延迟。
 
-| 查询 | 命中数 | 原正文 token | 紧凑正文 token | 正文减少 | 正文与结构化副本合计减少 |
-|---|---:|---:|---:|---:|---:|
-| `knight` | 8 | 473 | 342 | 27.7% | 13.8% |
-| 批量 `brave / diligent / patient` | 24 | 1449 | 852 | 41.2% | 20.6% |
-| 中文本地化 `骑士` | 8 | 467 | 355 | 24.0% | 12.0% |
-| `tradition`，limit=20 | 20 | 1139 | 760 | 33.3% | 16.6% |
-| `knight`，page=2 | 8 | 484 | 284 | 41.3% | 20.7% |
-| 不存在的标识符 | 0 | 193 | 193 | 0.0% | 0.0% |
-| `add_gold`，script_text，game 来源 | 8 | 516 | 323 | 37.4% | 18.7% |
+| 查询 | 命中数 | 原载荷 token | 新载荷 token | 减少 |
+|---|---:|---:|---:|---:|
+| `knight` | 8 | 946 | 380 | 59.8% |
+| 批量 `brave / diligent / patient` | 24 | 2898 | 1053 | 63.7% |
+| 中文本地化 `骑士` | 8 | 934 | 410 | 56.1% |
+| `tradition`，limit=20 | 20 | 2278 | 916 | 59.8% |
+| `knight`，page=2 | 8 | 968 | 385 | 60.2% |
+| 不存在的标识符 | 0 | 386 | 203 | 47.4% |
+| `add_gold`，script_text，game 来源 | 8 | 1032 | 417 | 59.6% |
+| `brave`，limit=1 | 1 | 240 | 125 | 47.9% |
 
-“合计”将正文和单独编码的结构化数据相加，不包含客户端封装、工具目录与模型隐藏开销。压缩的 token 效果取决于重复字段、路径和实际片段长度，不能将表中比例当作每次查询的保证。
+若旧客户端之前已只向模型注入一份副本，应与该单份载荷比较，不能套用上述双份基线降幅。
 
-合成回归样本的完整 MCP JSON 包（含结构化副本和运行时元数据）分别从 4518 → 3956、9480 → 7602、5112 → 4589 字节；对应的结构化数据字节数与 8 / 20 / 8 条命中保持不变。精确字节基线记录在 `internal/mcpserver/testdata/response_size.golden.json`。
-
-回归验证覆盖无损还原、格式兼容、中文与特殊字符、稀疏字段、未来字段回退、公开来源过滤、低置信度候选、批量无命中词、缓存参数提示和响应截断。
-
-本地合成样本的正文编码微基准：8 行普通 JSON / 紧凑正文为 7.3 / 28.5 微秒，24 行为 27.2 / 72.0 微秒。表格构建需要额外 CPU，但这组样本的总编码耗时低于 0.1 毫秒。微基准没有测量数据库查询、客户端传输或模型推理；不能将 token 降幅当作端到端延迟降幅。可用 `go test ./internal/mcpserver -run '^$' -bench BenchmarkSearchTextEncoding -benchmem` 复测。
+合成样本的完整 MCP 包分别从优化前的 4518 → 1939、9480 → 3540、5112 → 2213 字节，对应 8 / 20 / 8 条命中保持不变。字节基线位于 `internal/mcpserver/testdata/response_size.golden.json`。用 `go test ./internal/mcpserver -run '^$' -bench BenchmarkSearchResultEncoding -benchmem` 可复测表格编码开销。

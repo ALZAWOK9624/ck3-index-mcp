@@ -155,8 +155,7 @@ func attachArgumentNotices(result map[string]any, notices []string) map[string]a
 		return result
 	}
 	structured["argument_notices"] = notices
-	if hasCompactSearchText(result) {
-		result["content"] = searchTextContent(structured)
+	if structured["intent"] == "ck3_search" {
 		return result
 	}
 	data, err := json.Marshal(structured)
